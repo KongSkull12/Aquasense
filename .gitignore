@@ -1,0 +1,92 @@
+# =========================
+# DEPENDENCIES
+# =========================
+node_modules/
+**/node_modules/
+
+# =========================
+# ENV FILES (VERY IMPORTANT)
+# =========================
+.env
+.env.*
+**/.env
+.env.local
+.env.*.local
+!.env.example
+!**/.env.example
+
+# =========================
+# BUILD OUTPUT
+# =========================
+dist/
+**/dist/
+*.tsbuildinfo
+
+# =========================
+# LOGS
+# =========================
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# =========================
+# IDE
+# =========================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# =========================
+# OS FILES
+# =========================
+.DS_Store
+Thumbs.db
+
+# =========================
+# CACHE
+# =========================
+.cache/
+**/.cache/
+
+# Local credentials, private keys, databases, firmware artifacts and tools
+**/device_config.local.h
+**/Secrets.h
+.npmrc
+.pypirc
+credentials.json
+service-account*.json
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+id_rsa
+id_ed25519
+*.db
+*.sqlite
+*.sqlite3
+*.bak
+.pio/
+.pio-core/
+.venv/
+__pycache__/
+compile_commands.json
+*.bin
+*.elf
+*.map
+.agents/
+!.agents/
+.agents/*
+!.agents/skills/
+!.agents/skills/**
+# Keep Codex runtime/state files private, but share this project's agent definitions.
+.codex/*
+!.codex/config.toml
+!.codex/agents/
+!.codex/agents/*.toml
+!.codex/agents/README.md

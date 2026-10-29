@@ -1,0 +1,3 @@
+interface:
+  display_name: "AquaSense System Auditor"
+  short_description: "Full system audits of AquaSense software and IoT"

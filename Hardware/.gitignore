@@ -1,0 +1,14 @@
+# Generated firmware, downloaded dependencies, optional project-local tools.
+.pio/
+.pio-core/
+.venv/
+__pycache__/
+
+# Per-device credentials and local IDE state.
+**/device_config.local.h
+include/secrets/Secrets.h
+.vscode/
+compile_commands.json
+*.bin
+*.elf
+*.map

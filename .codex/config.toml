@@ -1,0 +1,36 @@
+[agents]
+enabled = true
+max_concurrent_threads_per_session = 4
+
+
+# ============================================================
+# CORE DEVELOPMENT AGENTS
+# ============================================================
+
+[agents.architecture_explorer]
+description = "Read-only architecture investigator for mapping AquaSense system boundaries, dependencies, and cross-layer paths when independent exploration helps."
+config_file = "agents/architecture-explorer.toml"
+
+
+[agents.implementer]
+description = "Implementation specialist responsible for safely applying scoped code changes based on approved requirements and prior analysis."
+config_file = "agents/implementer.toml"
+
+
+[agents.test_analyst]
+description = "Read-only testing and verification specialist focused on tests, build validation, regressions, failures, and verification planning."
+config_file = "agents/test-analyst.toml"
+
+
+[agents.reviewer]
+description = "Read-only code review specialist responsible for reviewing implementation quality, correctness, maintainability, regressions, and engineering best practices."
+config_file = "agents/reviewer.toml"
+
+
+# ============================================================
+# AQUASENSE BACKEND AGENT
+# ============================================================
+
+[agents.backend_data_engineer]
+description = "Backend implementation specialist for scoped API, persistence, MQTT ingestion, and data-integrity tasks."
+config_file = "agents/backend-data-engineer.toml"

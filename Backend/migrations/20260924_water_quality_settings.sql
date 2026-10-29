@@ -1,0 +1,6 @@
+CREATE TABLE IF NOT EXISTS water_quality_settings (
+  id VARCHAR(32) PRIMARY KEY,
+  thresholds JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);

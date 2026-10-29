@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "Hardware"
+		}
+	],
+	"settings": {
+		"typescript.tsdk": "Frontend/node_modules/typescript/lib",
+		"C_Cpp.default.configurationProvider": "platformio.platformio-ide"
+	}
+}

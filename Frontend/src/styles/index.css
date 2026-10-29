@@ -1,0 +1,157 @@
+@import url('https://fonts.googleapis.com/css2?family=Archivo:ital,wdth,wght@0,62..125,400..700;1,100,400..600&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-white font-sans text-ink antialiased;
+    font-feature-settings: "kern" 1;
+  }
+
+  ::selection {
+    background: #c9e1ef;
+    color: #0f2a3d;
+  }
+
+  img {
+    @apply max-w-full h-auto;
+  }
+
+  h1, h2, h3, h4 {
+    @apply text-ink;
+    text-wrap: balance;
+    letter-spacing: -0.01em;
+  }
+
+  p {
+    text-wrap: pretty;
+  }
+
+  :focus-visible {
+    outline: 2px solid #1d5d86;
+    outline-offset: 2px;
+  }
+
+  input, select, textarea {
+    caret-color: #1d5d86;
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #b9cad6 transparent;
+  }
+
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    background: #c3d2dc;
+    border-radius: 999px;
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover { background-color: #9fb4c3; }
+
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    *, *::before, *::after {
+      animation-duration: 1ms !important;
+      transition-duration: 1ms !important;
+    }
+  }
+}
+
+@layer components {
+  /* Numerals that line up in columns and live readouts */
+  .num {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Buttons */
+  .btn {
+    @apply inline-flex h-9 items-center justify-center gap-2 whitespace-nowrap rounded-md px-3.5 text-sm font-semibold transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-45;
+  }
+  .btn-primary {
+    @apply btn bg-ink text-white hover:bg-ink-soft;
+  }
+  .btn-secondary {
+    @apply btn border border-line bg-white text-ink hover:border-contour hover:bg-water;
+  }
+  .btn-quiet {
+    @apply btn text-ink-2 hover:bg-water hover:text-ink;
+  }
+  .btn-danger {
+    @apply btn border border-line bg-white text-alarm hover:border-alarm/40 hover:bg-alarm-bg;
+  }
+  .btn-sm {
+    @apply h-8 px-2.5 text-[13px];
+  }
+  .btn-lg {
+    @apply h-11 px-5 text-[15px];
+  }
+
+  /* Form fields */
+  .field-label {
+    @apply mb-1.5 block text-[13px] font-semibold text-ink;
+  }
+  .field-hint {
+    @apply mt-1.5 text-xs leading-relaxed text-ink-3;
+  }
+  .field {
+    @apply block h-10 w-full rounded-md border border-line bg-white px-3 text-sm text-ink transition-colors duration-150 placeholder:text-ink-3/80 hover:border-contour focus:border-sounding focus:outline-none focus:ring-2 focus:ring-sounding/20 disabled:cursor-not-allowed disabled:bg-water disabled:text-ink-3;
+  }
+  textarea.field {
+    @apply h-auto py-2.5;
+  }
+
+  /* Panels: hairline frames, no shadows */
+  .panel {
+    @apply rounded-lg border border-line bg-white;
+  }
+
+  /* Inline links */
+  .link {
+    @apply font-semibold text-sounding underline decoration-sounding/30 underline-offset-[3px] transition-colors hover:decoration-sounding;
+  }
+
+  /* Public site navigation */
+  .site-link {
+    @apply relative py-1 text-sm font-medium text-ink-2 transition-colors hover:text-ink;
+  }
+  .site-link.active {
+    @apply text-ink;
+  }
+  .site-link.active::after {
+    content: '';
+    @apply absolute -bottom-[23px] left-0 right-0 h-[2px] bg-ink;
+  }
+
+  .footer-link {
+    @apply text-sm text-rail-text transition-colors hover:text-white;
+  }
+}
+
+/* Auth panels slide in from the side the visitor came from */
+@keyframes auth-in-left {
+  from { transform: translateX(-24px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+@keyframes auth-in-right {
+  from { transform: translateX(24px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+.auth-in-left { animation: auth-in-left 420ms cubic-bezier(0.16, 1, 0.3, 1) both; }
+.auth-in-right { animation: auth-in-right 420ms cubic-bezier(0.16, 1, 0.3, 1) both; }
+
+/* Live value update: a brief settle, not a flash */
+@keyframes reading-settle {
+  from { opacity: 0.35; transform: translateY(2px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.reading-settle { animation: reading-settle 260ms cubic-bezier(0.16, 1, 0.3, 1); }
