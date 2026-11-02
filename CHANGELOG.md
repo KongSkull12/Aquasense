@@ -13,6 +13,13 @@ The running version is shown in the dashboard sidebar (App = frontend, API = bac
 3. Commit, tag and push: `git tag vX.Y.Z && git push kongskull main --tags`.
    Vercel and Render redeploy `main` automatically.
 
+## [1.1.3] - 2026-11-02
+
+### Fixed
+- Sign-in failed with "CSRF token validation failed" when the browser still had an older
+  session cookie. Sign-in and sign-up no longer require the CSRF token (they start a new
+  session), and the dashboard fetches a fresh token and retries once after a CSRF rejection.
+
 ## [1.1.2] - 2026-11-02
 
 ### Added

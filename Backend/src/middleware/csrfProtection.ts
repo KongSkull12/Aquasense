@@ -7,6 +7,9 @@ export const csrfCookieName = 'aquasense_csrf';
 export const csrfHeaderName = 'x-csrf-token';
 
 const unsafeMethods = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+// Sign-in and sign-up start a new session and issue a new token. A stale session cookie
+// must not block them, because the page cannot have that session's token yet.
+const sessionStartPaths = /\/auth\/(login|signup)\/?$/;
 
 export const createCsrfToken = (): string => randomBytes(32).toString('hex');
 
@@ -43,7 +46,7 @@ export const clearCsrfCookie = (res: Response): void => {
 };
 
 export const csrfProtection = (req: Request, res: Response, next: NextFunction): void => {
-  if (!unsafeMethods.has(req.method)) {
+  if (!unsafeMethods.has(req.method) || sessionStartPaths.test(req.path)) {
     next();
     return;
   }

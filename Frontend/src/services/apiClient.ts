@@ -1,4 +1,4 @@
-import axios, { AxiosError, AxiosInstance } from 'axios';
+import axios, { AxiosError, AxiosInstance, InternalAxiosRequestConfig } from 'axios';
 import type { ApiResponse, SuccessResponse } from '../types/api';
 import { API_BASE_URL } from '../config/runtime';
 
@@ -57,7 +57,21 @@ class ApiClient {
         if (typeof token === 'string' && token) this.csrfToken = token;
         return response;
       },
-      (error: AxiosError) => {
+      async (error: AxiosError<ApiResponse>) => {
+        // The in-memory CSRF token is lost on a page reload. Fetch it from the session once and retry.
+        const request = error.config as (InternalAxiosRequestConfig & { csrfRetried?: boolean }) | undefined;
+        if (error.response?.status === 403 && /csrf/i.test(error.response.data?.message || '') &&
+            request && !request.csrfRetried) {
+          request.csrfRetried = true;
+          this.csrfToken = null;
+          try {
+            await this.client.get('/auth/verify');
+          } catch {
+            return Promise.reject(error);
+          }
+          return this.client.request(request);
+        }
+
         // Handle errors globally
         if (error.response?.status === 401) {
           this.csrfToken = null;
