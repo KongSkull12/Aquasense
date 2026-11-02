@@ -18,6 +18,8 @@ import type { AuthenticatedRequest } from '../../../middleware/authMiddleware';
 import { deviceService } from '../../../services/device.service';
 import { TanMeasurementInputError, tanMeasurementService } from '../../../services/tanMeasurement.service';
 import { auditLogService } from '../../../services/auditLog.service';
+import { riskAssessmentService } from '../../../services/riskAssessment.service';
+import { loadThresholdBands, saveThresholdBands, thresholdBandIssue, type ThresholdBands } from '../../../services/thresholdBands';
 
 const getReadingDeviceScope = async (req: AuthenticatedRequest): Promise<string[] | undefined> => {
   // An absent identity must never fall through to the service's unfiltered query.
@@ -225,6 +227,25 @@ export const getAlerts = (req: AuthenticatedRequest, res: Response): void => {
   })();
 };
 
+export const getThresholdBands = async (_req: Request, res: Response): Promise<void> => {
+  sendSuccess(res, 200, 'Threshold bands', await loadThresholdBands());
+};
+
+export const saveThresholdBandsHandler = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const bands = req.body as ThresholdBands;
+    const issue = thresholdBandIssue(bands);
+    if (issue) {
+      sendError(res, 400, issue);
+      return;
+    }
+    sendSuccess(res, 200, 'Thresholds saved', await saveThresholdBands(bands));
+  } catch (error) {
+    logger.error('Failed to save threshold bands', error);
+    sendError(res, 500, 'Failed to save thresholds');
+  }
+};
+
 export const getThresholds = (_req: Request, res: Response): void => {
   try {
     const thresholds = waterQualityService.getThresholds();
@@ -260,16 +281,20 @@ export const getDashboardData = async (req: AuthenticatedRequest, res: Response)
     const stats = await mapDbStatsToWaterStats(60, deviceIds);
     const alerts = await alertService.getAlerts(10, undefined, deviceIds);
     const thresholds = waterQualityService.getThresholds();
+    const thresholdBands = await loadThresholdBands();
     const predictive = await predictiveAnalyticsService.getWarningCard(60);
     const predictionHistory = await predictionLogService.getRecentLogs(30, deviceIds);
     const smsLogs = await smsLogService.getRecentLogs(15, deviceIds);
+    const riskAssessment = await riskAssessmentService.assess(deviceIds).catch(() => null);
 
     const dashboardData = {
       latest,
       stats,
       recentAlerts: alerts,
       thresholds,
+      thresholdBands,
       predictiveWarning: predictive,
+      riskAssessment,
       predictionHistory,
       smsLogs,
       timestamp: new Date(),

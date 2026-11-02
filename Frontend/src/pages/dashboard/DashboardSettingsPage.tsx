@@ -5,7 +5,7 @@ import { KeyValues, PageHead, Panel, StateMark } from '../../components/WaterQua
 
 const fields: Array<{ key: keyof DashboardProfile; label: string; wide?: boolean; hint?: string; type?: string }> = [
   { key: 'farmerName', label: 'Farmer name' },
-  { key: 'contactNumber', label: 'Contact number', type: 'tel', hint: 'Shown on the dashboard only. It does not change who receives SMS alerts; that is set on the server.' },
+  { key: 'contactNumber', label: 'Contact number', type: 'tel', hint: 'Shown on this dashboard only. SMS alerts use the numbers on the SMS alerts tab.' },
   { key: 'farmName', label: 'Farm name' },
   { key: 'tankName', label: 'Tank name' },
   { key: 'location', label: 'Location', wide: true },

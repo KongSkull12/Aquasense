@@ -44,7 +44,7 @@ and a combined backend client instead of separate hardware/feeding HTTP workers.
 | LCD | 0x27, 20x4 (current monitor code; earlier diagram labels 16x2) |
 | RTC | DS3231 |
 | Integrated servo | GPIO18 |
-| Passive buzzer | GPIO19 |
+| Active buzzer (+ to the pin, − to GND) | GPIO19 |
 | Relay K3 / refill | GPIO26 |
 | Relay K4 / drain | GPIO27 |
 | Relay K2 / aerator | GPIO25 |

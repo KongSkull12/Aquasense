@@ -209,7 +209,7 @@ export const ChartPanel = ({ title, guidance, note, children, className = '' }: 
 
 export const BandKey = () => (
   <span className="inline-flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-ink-3">
-    <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-4 rounded-[2px] border border-dashed border-contour bg-band" />Guidance range</span>
-    <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-4 rounded-[2px] bg-shoal" />Outside range</span>
+    <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-4 rounded-[2px] border border-dashed border-contour bg-band" />Normal range</span>
+    <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-4 rounded-[2px] bg-shoal" />Outside Normal</span>
   </span>
 );

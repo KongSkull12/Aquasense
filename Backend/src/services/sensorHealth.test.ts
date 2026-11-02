@@ -17,6 +17,9 @@ function check(name:string,input:unknown,expected:unknown,actual:()=>unknown) {
   test(name,()=> { const result=actual(); console.log(`Test: ${name}\nInput: ${JSON.stringify(input)}\nExpected: ${JSON.stringify(expected)}\nActual: ${JSON.stringify(result)}\n${JSON.stringify(result)===JSON.stringify(expected)?'PASS':'FAIL'}`); assert.deepEqual(result,expected); });
 }
 check('normal temperature',25,'VALID',()=>validate('temperature',25).health);
+check('factory DS18B20 needs no buffer calibration','CALIBRATED','CALIBRATED',()=>validate('temperature',25).calibration);
+check('DS18B20 error is not calibrated','REQUIRED','REQUIRED',()=>validate('temperature',-127).calibration);
+check('disconnected temperature is not calibrated','REQUIRED','REQUIRED',()=>new SensorValidator().validate('test','temperature',25,stamp(),{connected:false},now).calibration);
 check('DS18B20 error',-127,'SENSOR_ERROR',()=>validate('temperature',-127).health);
 check('temperature outside capability',126,'INVALID',()=>validate('temperature',126).health);
 check('normal pH',7,'VALID',()=>validate('ph',7).health);
@@ -36,6 +39,10 @@ test('raw ADC signal is distinct from an unavailable engineering measurement',()
   const signal=new SensorValidator().validate('raw-only','turbidity',null,stamp(),{rawAdc:1800},now,'raw_adc');
   assert.equal(signal.rawAvailable,true);assert.equal(signal.measurementValid,false);assert.equal(signal.valid,false);
   assert.equal(signal.health,'MISSING');assert.equal(signal.value,null);assert.equal(signal.rawAdc,1800);assert.equal(signal.communication,true);
+});
+test('a server-recorded calibration makes ORP a valid reading',()=>{
+  const reading=new SensorValidator().validate('orp-commissioned','orp',225,stamp(),{rawAdc:1800,voltage:1.68},now,'mV',{commissioned:true});
+  assert.equal(reading.calibration,'CALIBRATED');assert.equal(reading.valid,true);assert.equal(reading.health,'VALID');assert.equal(reading.value,225);
 });
 test('device diagnostics cannot commission ORP conversion or calibration',()=>{
   const unverified=new SensorValidator().validate('orp-unverified','orp',220,stamp(),{rawAdc:2000},now,'mV');

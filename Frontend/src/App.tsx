@@ -14,7 +14,11 @@ import DashboardFeedingPage from './pages/dashboard/DashboardFeedingPage';
 import DashboardWaterChangePage from './pages/dashboard/DashboardWaterChangePage';
 import DashboardAeratorPage from './pages/dashboard/DashboardAeratorPage';
 import DashboardAlertsPage from './pages/dashboard/DashboardAlertsPage';
+import DashboardCalibrationPage from './pages/dashboard/DashboardCalibrationPage';
 import DashboardSettingsPage from './pages/dashboard/DashboardSettingsPage';
+import DashboardPredictionPage from './pages/dashboard/DashboardPredictionPage';
+import DashboardSmsPage from './pages/dashboard/DashboardSmsPage';
+import DashboardThresholdsPage from './pages/dashboard/DashboardThresholdsPage';
 import { apiClient } from './services/apiClient';
 import './App.css';
 
@@ -99,10 +103,14 @@ function App(): JSX.Element {
           <Route index element={<Navigate to="/dashboard/overview" replace />} />
           <Route path="overview" element={<DashboardOverviewPage />} />
           <Route path="parameters" element={<DashboardParametersPage />} />
+          <Route path="thresholds" element={<DashboardThresholdsPage />} />
+          <Route path="prediction" element={<DashboardPredictionPage />} />
           <Route path="feeding" element={<DashboardFeedingPage />} />
           <Route path="water-change" element={<DashboardWaterChangePage />} />
           <Route path="aerator" element={<DashboardAeratorPage />} />
           <Route path="alerts" element={<DashboardAlertsPage />} />
+          <Route path="sms" element={<DashboardSmsPage />} />
+          <Route path="calibration" element={<DashboardCalibrationPage />} />
           <Route path="settings" element={<DashboardSettingsPage />} />
         </Route>
       </Routes>

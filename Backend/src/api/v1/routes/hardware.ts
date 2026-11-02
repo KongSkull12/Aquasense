@@ -14,17 +14,22 @@ import { mqttService } from '../../../services/mqttService';
 const router = Router();
 router.post('/hardware/commands', authenticateToken, requireRole(['admin', 'farmer']), validateBody(hardwareCommandSchema),
   async (req: AuthenticatedRequest, res) => {
-    if (config.mqtt.publicTelemetryOnly || !config.mqtt.actuatorCommandsEnabled) {
-      sendError(res, 503, 'Generic hardware commands are disabled in public development mode'); return;
+    if (!config.mqtt.actuatorCommandsEnabled) {
+      sendError(res, 503, 'Hardware commands are disabled on the server (MQTT_ACTUATOR_COMMANDS_ENABLED)'); return;
     }
-    const { deviceId, action, durationMs } = req.body;
+    // Public-dev delivers signed, expiring, replay-checked commands (the same
+    // channel feeding uses), so only refuse when that channel is down.
+    if (config.mqtt.publicTelemetryOnly && !mqttService.isActuatorCommandChannelConnected()) {
+      sendError(res, 503, 'Command was not sent because the MQTT control channel to the device is unavailable'); return;
+    }
+    const { deviceId, action, durationMs, param } = req.body;
     try {
       if (!req.userId || !(await deviceService.verifyOwnership(req.userId, deviceId))) { sendError(res, 403, 'Device is not owned/active'); return; }
-      const command = await hardwareService.queue(req.userId, deviceId, action, durationMs);
+      const command = await hardwareService.queue(req.userId, deviceId, action, durationMs, param);
       const published = await mqttService.dispatchHardwareCommand({ id: command.id, deviceId, source: 'hardware', action,
-        durationMs, expiresAt: command.expiresAt });
+        durationMs, param, expiresAt: command.expiresAt });
       await auditLogService.createLog({ userId: req.userId, deviceId, action: 'HARDWARE_COMMAND', status: 'SUCCESS',
-        ipAddress: req.ip, metadata: { commandId: command.id, action, durationMs } });
+        ipAddress: req.ip, metadata: { commandId: command.id, action, durationMs, ...(param ? { param } : {}) } });
       sendSuccess(res, 202, published ? 'Command queued; awaiting device acknowledgment' : 'Command queued; device acknowledgment pending',
         { id: command.id, commandId: command.id, action: command.action, status: command.status, result: command.result,
           expiresAt: command.expiresAt, published });

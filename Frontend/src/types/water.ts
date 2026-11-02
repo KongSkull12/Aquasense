@@ -128,6 +128,37 @@ export interface PredictiveWarningCard {
   estimatedUnsafeInMinutes: number | null;
 }
 
+export type RiskLevel = 'Low' | 'Moderate' | 'High' | 'Extreme';
+export type RiskTrend = 'Rising' | 'Falling' | 'Stable' | 'Unknown';
+export interface RiskFactor {
+  key: 'dissolvedOxygen' | 'ammonia' | 'temperature' | 'ph' | 'turbidity' | 'orp' | 'violationDuration';
+  label: string;
+  value: number | null;
+  unit: string;
+  points: number;
+  maxPoints: number;
+  available: boolean;
+  provisional: boolean;
+  detail: string;
+}
+/** Mortality-risk scoring + trend assessment from the backend (not field-validated). */
+export interface RiskAssessment {
+  status: 'AVAILABLE' | 'UNAVAILABLE';
+  reason?: string;
+  score: number | null;
+  worstCaseScore: number | null;
+  level: RiskLevel | null;
+  worstCaseLevel: RiskLevel | null;
+  complete: boolean;
+  factors: RiskFactor[];
+  trends: { temperature: RiskTrend; ammonia: RiskTrend; orp: RiskTrend; oxygen: RiskTrend };
+  violationMinutes: number | null;
+  inputsUncalibrated: boolean;
+  validation: 'NOT_FIELD_VALIDATED';
+  readingAt: string | null;
+  computedAt: string;
+}
+
 export interface PredictiveAnalyticsResult {
   generatedAt: string;
   modelVersion: string;

@@ -5,6 +5,7 @@ import morgan from 'morgan';
 import rateLimit from 'express-rate-limit';
 import { createServer as createHTTPServer } from 'http';
 import { config } from './config/config';
+import { buildInfo } from './config/buildInfo';
 import { logger } from './utils/logger';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler';
 import { requireHttps } from './middleware/requireHttps';
@@ -65,6 +66,7 @@ const createApp = (): Express => {
       data: {
         timestamp: new Date().toISOString(),
         uptime: process.uptime(),
+        release: buildInfo,
         mqtt: {
           connected: mqttStatus.connected,
           lastPublicFrameReceivedAt: mqttStatus.lastPublicFrameReceivedAt,

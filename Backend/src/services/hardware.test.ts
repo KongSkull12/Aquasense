@@ -228,6 +228,8 @@ test('signed actuator command and state ACK canonical strings verify HMAC-SHA256
   const ack = { v: 1 as const, deviceId: 'board', id, source: 'hardware' as const, action: 'DRAIN', result: 'accepted', reportedAt: 123456,
     state, signature: '' };
   assert.equal(ackCanonical(ack), `v1|board|${id}|hardware|DRAIN|accepted|123456|0|0|0|0|0|0|IDLE||0|0|1|1|123`);
+  assert.equal(ackCanonical({ ...ack, state: { ...state, aeratorAuto: true } }), `v1|board|${id}|hardware|DRAIN|accepted|123456|0|0|0|0|0|0|IDLE||0|0|1|1|123|1`);
+  assert.equal(hardwareStateSchema.safeParse({ ...state, aeratorAuto: false }).success, true);
   const ackSignature = signCanonical(ackCanonical(ack), key);
   assert.equal(verifyCanonical(ackCanonical(ack), ackSignature, key), true);
   assert.equal(verifyCanonical(ackCanonical({ ...ack, state: { ...state, drainPump: true } }), ackSignature, key), false);
@@ -243,10 +245,14 @@ test('MQTT ACK persists its nested state and acknowledges only the matching scop
   const upsert = mock.method(HardwareDeviceState, 'upsert', async () => [state, true]);
   const ack = { v: 1 as const, deviceId: 'board', id, source: 'hardware' as const, action: 'DRAIN', result: 'accepted',
     reportedAt: 123456, state, signature: 'verified-by-mqtt-listener' };
+  const before = Date.now();
   assert.equal(await hardwareService.acceptMqttAck('owner', ack), true);
   assert.equal(status, 'ACKED');
   assert.deepEqual(find.mock.calls[0].arguments[0]?.where, { id, userId: 'owner', deviceId: 'board' });
-  assert.deepEqual(upsert.mock.calls[0].arguments[0], { deviceId: 'board', state, receivedAt: new Date(123456) });
+  const written = upsert.mock.calls[0].arguments[0] as { deviceId: string; state: typeof state; receivedAt: Date };
+  assert.equal(written.deviceId, 'board');
+  assert.equal(written.state, state);
+  assert.ok(written.receivedAt.getTime() >= before && written.receivedAt.getTime() <= Date.now());
 });
 
 test('MQTT actuator publish signs command and explicitly disables retention', async () => {

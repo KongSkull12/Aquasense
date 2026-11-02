@@ -4,6 +4,8 @@ import { useDashboardData } from '../../components/WaterQuality/useDashboardData
 import { getDashboardProfile } from '../../components/WaterQuality/dashboardProfile';
 import { isReadingLive, LIVE_READING_MS } from '../../components/WaterQuality/sensorDisplay';
 import { BandChart, BandKey, ChartPanel, KeyValues, MetaItem, Notice, PageHead, Panel, StateMark, type MarkState } from '../../components/WaterQuality/Console';
+import { bandLabel, classifyBand, formatNormalBand, type BandKey as LimitKey } from '../../components/WaterQuality/thresholdBands';
+import { RiskAssessmentPanel } from '../../components/WaterQuality/RiskAssessmentPanel';
 
 type Status = { label: string; state: MarkState };
 type NextStep = { text: string; to?: string; cta?: string };
@@ -27,7 +29,7 @@ const nextFeed = (schedules: Array<{ date: string | null; time: string; enabled:
 };
 
 const DashboardOverviewPage: React.FC = () => {
-  const { isConnected, latestReading, chartData, predictiveWarning, error, activeAlerts, feedingSchedules } = useDashboardData();
+  const { isConnected, latestReading, chartData, riskAssessment, thresholdBands, error, activeAlerts, feedingSchedules } = useDashboardData();
   const [profile, setProfile] = useState(getDashboardProfile());
 
   useEffect(() => {
@@ -36,13 +38,6 @@ const DashboardOverviewPage: React.FC = () => {
     return () => window.removeEventListener('farmerProfileUpdated', refreshProfile);
   }, []);
 
-  const riskModelValidated = predictiveWarning?.modelStatus === 'READY'
-    && predictiveWarning.validationStatus === 'VALIDATED'
-    && predictiveWarning.analysisStatus === 'AVAILABLE'
-    && Number.isFinite(predictiveWarning.riskScore);
-  const currentRiskScore = riskModelValidated ? predictiveWarning?.riskScore ?? null : null;
-  const riskLevel = riskModelValidated ? predictiveWarning?.warningCard?.riskLevel ?? 'UNAVAILABLE' : 'UNAVAILABLE';
-  const riskState: MarkState = riskLevel === 'LOW' ? 'ok' : riskLevel === 'MODERATE' ? 'warn' : riskLevel === 'HIGH' || riskLevel === 'CRITICAL' ? 'alarm' : 'off';
   const orpIsStale = latestReading?.sensorHealth?.orp.health === 'STALE';
   const orpIsCalibrated = latestReading?.sensorHealth?.orp.valid === true
     && latestReading.sensorHealth.orp.health === 'VALID'
@@ -71,39 +66,35 @@ const DashboardOverviewPage: React.FC = () => {
   };
   const humanize = (value: string) => value.toLowerCase().replace(/_/g, ' ');
 
-  const getStatus = (param: 'temp' | 'ph' | 'turbidity', value: number | null | undefined, calibrated: boolean): Status => {
+  const bandFor = (param: 'temp' | 'ph' | 'turbidity'): LimitKey => param === 'temp' ? 'temperature' : param;
+  const getStatus = (param: 'temp' | 'ph' | 'turbidity', value: number | null | undefined, qualified: boolean, calibrated: boolean): Status => {
     if (value == null || !Number.isFinite(value)) return { label: noValue, state: 'off' };
     if (!calibrated) return { label: 'Calibration required, not classified', state: 'trust' };
-    switch (param) {
-      case 'temp': return value >= 26 && value <= 29
-        ? { label: 'Within growth range', state: 'ok' }
-        : { label: 'Outside growth range', state: 'warn' };
-      case 'ph': return value >= 7 && value <= 8.5
-        ? { label: 'Within culture guidance', state: 'ok' }
-        : { label: 'Outside culture guidance', state: 'warn' };
-      default: return { label: 'No validated NTU limit', state: 'off' };
-    }
+    if (!qualified) return { label: 'Calibrated, settling', state: 'info' };
+    const label = bandLabel(classifyBand(value, thresholdBands[bandFor(param)]));
+    return { label, state: label === 'Normal' ? 'ok' : label === 'Warning' ? 'warn' : 'alarm' };
   };
 
+  const isCalibrated = (name: 'temperature' | 'ph' | 'turbidity' | 'orp') => latestReading?.sensorHealth?.[name]?.calibration === 'CALIBRATED';
   const turbidityStatus: Status = currentTurbidityNtu != null
     ? latestReading?.sensorHealth?.turbidity.valid === false
       ? { label: `Reported, ${humanize(latestReading.sensorHealth.turbidity.health)}`, state: 'warn' }
-      : getStatus('turbidity', currentTurbidityNtu, isQualified('turbidity'))
-    : getStatus('turbidity', null, false);
+      : getStatus('turbidity', currentTurbidityNtu, isQualified('turbidity'), isCalibrated('turbidity'))
+    : getStatus('turbidity', null, false, false);
 
   const readings: Array<{ label: string; value: string | null; unit?: string; status: Status }> = [
     {
       label: 'Temperature',
       value: latestReading?.temperature != null ? latestReading.temperature.toFixed(1) : null,
       unit: '°C',
-      status: getStatus('temp', latestReading?.temperature, isQualified('temperature')),
+      status: getStatus('temp', latestReading?.temperature, isQualified('temperature'), isCalibrated('temperature')),
     },
     {
       label: 'pH',
       value: reportedPh != null ? reportedPh.toFixed(2) : null,
       status: latestReading?.sensorHealth?.ph.valid === false && reportedPh != null
         ? { label: `Reported, ${humanize(latestReading.sensorHealth.ph.health)}`, state: 'warn' }
-        : getStatus('ph', reportedPh, isQualified('ph')),
+        : getStatus('ph', reportedPh, isQualified('ph'), isCalibrated('ph')),
     },
     {
       label: 'ORP / redox',
@@ -112,6 +103,7 @@ const DashboardOverviewPage: React.FC = () => {
       status: !live ? { label: noValue, state: 'off' }
         : orpIsStale ? { label: 'Stale sample', state: 'warn' }
         : orpIsCalibrated ? { label: 'Calibrated reading', state: 'ok' }
+          : isCalibrated('orp') ? { label: 'Calibrated, settling', state: 'info' }
           : latestReading?.orp != null ? { label: 'Reported; calibration required', state: 'trust' }
             : { label: noValue, state: 'off' },
     },
@@ -148,15 +140,21 @@ const DashboardOverviewPage: React.FC = () => {
   else if (!live) nextSteps.push({ text: `No data from the ESP32 in the last ${LIVE_READING_MS / 1000} seconds, so no readings are shown. Check the device's power, Wi-Fi and MQTT connection.` });
   if (activeAlerts.length) nextSteps.splice(isConnected && live ? 0 : nextSteps.length, 0, { text: `${activeAlerts.length} active alert${activeAlerts.length > 1 ? 's' : ''} need${activeAlerts.length > 1 ? '' : 's'} review.`, to: '/dashboard/alerts', cta: 'Review alerts' });
   if (live && latestReading) {
-    const outside = readings.filter((reading) => reading.status.state === 'warn' && reading.status.label.startsWith('Outside'));
-    if (outside.length) nextSteps.unshift({ text: `${outside.map((reading) => reading.label).join(' and ')} outside guidance. Check the tank.`, to: '/dashboard/parameters', cta: 'See details' });
-    const uncalibrated = (['temperature', 'ph'] as const).filter((name) => latestReading.sensorHealth?.[name] && !isQualified(name));
-    if (uncalibrated.length) nextSteps.push({ text: `Calibrate the ${uncalibrated.map((name) => name === 'ph' ? 'pH' : 'temperature').join(' and ')} probe${uncalibrated.length > 1 ? 's' : ''} so readings can be classified and the NH₃ fraction estimated.`, to: '/dashboard/parameters', cta: 'Sensor health' });
+    const named = (label: 'Alert' | 'Warning') => readings.filter((reading) => reading.status.label === label).map((reading) => reading.label);
+    const alertNames = named('Alert');
+    const warningNames = named('Warning');
+    if (alertNames.length) nextSteps.unshift({ text: `${alertNames.join(' and ')} ${alertNames.length > 1 ? 'are' : 'is'} in Alert. Check the tank.`, to: '/dashboard/thresholds', cta: 'Thresholds' });
+    else if (warningNames.length) nextSteps.unshift({ text: `${warningNames.join(' and ')} ${warningNames.length > 1 ? 'are' : 'is'} in Warning.`, to: '/dashboard/thresholds', cta: 'Thresholds' });
+    const uncalibrated = (['temperature', 'ph'] as const).filter((name) => latestReading.sensorHealth?.[name] && !isCalibrated(name));
+    if (uncalibrated.length) nextSteps.push({ text: `Calibrate the ${uncalibrated.map((name) => name === 'ph' ? 'pH' : 'temperature').join(' and ')} probe${uncalibrated.length > 1 ? 's' : ''} so readings can be classified and the NH₃ fraction estimated.`, to: '/dashboard/calibration', cta: 'Calibrate' });
     const silent = [latestReading.orp == null ? 'ORP' : null, readings[4].value == null ? 'tank level' : null].filter(Boolean);
     if (silent.length) nextSteps.push({ text: `${silent.join(' and ')} ${silent.length > 1 ? 'sensors are' : 'sensor is'} not reporting.` });
-    if (!nextSteps.length) nextSteps.push({ text: 'All reporting sensors are calibrated and within guidance.' });
+    if (riskAssessment?.status === 'AVAILABLE' && (riskAssessment.level === 'High' || riskAssessment.level === 'Extreme')) {
+      nextSteps.unshift({ text: `Mortality risk score is ${riskAssessment.level} (${riskAssessment.score}/100). Check the contributing factors below and the tank.` });
+    }
+    if (!nextSteps.length) nextSteps.push({ text: 'All reporting sensors are calibrated and Normal.' });
   }
-  const nextTone = !isConnected || (latestReading && !live) ? 'alarm' : nextSteps[0]?.text.includes('outside guidance') || activeAlerts.length ? 'warn' : 'info';
+  const nextTone = !isConnected || (latestReading && !live) ? 'alarm' : nextSteps[0]?.text.includes('in Alert') ? 'alarm' : nextSteps[0]?.text.includes('in Warning') || activeAlerts.length ? 'warn' : 'info';
   const upcomingFeed = nextFeed(feedingSchedules);
   const enabledFeeds = feedingSchedules.filter((item) => item.enabled).length;
 
@@ -220,12 +218,12 @@ const DashboardOverviewPage: React.FC = () => {
           {(() => {
             const turbidityData = liveChart.filter((point) => point.turbidityUnit === 'NTU' && point.turbidity != null);
             const series = [
-              { key: 'temperature', title: 'Temperature (°C)', label: 'Temperature', guidance: 'Growth guidance 26–29 °C', data: liveChart, domain: [20, 36] as [number, number], band: [26, 29] as [number, number], unit: '°C', digits: 1, empty: 'No temperature samples yet' },
-              { key: 'ph', title: 'pH', label: 'pH', guidance: 'Culture guidance 7.0–8.5', data: liveChart, domain: [4, 10] as [number, number], band: [7, 8.5] as [number, number], unit: '', digits: 2, empty: 'No pH samples yet' },
+              { key: 'temperature', title: 'Temperature (°C)', label: 'Temperature', guidance: `Normal ${formatNormalBand(thresholdBands.temperature, 1, '°C')}`, data: liveChart, domain: [20, 36] as [number, number], band: [thresholdBands.temperature.normalMin ?? 26, thresholdBands.temperature.normalMax ?? 29] as [number, number], unit: '°C', digits: 1, empty: 'No temperature samples yet' },
+              { key: 'ph', title: 'pH', label: 'pH', guidance: `Normal ${formatNormalBand(thresholdBands.ph, 2, '')}`, data: liveChart, domain: [4, 10] as [number, number], band: [thresholdBands.ph.normalMin ?? 7, thresholdBands.ph.normalMax ?? 8.5] as [number, number], unit: '', digits: 2, empty: 'No pH samples yet' },
               { key: 'orp', title: 'ORP / redox (mV)', label: 'ORP', guidance: 'No validated range', data: liveChart, domain: ['auto', 'auto'] as ['auto', 'auto'], unit: 'mV', digits: 1, empty: 'No ORP samples reported',
-                note: orpIsStale ? 'Latest sample is stale; earlier device-reported values are uncalibrated.' : latestReading?.orp != null ? 'Device-reported trend. Calibration is required before it can be interpreted.' : undefined },
-              { key: 'turbidity', title: 'Turbidity (NTU)', label: 'Turbidity', guidance: 'No validated range', data: turbidityData, domain: ['auto', 'auto'] as ['auto', 'auto'], unit: 'NTU', digits: 1, empty: 'NTU unavailable for current samples',
-                note: turbidityNtuHistoryAvailable ? 'Linear estimate; sensor calibration required.' : undefined },
+                note: orpIsStale ? 'Latest sample is stale.' : isCalibrated('orp') ? 'Saved device calibration. ORP is a redox reading, not dissolved oxygen.' : latestReading?.orp != null ? 'Device-reported trend. Capture an ORP standard before it can be interpreted.' : undefined },
+              { key: 'turbidity', title: 'Turbidity (NTU)', label: 'Turbidity', guidance: `Normal ${formatNormalBand(thresholdBands.turbidity, 1, 'NTU')}`, data: turbidityData, domain: ['auto', 'auto'] as ['auto', 'auto'], band: thresholdBands.turbidity.normalMax == null ? undefined : [0, thresholdBands.turbidity.normalMax] as [number, number], unit: 'NTU', digits: 1, empty: 'NTU unavailable for current samples',
+                note: turbidityNtuHistoryAvailable ? (isCalibrated('turbidity') ? 'Linear estimate from the saved calibration.' : 'Linear estimate; sensor calibration required.') : undefined },
               { key: 'nh3FractionPercent', title: 'NH₃ fraction (%)', label: 'NH₃ fraction', guidance: 'From qualified pH + temperature', data: liveChart, domain: ['auto', 'auto'] as ['auto', 'auto'], unit: '%', digits: 3,
                 empty: `Not calculated: ${(latestReading?.speciation?.reason || 'needs calibrated pH and temperature').replace(/^\w/, (c) => c.toLowerCase()).replace(/[.\s]*$/, '')}`,
                 note: `${speciationAvailable ? `Latest fraction ${latestReading!.speciation!.percent!.toFixed(3)}%. ` : ''}TAN and NH₃-N concentration need a measured TAN value.` },
@@ -281,25 +279,20 @@ const DashboardOverviewPage: React.FC = () => {
             )}
             <KeyValues rows={[{ label: 'Enabled schedules', value: `${enabledFeeds} of ${feedingSchedules.length}` }]} />
           </Panel>
-          <Panel title="Risk model">
-            <div className="mb-4 flex items-baseline justify-between gap-3">
-              <StateMark state={riskState} className="!text-base !font-semibold">{riskLevel === 'UNAVAILABLE' ? 'Unavailable' : riskLevel.charAt(0) + riskLevel.slice(1).toLowerCase()}</StateMark>
-              <span className="num text-sm text-ink-2">Index {currentRiskScore === null ? '—' : `${currentRiskScore.toFixed(0)} / 100`}</span>
-            </div>
+          <RiskAssessmentPanel assessment={live ? riskAssessment : null} />
+
+          <Panel title="Sensor status">
             <KeyValues rows={[
-              { label: 'Model status', value: predictiveWarning?.modelStatus ? humanize(predictiveWarning.modelStatus).replace(/^\w/, (c) => c.toUpperCase()) : 'Unavailable' },
-              { label: 'Validation', value: predictiveWarning?.validationStatus === 'VALIDATED' ? 'Validated' : <span className="text-note">Not commissioned</span> },
               { label: 'Sensors valid', value: `${validSensorCount} of ${monitoredSensors.length}` },
               { label: 'Calibrated and stable', value: `${calibratedSensorCount} of ${monitoredSensors.length}` },
-              { label: 'TAN concentration', value: 'Needs a measurement' },
             ]} />
           </Panel>
 
           <Panel title="What this dashboard cannot tell you">
             <ul className="space-y-2.5 text-[13px] leading-relaxed text-ink-2">
-              <li>No validated risk model for <i>Cherax quadricarinatus</i> is commissioned, so no mortality probability or time-to-critical estimate is shown.</li>
+              <li>The mortality-risk score is a rule-based model for <i>Cherax quadricarinatus</i>. It has not been validated against field mortality and is not a probability or a time-to-critical estimate.</li>
               <li>pH and temperature give the NH₃ fraction only. They cannot determine TAN concentration.</li>
-              <li>Temperature and pH guidance is advisory. Turbidity and ORP have no validated species-specific limit.</li>
+              <li>Temperature and pH marks follow the Thresholds tab. Turbidity uses the alert-rule cuts there, not a species limit. ORP has no husbandry band.</li>
               <li>“Online” means this browser is connected. Check the last reading time to confirm sensors are reporting.</li>
             </ul>
           </Panel>

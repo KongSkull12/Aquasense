@@ -28,7 +28,7 @@ const faqs: FAQItem[] = [
   },
   {
     q: 'Who receives SMS alerts?',
-    a: 'The recipient configured on the server. The contact number in dashboard Settings is shown on the dashboard only and does not change where SMS alerts go.',
+    a: 'The mobile numbers saved on the SMS alerts tab, up to four. Each one receives a text when an alert is sent, and only while the SMS switch is on. The contact number in Settings is shown on the dashboard only.',
   },
 ];
 

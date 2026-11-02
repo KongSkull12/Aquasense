@@ -44,7 +44,7 @@ type Track = { samples: Sample[]; lastAt: number; anchor: number; unchangedSince
 export class SensorValidator {
   private tracks = new Map<string, Track>();
   constructor(private config = HEALTH_CONFIG) {}
-  validate(device: string, name: SensorName, input: unknown, timestamp: unknown, diagnostics: any = {}, now = Date.now(), unit?: string): SensorHealth {
+  validate(device: string, name: SensorName, input: unknown, timestamp: unknown, diagnostics: any = {}, now = Date.now(), unit?: string, options?: { commissioned?: boolean }): SensorHealth {
     const value = numeric(input), at = timestampMs(timestamp);
     const rawAdc = numeric(diagnostics?.rawAdc), voltage = numeric(diagnostics?.voltage);
     const result: SensorHealth = { name, value, rawAdc, voltage, unit: unit || ({temperature:'C',ph:'pH',turbidity:'unknown',orp:'mV'}[name]),
@@ -64,13 +64,16 @@ export class SensorValidator {
     else if (name === 'temperature' && value === -127) fail('SENSOR_ERROR','DS18B20 disconnected/error reading detected');
     else if ((name === 'temperature' && (value < -55 || value > 125)) || (name === 'ph' && (value < 0 || value > 14)) ||
       (name === 'turbidity' && (value < 0 || (unit === 'raw_adc' && value > 4095)))) fail('INVALID','Outside sensor physical range');
-    // Device-supplied flags cannot authorize a calibration the backend has not commissioned.
-    if (name==='orp' && (value!==null || rawAdc!==null) && (result.calibration!=='CALIBRATED' || diagnostics?.conversion!=='VALIDATED')) fail('MISSING','ORP engineering conversion/calibration is not commissioned by the backend');
+    // A DS18B20 is factory calibrated. pH, ORP and turbidity become calibrated only after
+    // this server recorded a signed "saved" acknowledgement. Device payload flags cannot do that.
+    const factoryTemperature = name === 'temperature' && value !== null && value !== -127 && value >= -55 && value <= 125;
+    if (diagnostics?.connected !== false && (factoryTemperature || options?.commissioned === true)) result.calibration = 'CALIBRATED';
+    if (name==='orp' && (value!==null || rawAdc!==null) && result.calibration!=='CALIBRATED') fail('MISSING','ORP engineering conversion/calibration is not commissioned by the backend');
     if (!Number.isFinite(at) || at > now + 2000) fail('INVALID','Invalid or future acquisition timestamp');
     else if (now - at > this.config.staleMs) fail('STALE','No recent sensor reading received');
     if ((diagnostics?.rawAdc != null && rawAdc === null) || (rawAdc !== null && (rawAdc < 0 || rawAdc > 4095)) ||
       (diagnostics?.voltage != null && voltage === null) || (voltage !== null && (voltage < 0 || voltage > 3.3))) fail('INVALID','Malformed or out-of-range ADC/input voltage');
-    if (diagnostics?.connected === false) fail('SENSOR_ERROR','Device reports sensor disconnected; value is diagnostic only');
+    if (diagnostics?.connected === false) { fail('SENSOR_ERROR','Device reports sensor disconnected; value is diagnostic only'); result.calibration = 'REQUIRED'; }
     else if (diagnostics?.valid === false) fail('INVALID','Device reports this sample as invalid; value is diagnostic only');
     if (at < track.lastAt && result.valid) fail('STALE','Out-of-order acquisition');
     const freshSample = Number.isFinite(at) && at > track.lastAt && now - at <= this.config.staleMs && at <= now + 2000;

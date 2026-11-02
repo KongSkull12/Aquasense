@@ -4,6 +4,7 @@ import { FeedingCommand } from '../database/models/FeedingCommand';
 import { feedingService } from './feedingService';
 import { COMMAND_TTL_MS, DEVICE_ONLINE_MS, type HardwareAction, type HardwareState, type CommandReceipt, type SignedHardwareAck } from './hardwareProtocol';
 import { withHardwareDeviceLock, DeviceStopPendingError } from './hardwareControlLock';
+import { noteCalibrationResult } from './deviceCalibration';
 import type { Transaction } from 'sequelize';
 
 const WATER_START_ACTIONS: HardwareAction[] = ['FILL', 'DRAIN', 'WATER_EXCHANGE', 'AUTOMATION_ON'];
@@ -29,7 +30,7 @@ const acknowledgeInTransaction = async (userId: string, deviceId: string, receip
 };
 
 export const hardwareService = {
-  async queue(userId: string, deviceId: string, action: HardwareAction, durationMs?: number) {
+  async queue(userId: string, deviceId: string, action: HardwareAction, durationMs?: number, param?: string) {
     const stopping = action === 'ALL_OFF' || action === 'WATER_STOP';
     return withHardwareDeviceLock(userId, deviceId, async (transaction) => {
       if (!stopping && ALL_START_ACTIONS.includes(action)) {
@@ -55,7 +56,7 @@ export const hardwareService = {
           });
         }
       }
-      return HardwareCommand.create({ userId, deviceId, action, durationMs: durationMs ?? null,
+      return HardwareCommand.create({ userId, deviceId, action, durationMs: durationMs ?? null, param: param ?? null,
         expiresAt: new Date(Date.now() + COMMAND_TTL_MS) }, { transaction });
     });
   },
@@ -87,14 +88,17 @@ export const hardwareService = {
     if (source === 'hardware') {
       const command = await HardwareCommand.findOne({ where: { id, userId, deviceId } });
       if (!command || command.action !== action) return false;
+      const appliedResult = command.status === 'PENDING' ? result : (command.result ?? result);
       if (command.status === 'PENDING') await command.update({ status: 'ACKED', result });
+      noteCalibrationResult(deviceId, action, command.param, appliedResult);
     } else {
       const command = await FeedingCommand.findOne({ where: { id, userId, deviceId } });
       if (!command || command.action !== action || command.source !== 'MANUAL') return false;
       if (command.status === 'PENDING') await feedingService.ackCommand(userId, deviceId, id,
         { deviceResult: result, reportedAt: new Date(reportedAt).toISOString() });
     }
-    await HardwareDeviceState.upsert({ deviceId, state, receivedAt: new Date(reportedAt) });
+    // Online means the server just heard the device. The device clock stays in the signed ack.
+    await HardwareDeviceState.upsert({ deviceId, state, receivedAt: new Date() });
     return true;
   },
 

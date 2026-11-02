@@ -8,7 +8,7 @@ export function SensorHealthPanel({reading}:{reading:WaterQualityReading|null}) 
   return <section className="panel" aria-labelledby="sensor-health-heading">
     <div className="flex flex-wrap items-baseline justify-between gap-2 border-b border-line-soft px-4 py-3.5 sm:px-5">
       <h2 id="sensor-health-heading" className="text-[15px] font-semibold">Sensor health</h2>
-      <p className="text-[13px] text-ink-3">Stable signals do not prove measurement accuracy. Calibration is required.</p>
+      <p className="text-[13px] text-ink-3">Stable signals do not prove measurement accuracy. Calibration is required before pH, ORP, or turbidity is classified. Temperature uses the DS18B20 factory calibration.</p>
     </div>
     <div className="grid gap-px bg-line-soft sm:grid-cols-2 xl:grid-cols-4">
       {(['temperature','ph','turbidity','orp'] as const).map(name=> {
@@ -25,7 +25,7 @@ export function SensorHealthPanel({reading}:{reading:WaterQualityReading|null}) 
           </div>
           <StateMark state={state} className="mt-1.5">
             {s?.health ? s.health.charAt(0) + s.health.slice(1).toLowerCase().replace(/_/g, ' ') : 'Missing'}
-            {s?.valid && displayedValue !== null ? (qualified ? ' · qualified' : ' · calibration required') : ''}
+            {s?.valid && displayedValue !== null ? (qualified ? ' · qualified' : s?.calibration === 'CALIBRATED' ? ' · calibrated, settling' : ' · calibration required') : ''}
           </StateMark>
           <dl className="mt-3 space-y-1">
             <div className="flex justify-between gap-3"><dt>Water quality</dt><dd className="text-ink">{(reading?.waterQuality?.[name] || 'UNAVAILABLE').toLowerCase().replace(/_/g, ' ')}</dd></div>
@@ -36,7 +36,7 @@ export function SensorHealthPanel({reading}:{reading:WaterQualityReading|null}) 
           {s?.rawAvailable && !s.measurementValid && <p className="mt-2 text-note">Signal available; engineering measurement unavailable.</p>}
           {s?.reason && <p className="mt-2 text-warn">{s.reason}</p>}
           {name === 'turbidity' ? <>
-            <p className="mt-2 text-note">{reading?.turbidityUnit === 'NTU' && s?.valid ? 'Linear ADC estimate reported; sensor calibration is required.' : 'NTU unavailable for this sample.'}</p>
+            <p className="mt-2 text-note">{reading?.turbidityUnit === 'NTU' && s?.valid ? (s.calibration === 'CALIBRATED' ? 'Linear estimate from the saved calibration.' : 'Linear ADC estimate reported; sensor calibration is required.') : 'NTU unavailable for this sample.'}</p>
             <p className="num mt-1 text-xs text-ink-3">ADC pin {s?.voltage?.toFixed(3) ?? '—'} V · raw {s?.rawAdc ?? '—'} · burst {s?.adcMinimum ?? '—'}–{s?.adcMaximum ?? '—'}</p>
           </> : <details className="mt-2 group">
             <summary className="cursor-pointer select-none text-xs font-semibold text-sounding hover:text-sounding-dark">Calibration diagnostics</summary>

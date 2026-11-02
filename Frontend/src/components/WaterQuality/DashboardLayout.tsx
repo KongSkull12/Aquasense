@@ -3,17 +3,28 @@ import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { DashboardIcon } from './DashboardUi';
 import { getDashboardProfile } from './dashboardProfile';
 import { apiClient } from '../../services/apiClient';
+import { API_BASE_URL } from '../../config/runtime';
 import logo from '../../assets/images/AquaSense_Logo.png';
 
 type NavIcon = Parameters<typeof DashboardIcon>[0]['name'];
+type Release = { version: string; commit: string | null };
+
+const formatRelease = (release: Release | null): string =>
+  release ? `v${release.version}${release.commit ? ` · ${release.commit}` : ''}` : 'unknown';
+
+const appRelease: Release = { version: __APP_VERSION__, commit: __APP_COMMIT__ || null };
 
 const navItems: Array<{ to: string; label: string; icon: NavIcon }> = [
   { to: '/dashboard/overview', label: 'Overview', icon: 'home' },
   { to: '/dashboard/parameters', label: 'Parameters', icon: 'chart' },
+  { to: '/dashboard/thresholds', label: 'Thresholds', icon: 'limits' },
+  { to: '/dashboard/prediction', label: 'Prediction model', icon: 'model' },
   { to: '/dashboard/feeding', label: 'Feeding', icon: 'feed' },
   { to: '/dashboard/water-change', label: 'Water change', icon: 'drain' },
   { to: '/dashboard/aerator', label: 'Aerator', icon: 'aerator' },
   { to: '/dashboard/alerts', label: 'Alerts & logs', icon: 'bell' },
+  { to: '/dashboard/sms', label: 'SMS alerts', icon: 'sms' },
+  { to: '/dashboard/calibration', label: 'Calibration', icon: 'pulse' },
   { to: '/dashboard/settings', label: 'Settings', icon: 'settings' },
 ];
 
@@ -31,7 +42,20 @@ export const DashboardLayout: React.FC = () => {
   const location = useLocation();
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [profile, setProfile] = useState(getDashboardProfile());
+  const [apiRelease, setApiRelease] = useState<Release | null>(null);
   const userLabel = readUserLabel();
+
+  // Show which backend release this dashboard is talking to, next to its own build.
+  useEffect(() => {
+    let active = true;
+    fetch(`${API_BASE_URL}/health`, { cache: 'no-store', headers: { Accept: 'application/json' } })
+      .then((response) => (response.ok ? response.json() : null))
+      .then((body: { data?: { release?: Release } } | null) => {
+        if (active && body?.data?.release) setApiRelease(body.data.release);
+      })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, []);
 
   useEffect(() => {
     const refreshProfile = () => setProfile(getDashboardProfile());
@@ -110,6 +134,11 @@ export const DashboardLayout: React.FC = () => {
             Log out
           </button>
         </div>
+        <p className="mt-3 text-[11px] leading-4 text-rail-text/70 tabular-nums">
+          App {formatRelease(appRelease)}
+          <br />
+          API {formatRelease(apiRelease)}
+        </p>
       </div>
     </div>
   );

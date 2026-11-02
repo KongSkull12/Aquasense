@@ -104,6 +104,11 @@ export const smsTestSchema = z.object({
   message: z.string().trim().min(1).max(160).optional(),
 });
 
+export const smsRecipientsSchema = z.object({
+  enabled: z.boolean(),
+  phones: z.array(z.string().trim().max(24)).max(4),
+}).strict();
+
 const finiteNumber = z.number().finite();
 
 export const thresholdSchema = z.object({
@@ -140,6 +145,19 @@ export const thresholdSchema = z.object({
     if (!valid) context.addIssue({ code: z.ZodIssueCode.custom, path: path.split('.'), message });
   }
 });
+const thresholdBandSchema = z.object({
+  alertMin: finiteNumber.nullable(),
+  normalMin: finiteNumber.nullable(),
+  normalMax: finiteNumber.nullable(),
+  alertMax: finiteNumber.nullable(),
+}).strict();
+
+export const thresholdBandsSchema = z.object({
+  temperature: thresholdBandSchema,
+  ph: thresholdBandSchema,
+  turbidity: thresholdBandSchema,
+}).strict();
+
 export const thresholdPatchSchema = z.object({
   temperature: z.object({ min: finiteNumber.optional(), max: finiteNumber.optional(), warning: finiteNumber.optional() }).strict().optional(),
   ph: z.object({ min: finiteNumber.optional(), max: finiteNumber.optional(), optimal: z.object({ min: finiteNumber.optional(), max: finiteNumber.optional() }).strict().optional() }).strict().optional(),

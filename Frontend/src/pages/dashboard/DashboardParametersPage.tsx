@@ -3,7 +3,9 @@ import React from 'react';
 import { useDashboardData } from '../../components/WaterQuality/useDashboardData';
 import type { WaterQualityStats } from '../../types/water';
 import { currentWaterSensorValue, isReadingLive, LIVE_READING_MS } from '../../components/WaterQuality/sensorDisplay';
+import { RiskAssessmentPanel } from '../../components/WaterQuality/RiskAssessmentPanel';
 import { BandChart, BandKey, ConnectionNotice, EmptyState, PageHead, Panel, StateMark, type MarkState } from '../../components/WaterQuality/Console';
+import { bandLabel, classifyBand, formatNormalBand, type BandKey as LimitKey } from '../../components/WaterQuality/thresholdBands';
 
 type ParameterKey = 'temperature' | 'ph' | 'orp' | 'turbidity' | 'ammonia';
 
@@ -12,37 +14,25 @@ type CardStats = { current: number|null; average: number|null; min: number|null;
 type CardConfig = {
   key: 'temperature' | 'ph' | 'orp' | 'turbidity';
   label: string;
-  guidance: string;
   unit: string;
   digits: number;
   domain: [number | 'auto', number | 'auto'];
-  band?: [number, number];
-  normal: (value: number) => boolean;
-  normalLabel: string;
-  warnLabel: string;
 };
 
 const parameterCards: CardConfig[] = [
-  { key: 'temperature', label: 'Temperature', guidance: 'Growth guidance 26–29 °C', unit: '°C', digits: 1, domain: [20, 36], band: [26, 29], normal: (value) => value >= 26 && value <= 29, normalLabel: 'Within guidance', warnLabel: 'Outside guidance' },
-  { key: 'ph', label: 'pH', guidance: 'Culture guidance 7.0–8.5', unit: '', digits: 2, domain: [4, 10], band: [7, 8.5], normal: (value) => value >= 7 && value <= 8.5, normalLabel: 'Within guidance', warnLabel: 'Outside guidance' },
-  { key: 'orp', label: 'ORP / redox', guidance: 'Reported; uncalibrated', unit: 'mV', digits: 1, domain: ['auto', 'auto'], normal: () => false, normalLabel: 'Not classified', warnLabel: 'Not classified' },
-  { key: 'turbidity', label: 'Turbidity', guidance: 'No validated NTU limit', unit: 'NTU', digits: 1, domain: ['auto', 'auto'], normal: () => false, normalLabel: 'Unclassified', warnLabel: 'Unclassified' },
+  { key: 'temperature', label: 'Temperature', unit: '°C', digits: 1, domain: [20, 36] },
+  { key: 'ph', label: 'pH', unit: '', digits: 2, domain: [4, 10] },
+  { key: 'orp', label: 'ORP / redox', unit: 'mV', digits: 1, domain: ['auto', 'auto'] },
+  { key: 'turbidity', label: 'Turbidity', unit: 'NTU', digits: 1, domain: ['auto', 'auto'] },
 ];
 
 const formatValue = (value: number|null, unit: string, digits: number) => value === null ? '—' : `${value.toFixed(digits)}${unit ? ` ${unit}` : ''}`;
 
 const DashboardParametersPage: React.FC = () => {
-  const { statistics, chartData, predictiveWarning, latestReading, error, isConnected } = useDashboardData();
+  const { statistics, chartData, riskAssessment, thresholdBands, latestReading, error, isConnected } = useDashboardData();
   // Readings, statistics and trends are shown only while the device is sending.
   const live = isReadingLive(latestReading);
   const liveTurbidityNtu = latestReading?.turbidityUnit === 'NTU' ? latestReading.turbidity : null;
-
-  const riskModelValidated = predictiveWarning?.modelStatus === 'READY'
-    && predictiveWarning.validationStatus === 'VALIDATED'
-    && predictiveWarning.analysisStatus === 'AVAILABLE'
-    && Number.isFinite(predictiveWarning.riskScore);
-  const currentRiskScore = riskModelValidated ? predictiveWarning?.riskScore ?? null : null;
-  const currentRiskLevel = riskModelValidated ? predictiveWarning?.warningCard?.riskLevel ?? 'UNAVAILABLE' : 'UNAVAILABLE';
 
   const fractionAvailable = latestReading?.speciation?.status === 'AVAILABLE';
   const fraction = fractionAvailable ? latestReading.speciation?.percent ?? null : null;
@@ -75,16 +65,30 @@ const DashboardParametersPage: React.FC = () => {
               ? liveTurbidityNtu ?? null
               : sensorValue };
             const health = latestReading?.sensorHealth?.[item.key];
-            const isNormal = stats.current!==null && item.normal(stats.current);
+            const bandKey = item.key === 'orp' ? null : item.key as LimitKey;
+            const level = bandKey && stats.current != null ? classifyBand(stats.current, thresholdBands[bandKey]) : null;
+            const levelLabel = level ? bandLabel(level) : null;
+            const guidance = item.key === 'orp'
+              ? 'Redox, after a saved calibration'
+              : `Normal ${formatNormalBand(thresholdBands[item.key as LimitKey], item.digits, item.unit)}`;
+            const chartBand: [number, number] | undefined = item.key === 'temperature' || item.key === 'ph'
+              ? [thresholdBands[item.key].normalMin ?? 0, thresholdBands[item.key].normalMax ?? 0]
+              : item.key === 'turbidity' && thresholdBands.turbidity.normalMax != null
+                ? [0, thresholdBands.turbidity.normalMax]
+                : undefined;
             const sensorStatus = statistics.stale ? 'STALE' : !latestReading ? 'UNAVAILABLE' : !health ? 'UNKNOWN' :
               !health.valid || health.measurementValid===false ? (health.health==='STALE' ? 'STALE' : 'UNAVAILABLE') :
               health.health==='UNSTABLE' || health.stability==='UNSTABLE' ? 'UNSTABLE' :
-              health.calibration!=='CALIBRATED' ? 'CALIBRATION REQUIRED' : isNormal ? item.normalLabel : item.warnLabel;
-            const statusLabel = item.key==='turbidity' && sensorStatus===item.normalLabel ? 'Unclassified: no species NTU limit' : sensorStatus;
-            const statusState: MarkState = ['STALE', 'UNSTABLE'].includes(statusLabel) || statusLabel.startsWith('Last NTU') ? 'warn'
+              health.calibration!=='CALIBRATED' ? 'CALIBRATION REQUIRED' :
+              health.stability!=='STABLE' ? 'SETTLING' : item.key === 'orp' ? 'Calibrated reading' : levelLabel || 'Unclassified';
+            const statusLabel = sensorStatus;
+            const statusState: MarkState = ['STALE', 'UNSTABLE'].includes(statusLabel) ? 'warn'
               : statusLabel === 'CALIBRATION REQUIRED' ? 'trust'
-                : ['UNAVAILABLE', 'UNKNOWN'].includes(statusLabel) || statusLabel.startsWith('Unclassified') || statusLabel === 'Not classified' ? 'off'
-                  : isNormal ? 'ok' : 'warn';
+              : statusLabel === 'SETTLING' ? 'info'
+                : ['UNAVAILABLE', 'UNKNOWN', 'Unclassified'].includes(statusLabel) ? 'off'
+                  : statusLabel === 'Alert' ? 'alarm'
+                    : statusLabel === 'Warning' ? 'warn'
+                      : 'ok';
             const statusText = /^[A-Z ]+$/.test(statusLabel) ? statusLabel.charAt(0) + statusLabel.slice(1).toLowerCase() : statusLabel;
             const chart = chartData.filter(point=>item.key!=='turbidity' || (point.turbidityUnit==='NTU' && point.turbidity != null)).slice(-20);
             const currentLabel = item.key==='orp' && stats.current!==null && health?.valid!==true
@@ -95,7 +99,7 @@ const DashboardParametersPage: React.FC = () => {
               <Panel
                 key={item.key}
                 title={item.label}
-                description={item.guidance}
+                description={guidance}
                 actions={<span className="num text-xl font-semibold">{currentLabel}</span>}
                 bodyClassName="px-4 pb-4 pt-3 sm:px-5"
               >
@@ -105,7 +109,7 @@ const DashboardParametersPage: React.FC = () => {
                     Avg {formatValue(stats.average, item.unit, item.digits)} · Min {formatValue(stats.min, item.unit, item.digits)} · Max {formatValue(stats.max, item.unit, item.digits)}
                   </p>
                 </div>
-                <BandChart label={item.label} data={chart} dataKey={item.key} domain={item.domain} band={item.band} unit={item.unit} digits={item.digits} height={170} />
+                <BandChart label={item.label} data={chart} dataKey={item.key} domain={item.domain} band={chartBand} unit={item.unit} digits={item.digits} height={170} />
               </Panel>
             );
           })}
@@ -124,16 +128,7 @@ const DashboardParametersPage: React.FC = () => {
             <BandChart label="NH₃ fraction" data={fractionChart} dataKey="nh3FractionPercent" domain={['auto', 'auto']} unit="%" digits={3} height={170} emptyText="Not calculated yet" />
           </Panel>
 
-          <Panel title="Risk model" bodyClassName="px-4 pb-4 pt-3 sm:px-5">
-            <StateMark state={currentRiskLevel === 'UNAVAILABLE' ? 'off' : currentRiskLevel === 'LOW' ? 'ok' : currentRiskLevel === 'MODERATE' ? 'warn' : 'alarm'} className="!text-base !font-semibold">
-              {currentRiskLevel === 'UNAVAILABLE' ? 'Unavailable' : currentRiskLevel}
-            </StateMark>
-            <p className="mt-2 text-sm leading-relaxed text-ink-2">
-              {currentRiskScore === null
-                ? 'No validated, commissioned risk model is available, so no score is shown.'
-                : `Validated model index: ${currentRiskScore.toFixed(2)} / 100.`}
-            </p>
-          </Panel>
+          <RiskAssessmentPanel assessment={riskAssessment} compact />
         </section>
       ) : !isConnected ? (
         <EmptyState title="No window statistics yet">Trends and averages arrive over the live connection and appear here once it reconnects.</EmptyState>

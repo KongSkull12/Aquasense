@@ -8,6 +8,7 @@ export class HardwareCommand extends Model {
   declare deviceId: string;
   declare action: HardwareAction;
   declare durationMs: number | null;
+  declare param: string | null;
   declare status: 'PENDING' | 'ACKED' | 'EXPIRED';
   declare result: string | null;
   declare expiresAt: Date;
@@ -26,6 +27,7 @@ export function initializeHardwareControlModels(): void {
     deviceId: { type: DataTypes.STRING(120), allowNull: false },
     action: { type: DataTypes.STRING(32), allowNull: false },
     durationMs: { type: DataTypes.INTEGER, allowNull: true },
+    param: { type: DataTypes.STRING(32), allowNull: true },
     status: { type: DataTypes.STRING(16), allowNull: false, defaultValue: 'PENDING' },
     result: { type: DataTypes.STRING(64), allowNull: true },
     expiresAt: { type: DataTypes.DATE, allowNull: false },

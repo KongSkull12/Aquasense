@@ -1,13 +1,14 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { apiClient, getApiErrorMessage } from '../../services/apiClient';
 import { DeviceSelect, KeyValues, MetaItem, PageHead, Panel, StateMark, type MarkState } from '../../components/WaterQuality/Console';
+import { describeDeviceResult } from '../../components/WaterQuality/deviceResults';
 
 interface Device { deviceId: string; name?: string; isActive: boolean }
 interface HardwareState {
   deviceId: string;
   online: boolean;
   receivedAt: string | null;
-  state: null | { aerator: boolean; automation: boolean; wifiConnected: boolean; mqttConnected: boolean };
+  state: null | { aerator: boolean; aeratorAuto?: boolean; automation: boolean; wifiConnected: boolean; mqttConnected: boolean };
 }
 interface ApiCommand { id: string; action: string; status: 'PENDING' | 'ACKED' | 'EXPIRED'; result?: string | null; expiresAt?: string }
 type TrackedCommand = Omit<ApiCommand, 'status'> & { status: ApiCommand['status'] | 'TIMEOUT' };
@@ -81,9 +82,9 @@ const DashboardAeratorPage: React.FC = () => {
       : trackedCommand.status === 'TIMEOUT' ? { text: 'Timed out: no device acknowledgement before the command expired', state: 'warn' }
         : trackedCommand.status === 'EXPIRED' ? { text: 'Expired: the device did not execute this command', state: 'warn' }
           : trackedCommand.result === 'accepted' ? { text: 'Device acknowledged: command accepted', state: 'ok' }
-            : { text: `Device rejected: ${trackedCommand.result || 'execution was not accepted'}`, state: 'alarm' };
+            : { text: `Device rejected: ${describeDeviceResult(trackedCommand.result)}`, state: 'alarm' };
   const output = fresh && state ? (state.aerator ? 'On' : 'Off') : 'Unknown';
-  const mode = fresh && state ? (state.automation ? 'Automatic' : 'Manual') : 'Unknown';
+  const mode = fresh && state ? (state.aeratorAuto ? 'Automatic' : 'Manual') : 'Unknown';
 
   return <div className="space-y-5">
     <PageHead
@@ -106,11 +107,11 @@ const DashboardAeratorPage: React.FC = () => {
             { label: 'Device network', value: fresh && state ? `${state.wifiConnected ? 'Wi-Fi' : 'Wi-Fi disconnected'} · ${state.mqttConnected ? 'MQTT' : 'MQTT disconnected'}` : 'Unknown' },
             { label: 'Last report', value: hardware?.receivedAt ? new Date(hardware.receivedAt).toLocaleString() : 'Not yet reported' },
           ]} />
-          <p className="text-[13px] leading-relaxed text-ink-3">Automatic mode applies the firmware temperature policy. It does not use dissolved oxygen, and ORP is never treated as a dissolved-oxygen reading.</p>
+          <p className="text-[13px] leading-relaxed text-ink-3">Automatic turns the aerator on at 29.5 °C and off at 28.5 °C. If the temperature reading drops out, the aerator stays on. It does not use dissolved oxygen, and ORP is never treated as a dissolved-oxygen reading.</p>
         </div>
       </Panel>
 
-      <Panel title="Aerator control" description="On or off switches the device to manual mode. Automatic hands control back to the firmware temperature policy.">
+      <Panel title="Aerator control" description="On or off switches the device to manual mode. Automatic follows temperature: on at 29.5 °C, off at 28.5 °C.">
         <div className="space-y-4">
           {/* Only the mode the device reports is shown as selected. */}
           <div className="grid gap-2 sm:grid-cols-3" role="group" aria-label="Aerator mode">

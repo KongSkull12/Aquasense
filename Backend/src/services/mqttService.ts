@@ -111,7 +111,9 @@ export class MQTTService {
       const options: mqtt.IClientOptions = {
         clientId: this.config.clientId,
         clean: true,
-        reconnectPeriod: 5000,
+        keepalive: 30,
+        connectTimeout: 15_000,
+        reconnectPeriod: 3000,
         username: appConfig.mqtt.publicTelemetryOnly ? undefined : this.config.username,
         password: appConfig.mqtt.publicTelemetryOnly ? undefined : this.config.password,
       };
@@ -308,7 +310,7 @@ export class MQTTService {
   }
 
   /** Publish one non-retained, signed actuator command. Publishing means queued, never confirmed. */
-  async dispatchHardwareCommand(input: { id: string; deviceId: string; source: 'hardware' | 'feeding'; action: string; durationMs?: number; expiresAt: Date }): Promise<boolean> {
+  async dispatchHardwareCommand(input: { id: string; deviceId: string; source: 'hardware' | 'feeding'; action: string; durationMs?: number; param?: string; expiresAt: Date }): Promise<boolean> {
     if (!appConfig.mqtt.actuatorCommandsEnabled) return false;
     const publisher = appConfig.mqtt.publicTelemetryOnly && !appConfig.mqtt.publicCommandsEnabled
       ? this.controlClient : this.client;
@@ -317,7 +319,8 @@ export class MQTTService {
     const key = appConfig.device.keys[input.deviceId];
     if (!key) return false;
     const unsigned = { v: 1 as const, deviceId: input.deviceId, id: input.id, source: input.source,
-      action: input.action, durationMs: input.durationMs ?? 0, expiresAt: input.expiresAt.getTime() };
+      action: input.action, durationMs: input.durationMs ?? 0, expiresAt: input.expiresAt.getTime(),
+      ...(input.param ? { param: input.param } : {}) };
     const payload = JSON.stringify({ ...unsigned, signature: signCanonical(commandCanonical(unsigned), key) });
     return new Promise((resolve) => publisher.publish(`${appConfig.mqtt.controlTopicNamespace}/${input.deviceId}/command`, payload,
       { qos: 1, retain: false }, error => {
@@ -336,7 +339,7 @@ export class MQTTService {
   }
 
   /** Fresh verified telemetry is the device liveness signal in public-dev mode. */
-  isTelemetryDeviceOnline(deviceId: string, maxAgeMs = 20_000): boolean {
+  isTelemetryDeviceOnline(deviceId: string, maxAgeMs = 45_000): boolean {
     if (!appConfig.mqtt.publicTelemetryOnly || deviceId !== appConfig.mqtt.telemetryDeviceId ||
         !this.lastPublicFrameVerifiedAt) return false;
     const ageMs = Date.now() - Date.parse(this.lastPublicFrameVerifiedAt);
@@ -359,7 +362,7 @@ export class MQTTService {
         if (command.expiresAt.getTime() <= now) continue;
         if (!(await deviceService.verifyOwnership(command.userId, command.deviceId))) continue;
         await this.dispatchHardwareCommand({ id: command.id, deviceId: command.deviceId, source: 'hardware', action: command.action,
-          durationMs: command.durationMs ?? undefined, expiresAt: command.expiresAt });
+          durationMs: command.durationMs ?? undefined, param: command.param ?? undefined, expiresAt: command.expiresAt });
       }
       for (const command of feeding) {
         const expiresAt = command.createdAt.getTime() + 120_000;

@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { SuccessResponse } from '../../../types';
+import { buildInfo } from '../../../config/buildInfo';
 
 /**
  * Health check controller for API v1
@@ -11,6 +12,7 @@ export const healthCheck = (_req: Request, res: Response): void => {
     message: 'API v1 is healthy',
     data: {
       version: 'v1',
+      release: buildInfo,
       timestamp: new Date().toISOString(),
       uptime: process.uptime(),
     },

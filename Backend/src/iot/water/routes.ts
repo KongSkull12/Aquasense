@@ -11,6 +11,8 @@ import {
   getAlerts,
   getThresholds,
   updateThresholds,
+  getThresholdBands,
+  saveThresholdBandsHandler,
   getDashboardData,
   getIngestStatus,
   getPredictiveWarning,
@@ -18,7 +20,7 @@ import {
   createTanMeasurement,
   getTanMeasurements,
 } from './controllers/waterController';
-import { validateBody, validateQuery, waterReadingSchema, thresholdPatchSchema, timeRangeQuerySchema, limitQuerySchema, tanMeasurementEntrySchema, tanMeasurementQuerySchema } from '../../middleware/validate';
+import { validateBody, validateQuery, waterReadingSchema, thresholdPatchSchema, thresholdBandsSchema, timeRangeQuerySchema, limitQuerySchema, tanMeasurementEntrySchema, tanMeasurementQuerySchema } from '../../middleware/validate';
 import { authenticateDevice } from '../../middleware/deviceAuthMiddleware';
 import { authenticateToken, requireRole } from '../../middleware/authMiddleware';
 
@@ -46,6 +48,8 @@ router.get('/alerts', authenticateToken, requireRole(['admin', 'farmer', 'guest'
 // Thresholds endpoints
 router.get('/thresholds', authenticateToken, requireRole(['admin', 'farmer', 'guest']), getThresholds); // Get thresholds
 router.put('/thresholds', authenticateToken, requireRole(['admin', 'farmer']), validateBody(thresholdPatchSchema), updateThresholds); // Update thresholds
+router.get('/threshold-bands', authenticateToken, requireRole(['admin', 'farmer', 'guest']), getThresholdBands);
+router.put('/threshold-bands', authenticateToken, requireRole(['admin', 'farmer']), validateBody(thresholdBandsSchema), saveThresholdBandsHandler);
 
 // Dashboard endpoint (combined data)
 router.get('/dashboard', authenticateToken, requireRole(['admin', 'farmer', 'guest']), getDashboardData); // Get all dashboard data

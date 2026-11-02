@@ -1,6 +1,9 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { apiClient, getApiErrorMessage } from '../../services/apiClient';
 import { DeviceSelect, EmptyState, KeyValues, MetaItem, Notice, PageHead, Panel, StateMark, type MarkState } from '../../components/WaterQuality/Console';
+import { useDashboardData } from '../../components/WaterQuality/useDashboardData';
+import { isReadingLive } from '../../components/WaterQuality/sensorDisplay';
+import { describeDeviceResult, isAcceptedResult } from '../../components/WaterQuality/deviceResults';
 
 interface Device { deviceId: string; name?: string; isActive: boolean }
 interface HardwareState {
@@ -24,6 +27,7 @@ type TrackedCommand = Omit<ApiCommand, 'status'> & { status: ApiCommand['status'
 const humanize = (value: string) => value.charAt(0) + value.slice(1).toLowerCase().replace(/_/g, ' ');
 
 const WaterChangePage: React.FC = () => {
+  const { latestReading } = useDashboardData();
   const [devices, setDevices] = useState<Device[]>([]);
   const [deviceId, setDeviceId] = useState('');
   const [hardware, setHardware] = useState<HardwareState | null>(null);
@@ -102,7 +106,14 @@ const WaterChangePage: React.FC = () => {
       : trackedCommand.status === 'TIMEOUT' ? { text: 'Timed out: no device acknowledgement before the command expired', state: 'warn' }
         : trackedCommand.status === 'EXPIRED' ? { text: 'Expired: the device did not execute this command', state: 'warn' }
           : trackedCommand.result === 'accepted' ? { text: 'Device acknowledged: command accepted', state: 'ok' }
-            : { text: `Device rejected: ${trackedCommand.result || 'execution was not accepted'}`, state: 'alarm' };
+            : { text: `Device rejected: ${describeDeviceResult(trackedCommand.result)}`, state: 'alarm' };
+
+  // Live ultrasonic level from the latest sensor frame (blank when the device is silent).
+  const live = isReadingLive(latestReading);
+  const tank = latestReading?.tankLevel ?? latestReading?.sensorHealth?.ultrasonic ?? null;
+  const levelLive = live && !!tank?.valid && tank.levelPercent != null;
+  const levelState: MarkState = levelLive ? 'ok' : live && tank ? 'warn' : 'off';
+  const levelStatus = levelLive ? 'Live' : live && tank ? (tank.reason || 'No valid echo') : 'No live data';
 
   return <div className="space-y-5">
     <PageHead
@@ -129,12 +140,12 @@ const WaterChangePage: React.FC = () => {
         </div>
       </Panel>
 
-      <Panel title="Manual water control" description="Pump controls stay fail-closed until timing and relay settings are commissioned.">
+      <Panel title="Manual water control" description="Drain and fill run for the duration below. Run exchange drains for that long, then fills for the same time.">
         <div className="space-y-4">
           <div>
             <label className="field-label" htmlFor="pump-duration">Duration in seconds</label>
             <input id="pump-duration" type="number" inputMode="numeric" min="1" max="60" step="1" value={durationSeconds} onChange={(event) => setDurationSeconds(event.target.value)} placeholder="1–60" className="field num max-w-[160px]" />
-            <p className="field-hint">Required by the API. Drain and fill are capped at 60 s and the commissioned pump target. Exchange uses its own commissioned drain and fill targets.</p>
+            <p className="field-hint">Each pump run is capped at 60 s. Run exchange uses this duration for the drain and again for the fill. Stop pumps ends the sequence. A measured target in the firmware can only shorten a phase.</p>
           </div>
           <div className="grid grid-cols-2 gap-2">
             <button type="button" disabled={!deviceId || pending || !fresh} title={!fresh ? offlineReason : undefined} onClick={() => void command('DRAIN')} className="btn-secondary">Drain</button>
@@ -155,16 +166,27 @@ const WaterChangePage: React.FC = () => {
       </Panel>
     </div>
 
-    <Panel title="Water level" id="water-level-heading" actions={<StateMark state="off">Unavailable</StateMark>} description="Ultrasonic level sensing is not installed or commissioned for this device.">
+    <Panel
+      title="Water level"
+      id="water-level-heading"
+      actions={<StateMark state={levelState}>{levelStatus}</StateMark>}
+      description="Ultrasonic distance from the sensor to the water surface, as reported by the device."
+    >
       <div className="grid gap-px overflow-hidden rounded-md border border-line-soft bg-line-soft sm:grid-cols-3">
-        {[['Measured level', 'Unavailable'], ['Estimated volume', 'Unavailable'], ['Level-based pump automation', 'Disabled']].map(([label, value]) => (
+        {[
+          ['Tank level', levelLive ? `${tank!.levelPercent!.toFixed(1)} %` : '—'],
+          ['Distance to water', levelLive && tank?.distanceCm != null ? `${tank.distanceCm.toFixed(1)} cm` : '—'],
+          ['Level-based pump automation', 'Not available'],
+        ].map(([label, value]) => (
           <div key={label} className="bg-white px-4 py-3">
             <p className="text-[13px] text-ink-3">{label}</p>
-            <p className="mt-0.5 text-sm font-semibold">{value}</p>
+            <p className="num mt-0.5 text-sm font-semibold">{value}</p>
           </div>
         ))}
       </div>
-      <p className="mt-3 text-[13px] leading-relaxed text-ink-3">No level percentage, pond capacity, or exchange volume is estimated. Sensor model, wiring, and tank calibration must be confirmed before these values or level-based automation can be enabled.</p>
+      <p className="mt-3 text-[13px] leading-relaxed text-ink-3">
+        The level percentage comes from the full and empty distances set in the firmware (TANK_FULL_DISTANCE_CM and TANK_EMPTY_DISTANCE_CM); adjust them to your tank. No volume is estimated, and pumps are never started from the level reading.
+      </p>
     </Panel>
 
     <Panel title="Recent pump commands" id="pump-history-heading" description="Attempts and device acknowledgements. An acknowledgement does not confirm water flowed or an exchange finished." bodyClassName="p-0">
@@ -187,7 +209,7 @@ const WaterChangePage: React.FC = () => {
                   <td className="px-3 py-2.5 font-medium">{humanize(item.action)}</td>
                   <td className="px-3 py-2.5 text-right">{item.durationMs == null ? '—' : `${(item.durationMs / 1000).toFixed(1)} s`}</td>
                   <td className="px-3 py-2.5">{humanize(item.status)}</td>
-                  <td className="px-5 py-2.5 text-ink-2">{item.result || 'No result reported'}</td>
+                  <td className={`px-5 py-2.5 ${item.result && !isAcceptedResult(item.result) ? 'text-alarm' : 'text-ink-2'}`}>{describeDeviceResult(item.result)}</td>
                 </tr>
               ))}
             </tbody>

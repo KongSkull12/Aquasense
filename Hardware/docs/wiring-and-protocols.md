@@ -14,7 +14,7 @@ for a 20x4 LCD at address 0x27, as in the attached code. The earlier wiring
 diagram labels a 16x2 LCD; verify the physical panel before deployment. Both use
 the same I2C wiring, but only four-row hardware can show the full sensor page.
 The user-confirmed installed wiring sets the integrated servo to GPIO18 and
-passive buzzer to GPIO19. The legacy standalone feeder uses GPIO13.
+active buzzer to GPIO19, plus on the pin and minus on GND. The legacy standalone feeder uses GPIO13.
 
 The user reports relay K3 refill on GPIO26, K4 drain on GPIO27, and K2 aerator
 on GPIO25; GPIO33 is unused. This is a reported wiring mapping, not an independent

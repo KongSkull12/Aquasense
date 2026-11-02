@@ -66,8 +66,8 @@ class ApiClient {
     return response.data as SuccessResponse<T>;
   }
 
-  async post<T = unknown>(url: string, data?: unknown): Promise<SuccessResponse<T>> {
-    const response = await this.client.post<ApiResponse<T>>(url, data);
+  async post<T = unknown>(url: string, data?: unknown, timeout?: number): Promise<SuccessResponse<T>> {
+    const response = await this.client.post<ApiResponse<T>>(url, data, timeout ? { timeout } : undefined);
     return response.data as SuccessResponse<T>;
   }
 

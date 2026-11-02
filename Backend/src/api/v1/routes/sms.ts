@@ -3,9 +3,9 @@
  */
 import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
-import { sendTestSms } from '../controllers/smsController';
+import { sendTestSms, getSmsRecipients, saveSmsRecipientsHandler } from '../controllers/smsController';
 import { authenticateToken, requireRole } from '../../../middleware/authMiddleware';
-import { validateBody, smsTestSchema } from '../../../middleware/validate';
+import { validateBody, smsTestSchema, smsRecipientsSchema } from '../../../middleware/validate';
 
 const router = Router();
 
@@ -21,6 +21,8 @@ const smsTestLimiter = rateLimit({
   },
 });
 
+router.get('/sms/recipients', authenticateToken, requireRole(['admin', 'farmer']), getSmsRecipients);
+router.put('/sms/recipients', authenticateToken, requireRole(['admin', 'farmer']), validateBody(smsRecipientsSchema), saveSmsRecipientsHandler);
 router.post('/sms/test', authenticateToken, requireRole(['admin', 'farmer']), smsTestLimiter, validateBody(smsTestSchema), sendTestSms);
 
 export default router;

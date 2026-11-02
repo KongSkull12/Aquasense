@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { useDashboardData } from '../../components/WaterQuality/useDashboardData';
 import { apiClient, getApiErrorMessage } from '../../services/apiClient';
 import { DeviceSelect, EmptyState, KeyValues, MetaItem, Notice, PageHead, Panel, StateMark } from '../../components/WaterQuality/Console';
+import { describeDeviceResult } from '../../components/WaterQuality/deviceResults';
 
 interface Device { deviceId: string; name?: string; isActive: boolean }
 interface FeedingCommand { id: string; action: string; status: 'PENDING' | 'ACKED'; metadata?: Record<string, unknown> | null; executedAt?: string | null; createdAt?: string }
@@ -115,7 +116,7 @@ const DashboardFeedingPage: React.FC = () => {
             <KeyValues rows={[
               { label: 'Device', value: <StateMark state={deviceOnline ? 'ok' : 'off'}>{deviceOnline ? 'Online' : 'Offline or stale'}</StateMark> },
               { label: 'Feeder state', value: hardwareState?.state ? (hardwareState.state.feederBusy ? 'Feeding' : 'Idle') : 'Unknown' },
-              { label: 'Latest command', value: feedingState?.lastCommand ? `${feedingState.lastCommand.action}: ${feedingState.lastCommand.status.toLowerCase()}${feedingState.lastCommand.metadata?.deviceResult ? ` · ${String(feedingState.lastCommand.metadata.deviceResult)}` : ''}${manualBusy ? ' · pending' : ''}` : 'None reported' },
+              { label: 'Latest command', value: feedingState?.lastCommand ? `${feedingState.lastCommand.action}: ${feedingState.lastCommand.status.toLowerCase()}${feedingState.lastCommand.metadata?.deviceResult ? ` · ${describeDeviceResult(String(feedingState.lastCommand.metadata.deviceResult))}` : ''}${manualBusy ? ' · pending' : ''}` : 'None reported' },
             ]} />
             <div className="grid grid-cols-3 gap-2">
               <button type="button" disabled={manualBusy || !deviceOnline} title={disabledReason} onClick={() => void runManual('TRIGGER')} className="btn-primary">Feed now</button>

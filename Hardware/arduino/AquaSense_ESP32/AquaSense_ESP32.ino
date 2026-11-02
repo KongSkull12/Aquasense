@@ -16,13 +16,16 @@
   * Feeding schedules are pulled over HTTP from the backend and kept in flash,
     so scheduled feeds continue during network outages.
   * 20x4 I2C LCD with three rotating pages.
+  * Power-up self-test: the feeder opens and closes first, then each relay
+    clicks, with beeps between steps ("selftest off" disables it). The servo
+    still sweeps on the first boot even if a fault reset skips the relays.
 
   Setup: copy Secrets.example.h to Secrets.h and fill it in. Read the
   "COMMISSIONING" section below before connecting pump power.
 
   Board: ESP32 Dev Module. Libraries (Arduino Library Manager):
     PubSubClient 2.8, ArduinoJson 6.21.x, OneWire 2.3.8,
-    DallasTemperature 3.11.0, LiquidCrystal_I2C 1.1.4
+    DallasTemperature 3.11.0, LiquidCrystal_I2C 1.1.4, ESP32Servo 3.0.x
 */
 
 #include <Arduino.h>
@@ -35,11 +38,15 @@
 #include <OneWire.h>
 #include <DallasTemperature.h>
 #include <LiquidCrystal_I2C.h>
+#include <ESP32Servo.h>
 #include <mbedtls/md.h>
 #include <sys/time.h>
 #include <time.h>
 #if __has_include(<esp_arduino_version.h>)
 #include <esp_arduino_version.h>
+#endif
+#if __has_include(<esp32-hal-periman.h>)
+#include <esp32-hal-periman.h>
 #endif
 #include "Secrets.h"
 
@@ -72,6 +79,8 @@ const long  LOCAL_UTC_OFFSET_S = 8L * 3600L;               // Asia/Manila, used 
 #define RELAY_DRAIN_PIN   27
 #define SERVO_PIN         18
 #define BUZZER_PIN        19
+// Active buzzer: plus to this pin, minus to GND. It sounds while the pin is
+// HIGH and is silent while the pin is LOW.
 
 #define LCD_ADDRESS 0x27
 #define LCD_COLS    20
@@ -81,24 +90,29 @@ const long  LOCAL_UTC_OFFSET_S = 8L * 3600L;               // Asia/Manila, used 
 // =====================================================
 // COMMISSIONING (read before connecting pump power)
 // =====================================================
-// Relays stay OFF and every relay command is rejected until you have checked,
-// with pumps and aerator unplugged from mains, that each relay clicks for the
-// right channel and that the module is OFF while the ESP32 is in reset.
-const bool RELAYS_COMMISSIONED = false;
-const bool RELAY_ACTIVE_LOW    = true;    // most 5 V relay boards switch on a LOW input
+// Relays stay OFF and every dashboard relay command is rejected until you have
+// checked, with pumps and aerator unplugged from mains, that each relay clicks
+// for the right channel and that the module is OFF while the ESP32 is in reset.
+// Both settings below are only the first-boot defaults: change them from the
+// Serial Monitor ("relay mode low|high", "relay enable") and they are saved.
+const bool DEFAULT_RELAYS_ENABLED   = false;
+const bool DEFAULT_RELAY_ACTIVE_LOW = true;    // most 5 V relay boards switch on a LOW input
 
 // Manual FILL / DRAIN: the dashboard sends a duration (1-60 s); this caps it.
 const uint32_t PUMP_HARD_MAX_MS = 60000;
 const uint32_t PUMP_COOLDOWN_MS = 10000;
 
-// WATER_EXCHANGE uses these measured runtimes (see Hardware/docs/backend-control.md,
-// "Fill and drain flow calibration"). 0 = exchange rejected until measured.
+// Optional measured exchange caps. 0 means Run exchange uses the dashboard
+// duration (1–60 s) for the drain and again for the fill. A non-zero value
+// can only shorten that phase. Automatic exchange still requires both measured.
 const uint32_t EXCHANGE_DRAIN_MS    = 0;
 const uint32_t EXCHANGE_SETTLING_MS = 0;
 const uint32_t EXCHANGE_FILL_MS     = 0;
 
-// AERATOR_AUTO: temperature hysteresis. Set true once the thresholds are agreed.
-const bool  AERATOR_POLICY_CONFIGURED = false;
+// AERATOR_AUTO: temperature hysteresis. On at or above AERATOR_ON_ABOVE_C, off at
+// or below AERATOR_OFF_BELOW_C. A missing temperature reading turns the aerator
+// on. Turn on / Turn off leave automatic mode.
+const bool  AERATOR_POLICY_CONFIGURED = true;
 const float AERATOR_ON_ABOVE_C  = 29.5;
 const float AERATOR_OFF_BELOW_C = 28.5;
 
@@ -120,16 +134,27 @@ const uint32_t FEED_ON_HOLD_MS  = 10000;   // "ON" closes again after this
 
 
 // =====================================================
-// SENSOR CALIBRATION (your values; verify against reference solutions)
+// SENSOR CALIBRATION
 // =====================================================
+// Each sensor uses a straight line:  value = slope * input + offset
+//   pH  and ORP: input = probe voltage (V)
+//   turbidity:   input = raw ADC count (0-4095)
+// These are the starting defaults. Calibrate from the Serial Monitor (type
+// "help"); the results are saved in flash and survive reboots and re-flashing.
 
-float PH_SLOPE   = -5.70;
-float PH_OFFSET  = 21.34;
-float ORP_SLOPE  = 1333.33;
-float ORP_OFFSET = -2000.0;
-float TURB_CLEAR_ADC = 3000.0;
-float TURB_DIRTY_ADC = 500.0;
-float TURB_DIRTY_NTU = 1000.0;
+struct Calibration {
+  float phSlope, phOffset;       // pH per volt
+  float orpSlope, orpOffset;     // mV per volt
+  float turbSlope, turbOffset;   // NTU per ADC count
+};
+const Calibration DEFAULT_CAL = {
+  -5.70f, 21.34f,
+  1333.33f, -2000.0f,
+  -0.4f, 1200.0f,                // = clear water at ADC 3000 -> 0 NTU, ADC 500 -> 1000 NTU
+};
+Calibration cal = DEFAULT_CAL;
+const float TURB_MAX_NTU = 3000.0;
+
 const float TANK_FULL_DISTANCE_CM  = 10.0;
 const float TANK_EMPTY_DISTANCE_CM = 100.0;
 
@@ -152,9 +177,9 @@ const uint32_t FRAME_INTERVAL_MS       = 5000;   // backend stores at most one f
 const uint32_t LCD_INTERVAL_MS         = 500;
 const uint32_t LCD_PAGE_MS             = 4000;
 const uint32_t WIFI_RETRY_MS           = 5000;
-const uint32_t MQTT_RETRY_MS           = 5000;
+const uint32_t MQTT_RETRY_MS           = 2000;
 const uint32_t SCHEDULE_SYNC_MS        = 60000;
-const uint32_t STATE_HEARTBEAT_MS      = 30000;
+const uint32_t STATE_HEARTBEAT_MS      = 10000;   // shorter than the server's online window
 const uint64_t COMMAND_MAX_TTL_MS      = 130000; // backend TTL is 120 s
 const time_t   MIN_VALID_EPOCH         = 1700000000;
 
@@ -193,6 +218,17 @@ struct Sensor {
 Sensor phS, turbS, orpS, tempS, ultraS;
 float tankLevelPercent = NAN;
 bool tempConversionPending = false;
+
+// Types used in function signatures must be defined before the first function,
+// because the Arduino builder inserts function prototypes there.
+enum FeederStep { FEED_IDLE, FEED_PRE, FEED_OPEN, FEED_POST, FEED_HOLD_OPEN };
+
+struct PendingCommand {
+  bool used = false;
+  char id[37]; char source[10]; char action[24];
+  uint32_t durationMs;
+  char param[25];   // calibration commands only, e.g. "ph:6.86"
+};
 
 
 // =====================================================
@@ -260,44 +296,76 @@ bool signatureMatches(const char* message, const char* signature) {
 // ACTUATOR OUTPUTS (servo, buzzer, relays)
 // =====================================================
 
-#if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
-void pwmSetup() { ledcAttach(SERVO_PIN, 50, 16); ledcAttach(BUZZER_PIN, 2000, 10); ledcWriteTone(BUZZER_PIN, 0); }
-void servoDuty(uint32_t duty) { ledcWrite(SERVO_PIN, duty); }
-void buzzerTone(uint32_t hz) { ledcWriteTone(BUZZER_PIN, hz); }
-#else
-const uint8_t SERVO_CH = 4, BUZZER_CH = 6;  // separate LEDC timers
-void pwmSetup() {
-  ledcSetup(SERVO_CH, 50, 16); ledcAttachPin(SERVO_PIN, SERVO_CH);
-  ledcSetup(BUZZER_CH, 2000, 10); ledcAttachPin(BUZZER_PIN, BUZZER_CH); ledcWriteTone(BUZZER_CH, 0);
-}
-void servoDuty(uint32_t duty) { ledcWrite(SERVO_CH, duty); }
-void buzzerTone(uint32_t hz) { ledcWriteTone(BUZZER_CH, hz); }
-#endif
+// The feeder servo is driven by ESP32Servo, the same driver as the original
+// feeder firmware: hand-rolled LEDC code compiled and reported success on
+// this board but the horn never moved, while ESP32Servo moves it. attach(pin)
+// uses 544-2400 us, the range SERVO_CLOSED_DEG / SERVO_OPEN_DEG were tuned
+// against. The servo stays attached so the gate is held closed.
+Servo feederServo;
+const uint32_t SERVO_HOLD_MS = 1500;   // time for the horn to reach a new angle
+bool buzzerOn = false;
+bool wifiDiagOff = false;   // serial "wifi off" diagnostic
 
-void servoAngle(int degrees) {
-  degrees = constrain(degrees, 0, 180);
-  const uint32_t pulseUs = 500 + uint32_t(degrees) * 2000 / 180;   // 0.5-2.5 ms
-  servoDuty(pulseUs * 65535UL / 20000UL);
+void buzzerSet(bool on) {
+  if (buzzerOn == on) return;
+  buzzerOn = on;
+  pinMode(BUZZER_PIN, OUTPUT);
+  digitalWrite(BUZZER_PIN, on ? HIGH : LOW);
 }
 
-const int RELAY_ON = RELAY_ACTIVE_LOW ? LOW : HIGH;
-const int RELAY_OFF = RELAY_ACTIVE_LOW ? HIGH : LOW;
+void buzzerQuiet() { buzzerSet(false); }
+
+bool attachServo() {
+  if (feederServo.attached()) return true;
+  feederServo.setPeriodHertz(50);
+  feederServo.attach(SERVO_PIN);   // returns the channel, which can be 0 on success
+  if (!feederServo.attached()) { Serial.println("[SERVO] attach failed on GPIO18"); return false; }
+  Serial.printf("[SERVO] feeder servo on GPIO%d (ESP32Servo, 50 Hz)\n", SERVO_PIN);
+  return true;
+}
+
+bool servoAngle(int degrees) {
+  if (!attachServo()) return false;
+  feederServo.write(constrain(degrees, 0, 180));
+  return true;
+}
+
+// Saved in flash (see loadRelaySettings); defaults used on first boot.
+bool relaysEnabled  = DEFAULT_RELAYS_ENABLED;
+bool relayActiveLow = DEFAULT_RELAY_ACTIVE_LOW;
+bool selfTestEnabled = true;   // power-up self-test, see BOOT SELF-TEST
+
+int relayLevel(bool on) { return (on == relayActiveLow) ? LOW : HIGH; }
 
 bool aeratorOn = false, fillOn = false, drainOn = false;
 
+// Drives the pin regardless of the enable gate; used by setRelay and bench tests.
+void writeRelay(int pin, bool on) { digitalWrite(pin, relayLevel(on)); }
+
 void setRelay(int pin, bool on, bool& state) {
-  if (!RELAYS_COMMISSIONED) on = false;
-  digitalWrite(pin, on ? RELAY_ON : RELAY_OFF);
+  if (!relaysEnabled) on = false;
+  writeRelay(pin, on);
   state = on;
+}
+
+void allRelaysOff() {
+  setRelay(RELAY_AERATOR_PIN, false, aeratorOn);
+  setRelay(RELAY_FILL_PIN, false, fillOn);
+  setRelay(RELAY_DRAIN_PIN, false, drainOn);
 }
 
 void relaysInit() {
   // Drive the OFF level before switching to output so no relay blips at boot.
   for (int pin : {RELAY_AERATOR_PIN, RELAY_FILL_PIN, RELAY_DRAIN_PIN}) {
-    digitalWrite(pin, RELAY_OFF);
+    digitalWrite(pin, relayLevel(false));
     pinMode(pin, OUTPUT);
-    digitalWrite(pin, RELAY_OFF);
+    digitalWrite(pin, relayLevel(false));
   }
+}
+
+void loadRelaySettings() {
+  relaysEnabled = prefs.getBool("relayEn", DEFAULT_RELAYS_ENABLED);
+  relayActiveLow = prefs.getBool("relayLow", DEFAULT_RELAY_ACTIVE_LOW);
 }
 
 
@@ -305,18 +373,24 @@ void relaysInit() {
 // FEEDER
 // =====================================================
 
-enum FeederStep { FEED_IDLE, FEED_PRE, FEED_OPEN, FEED_POST, FEED_HOLD_OPEN };
 FeederStep feederStep = FEED_IDLE;
 uint32_t feederStepAt = 0;
 char feedSuppressedMinute[20] = "";   // OFF / ALL_OFF block a scheduled feed in this minute
 
 bool feederBusy() { return feederStep != FEED_IDLE; }
 
-void feederStart(FeederStep step, int angle) { feederStep = step; feederStepAt = millis(); servoAngle(angle); }
+bool feederStart(FeederStep step, int angle) {
+  const FeederStep previous = feederStep;
+  feederStep = step;
+  feederStepAt = millis();
+  if (servoAngle(angle)) return true;
+  feederStep = previous;
+  return false;
+}
 
-void feederTrigger() { if (!feederBusy()) feederStart(FEED_PRE, SERVO_CLOSED_DEG); }
-void feederHoldOpen() { feederStart(FEED_HOLD_OPEN, SERVO_OPEN_DEG); }
-void feederStop() { feederStep = FEED_IDLE; servoAngle(SERVO_CLOSED_DEG); }
+bool feederTrigger() { return !feederBusy() && feederStart(FEED_PRE, SERVO_CLOSED_DEG); }
+bool feederHoldOpen() { return feederStart(FEED_HOLD_OPEN, SERVO_OPEN_DEG); }
+bool feederStop() { feederStep = FEED_IDLE; return servoAngle(SERVO_CLOSED_DEG); }
 
 void updateFeeder() {
   const uint32_t elapsed = millis() - feederStepAt;
@@ -377,7 +451,21 @@ void waterStop() {
 void startDrain(uint32_t ms) { setRelay(RELAY_FILL_PIN, false, fillOn); setRelay(RELAY_DRAIN_PIN, true, drainOn); enterPhase("DRAINING", ms); }
 void startFill(uint32_t ms)  { setRelay(RELAY_DRAIN_PIN, false, drainOn); setRelay(RELAY_FILL_PIN, true, fillOn); enterPhase("REFILLING", ms); }
 
-void startExchange() { exchangeRunning = true; startDrain(EXCHANGE_DRAIN_MS); }
+uint32_t exchangeFillMs = 0;
+
+// A measured target shortens the request. It never extends it, and never past the hard cap.
+uint32_t cappedRunMs(uint32_t requested, uint32_t commissioned) {
+  if (requested < 1 || requested > PUMP_HARD_MAX_MS) return 0;
+  if (commissioned > PUMP_HARD_MAX_MS) return 0;
+  if (commissioned > 0) return min(requested, commissioned);
+  return requested;
+}
+
+void startExchange(uint32_t drainMs, uint32_t fillMs) {
+  exchangeFillMs = fillMs;
+  exchangeRunning = true;
+  startDrain(drainMs);
+}
 
 void updateWater() {
   const uint32_t elapsed = millis() - phaseStartedAt;
@@ -390,7 +478,8 @@ void updateWater() {
     if (exchangeRunning) enterPhase("SETTLING_AFTER_DRAIN", max<uint32_t>(EXCHANGE_SETTLING_MS, 1));
     else enterPhase("COOLDOWN", PUMP_COOLDOWN_MS);
   } else if (!strcmp(waterPhase, "SETTLING_AFTER_DRAIN")) {
-    startFill(EXCHANGE_FILL_MS);
+    if (exchangeFillMs < 1 || exchangeFillMs > PUMP_HARD_MAX_MS) { waterFaultLatch("fill_timeout"); return; }
+    startFill(exchangeFillMs);
   } else if (!strcmp(waterPhase, "REFILLING")) {
     setRelay(RELAY_FILL_PIN, false, fillOn);
     enterPhase("COOLDOWN", PUMP_COOLDOWN_MS);
@@ -410,7 +499,7 @@ void evaluateWaterAutomation() {
   if (outOfRangeSamples >= 10 && gapOk) {
     outOfRangeSamples = 0; lastAutoExchangeAt = millis(); autoExchangeEverRan = true;
     Serial.println("[WATER] automatic exchange started");
-    startExchange();
+    startExchange(EXCHANGE_DRAIN_MS, EXCHANGE_FILL_MS);
   }
 }
 
@@ -433,13 +522,11 @@ void updateAerator() {
 bool buzzerSounding() { return buzzerManual || !strcmp(waterPhase, "FAULT"); }
 
 void updateBuzzer() {
-  static bool toneOn = false;
+  if (!buzzerSounding()) { buzzerQuiet(); return; }
+  // The buzzer has its own tone. Fault: fast beeps. Manual: slow beeps.
   const bool fault = !strcmp(waterPhase, "FAULT");
-  if (!buzzerSounding()) { if (toneOn) { buzzerTone(0); toneOn = false; } return; }
-  // Fault: fast alarm. Manual: slow beep.
   const uint32_t period = fault ? 400 : 1000, onFor = fault ? 200 : 150;
-  const bool shouldSound = (millis() % period) < onFor;
-  if (shouldSound != toneOn) { buzzerTone(shouldSound ? (fault ? 2800 : 2000) : 0); toneOn = shouldSound; }
+  buzzerSet((millis() % period) < onFor);
 }
 
 
@@ -484,18 +571,17 @@ void readAnalogSensors() {
   // pH first: an unplugged pH input rails high and can bleed into the next pin.
   phS.diag = sampleADC(PH_PIN); phS.sampledAtMs = millis();
   trackConnection(phS, adcLooksConnected(phS.diag, PH_CONNECT_MIN, PH_CONNECT_MAX), "pH");
-  if (phS.connected) phS.value = constrain(phS.diag.voltage * PH_SLOPE + PH_OFFSET, 0.0f, 14.0f);
+  if (phS.connected) phS.value = constrain(phS.diag.voltage * cal.phSlope + cal.phOffset, 0.0f, 14.0f);
   delay(2);
 
   turbS.diag = sampleADC(TURB_PIN); turbS.sampledAtMs = millis();
   trackConnection(turbS, adcLooksConnected(turbS.diag, TURB_CONNECT_MIN, TURB_CONNECT_MAX), "TURB");
-  if (turbS.connected)
-    turbS.value = constrain((TURB_CLEAR_ADC - turbS.diag.rawAdc) / (TURB_CLEAR_ADC - TURB_DIRTY_ADC) * TURB_DIRTY_NTU, 0.0f, TURB_DIRTY_NTU);
+  if (turbS.connected) turbS.value = constrain(turbS.diag.rawAdc * cal.turbSlope + cal.turbOffset, 0.0f, TURB_MAX_NTU);
   delay(2);
 
   orpS.diag = sampleADC(ORP_PIN); orpS.sampledAtMs = millis();
   trackConnection(orpS, adcLooksConnected(orpS.diag, ORP_CONNECT_MIN, ORP_CONNECT_MAX), "ORP");
-  if (orpS.connected) orpS.value = orpS.diag.voltage * ORP_SLOPE + ORP_OFFSET;
+  if (orpS.connected) orpS.value = orpS.diag.voltage * cal.orpSlope + cal.orpOffset;
 }
 
 // Non-blocking DS18B20: request now, read on the next cycle (conversion ~750 ms).
@@ -621,12 +707,13 @@ void fillState(JsonObject s) {
   s["fillPump"] = fillOn;
   s["drainPump"] = drainOn;
   s["aerator"] = aeratorOn;
+  s["aeratorAuto"] = aeratorAuto;
   s["feederBusy"] = feederBusy();
   s["buzzer"] = buzzerSounding();
   s["automation"] = waterAutomation;
   s["waterPhase"] = waterPhase;
   s["fault"] = waterFault;
-  s["relaysReady"] = RELAYS_COMMISSIONED;
+  s["relaysReady"] = relaysEnabled;
   s["timeValid"] = timeValid();
   s["wifiConnected"] = WiFi.status() == WL_CONNECTED;
   s["mqttConnected"] = mqtt.connected();
@@ -638,16 +725,11 @@ void fillState(JsonObject s) {
 // COMMANDS: verify -> dedupe -> execute -> signed ack
 // =====================================================
 
-struct PendingCommand {
-  bool used = false;
-  char id[37]; char source[10]; char action[24];
-  uint32_t durationMs;
-};
 PendingCommand commandQueue[4];
 
 // Recently handled command IDs and their results, persisted so a reboot cannot
 // replay a command the backend re-delivers before it sees the acknowledgement.
-struct SeenCommand { char id[37]; char result[32]; };
+struct SeenCommand { char id[37]; char result[64]; };
 SeenCommand seen[16];
 uint8_t seenNext = 0;
 
@@ -695,13 +777,16 @@ void onMqttMessage(char* topic, uint8_t* payload, unsigned int length) {
   const uint32_t durationMs = doc["durationMs"] | 0u;
   const uint64_t expiresAt = doc["expiresAt"] | uint64_t(0);
   const char* signature = doc["signature"] | "";
+  const char* param = doc["param"] | "";   // optional; signed when present
 
   if (v != 1 || strcmp(deviceId, DEVICE_ID) || !validUuid(id) ||
-      (strcmp(source, "hardware") && strcmp(source, "feeding")) || !action[0] || strlen(action) >= 24) return;
+      (strcmp(source, "hardware") && strcmp(source, "feeding")) || !action[0] || strlen(action) >= 24 ||
+      strlen(param) > 24) return;
 
   char canonical[256];
-  snprintf(canonical, sizeof(canonical), "v1|%s|%s|%s|%s|%lu|%llu", deviceId, id, source, action,
-           (unsigned long)durationMs, (unsigned long long)expiresAt);
+  int len = snprintf(canonical, sizeof(canonical), "v1|%s|%s|%s|%s|%lu|%llu", deviceId, id, source, action,
+                     (unsigned long)durationMs, (unsigned long long)expiresAt);
+  if (doc.containsKey("param") && len > 0) snprintf(canonical + len, sizeof(canonical) - len, "|%s", param);
   if (!signatureMatches(canonical, signature)) { Serial.println("[CMD] rejected: bad signature"); return; }
 
   const uint64_t now = epochMillis();
@@ -714,21 +799,25 @@ void onMqttMessage(char* topic, uint8_t* payload, unsigned int length) {
     strlcpy(slot.source, source, sizeof(slot.source));
     strlcpy(slot.action, action, sizeof(slot.action));
     slot.durationMs = durationMs;
-    Serial.printf("[CMD] queued %s %s\n", source, action);
+    strlcpy(slot.param, param, sizeof(slot.param));
+    Serial.printf("[CMD] queued %s %s%s%s\n", source, action, param[0] ? " " : "", param);
     return;
   }
   Serial.println("[CMD] queue full; backend will redeliver");
 }
 
-const char* relayGate() { return RELAYS_COMMISSIONED ? nullptr : "rejected_relays_not_commissioned"; }
+const char* relayGate() { return relaysEnabled ? nullptr : "rejected_relays_not_commissioned"; }
 
 const char* executeCommand(const PendingCommand& c) {
   const bool feeding = !strcmp(c.source, "feeding");
   const String a = c.action;
   if (feeding) {
-    if (a == "TRIGGER") { if (feederBusy()) return "rejected_feeder_busy"; feederTrigger(); return "accepted"; }
-    if (a == "ON")      { feederHoldOpen(); return "accepted"; }
-    if (a == "OFF")     { feederStop(); suppressFeedingThisMinute(); return "accepted"; }
+    if (a == "TRIGGER") {
+      if (feederBusy()) return "rejected_feeder_busy";
+      return feederTrigger() ? "accepted" : "rejected_servo_pwm";
+    }
+    if (a == "ON")  return feederHoldOpen() ? "accepted" : "rejected_servo_pwm";
+    if (a == "OFF") { suppressFeedingThisMinute(); return feederStop() ? "accepted" : "rejected_servo_pwm"; }
     return "rejected_unsupported_action";
   }
 
@@ -746,6 +835,13 @@ const char* executeCommand(const PendingCommand& c) {
   }
   if (a == "BUZZER_ON")  { buzzerManual = true; return "accepted"; }
   if (a == "BUZZER_OFF") { buzzerManual = false; return "accepted"; }
+
+  // Dashboard sensor calibration: no relays involved, so it is not behind the relay gate.
+  if (a.startsWith("CAL_")) {
+    static char calResult[64];
+    runCalibrationCommand(c.action, c.param, calResult, sizeof(calResult));
+    return calResult;
+  }
 
   if (const char* gate = relayGate()) return gate;
 
@@ -769,8 +865,10 @@ const char* executeCommand(const PendingCommand& c) {
     if (waterBusy()) return "rejected_water_busy";
     waterAutomation = false;   // a manual run takes over from automation
     if (a == "WATER_EXCHANGE") {
-      if (!exchangeReady) return "rejected_exchange_not_commissioned";
-      startExchange(); return "accepted";
+      const uint32_t drainMs = cappedRunMs(c.durationMs, EXCHANGE_DRAIN_MS);
+      const uint32_t fillMs = cappedRunMs(c.durationMs, EXCHANGE_FILL_MS);
+      if (!drainMs || !fillMs) return "rejected_duration_out_of_range";
+      startExchange(drainMs, fillMs); return "accepted";
     }
     if (c.durationMs < 1 || c.durationMs > PUMP_HARD_MAX_MS) return "rejected_duration_out_of_range";
     if (a == "FILL") startFill(c.durationMs); else startDrain(c.durationMs);
@@ -796,12 +894,12 @@ bool publishAck(const PendingCommand& c, const char* result) {
 
   char canonical[512];
   snprintf(canonical, sizeof(canonical),
-           "v1|%s|%s|%s|%s|%s|%llu|%d|%d|%d|%d|%d|%d|%s|%s|%d|%d|%d|%d|%lu",
+           "v1|%s|%s|%s|%s|%s|%llu|%d|%d|%d|%d|%d|%d|%s|%s|%d|%d|%d|%d|%lu|%d",
            DEVICE_ID, c.id, c.source, c.action, result, (unsigned long long)reportedAt,
            (bool)s["fillPump"], (bool)s["drainPump"], (bool)s["aerator"], (bool)s["feederBusy"],
            (bool)s["buzzer"], (bool)s["automation"], (const char*)s["waterPhase"], (const char*)s["fault"],
            (bool)s["relaysReady"], (bool)s["timeValid"], (bool)s["wifiConnected"], (bool)s["mqttConnected"],
-           (unsigned long)(uint32_t)s["uptimeMs"]);
+           (unsigned long)(uint32_t)s["uptimeMs"], (bool)s["aeratorAuto"]);
   char signature[65];
   if (!hmacHex(canonical, strlen(canonical), signature)) return false;
   doc["signature"] = signature;
@@ -815,7 +913,7 @@ void processCommands() {
   for (auto& c : commandQueue) {
     if (!c.used) continue;
     const char* previous = seenResult(c.id);
-    char result[32];
+    char result[64];
     if (previous) {
       // Redelivery: do not act again, just repeat the original answer.
       strlcpy(result, previous, sizeof(result));
@@ -867,19 +965,32 @@ void loadSchedules() {
   Serial.printf("[FEED] %u schedule(s) loaded from flash\n", scheduleCount);
 }
 
+uint32_t httpHoldoffUntil = 0;
+uint32_t httpBackoffMs = 0;
+
 bool httpPost(const char* path, const String& body, String& response) {
   WiFiClient httpClient;   // separate socket: sharing the MQTT client would drop MQTT
+  httpClient.setTimeout(3);   // seconds; a dead LAN address must not stall MQTT for minutes
   HTTPClient http;
   const String url = String(Secrets::BACKEND_HTTP_URL) + path;
   if (!http.begin(httpClient, url)) return false;
-  http.setTimeout(4000);
+#if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
+  http.setConnectTimeout(2500);
+  http.setTimeout(2500);
+#else
+  // Core 2 passes this value straight through to WiFiClient as seconds.
+  http.setTimeout(3);
+#endif
   http.addHeader("Content-Type", "application/json");
   http.addHeader("x-device-key", Secrets::DEVICE_KEY);
   const int code = http.POST(body);
   response = code > 0 ? http.getString() : "";
   http.end();
-  if (code != 200) Serial.printf("[HTTP] %s -> %d\n", path, code);
-  return code == 200;
+  if (code == 200) { httpBackoffMs = 0; httpHoldoffUntil = 0; return true; }
+  Serial.printf("[HTTP] %s -> %d\n", path, code);
+  httpBackoffMs = httpBackoffMs == 0 ? 15000 : min<uint32_t>(httpBackoffMs * 2, 120000u);
+  httpHoldoffUntil = millis() + httpBackoffMs;
+  return false;
 }
 
 void syncSchedules() {
@@ -930,6 +1041,418 @@ void checkSchedules() {
 
 
 // =====================================================
+// CALIBRATION CONSOLE (Serial Monitor, 115200 baud, "Newline")
+// =====================================================
+// Put the probe in a reference solution, wait for the reading to settle, then
+// type e.g. "ph 7". The firmware averages ~3 s of samples, records the point,
+// and once it has two or more points fits a new line and saves it.
+
+float phPtX[3], phPtY[3];     uint8_t phPts = 0;
+float orpPtX[3], orpPtY[3];   uint8_t orpPts = 0;
+float turbPtX[3], turbPtY[3]; uint8_t turbPts = 0;
+bool calWatch = false;
+uint32_t lastWatchPrint = 0;
+char serialLine[64];
+uint8_t serialLen = 0;
+
+void loadCalibration() {
+  if (prefs.getBytesLength("cal") == sizeof(Calibration)) prefs.getBytes("cal", &cal, sizeof(cal));
+}
+
+void saveCalibration() { prefs.putBytes("cal", &cal, sizeof(cal)); }
+
+void printCalibration() {
+  Serial.println("---- calibration (value = slope * input + offset) ----");
+  Serial.printf("pH   : slope %.4f pH/V   offset %.4f   (%.1f mV per pH)\n", cal.phSlope, cal.phOffset, cal.phSlope != 0 ? 1000.0f / fabsf(cal.phSlope) : 0.0f);
+  Serial.printf("ORP  : slope %.3f mV/V   offset %.2f mV\n", cal.orpSlope, cal.orpOffset);
+  Serial.printf("Turb : slope %.5f NTU/count   offset %.3f NTU\n", cal.turbSlope, cal.turbOffset);
+  Serial.printf("Captured points: pH %u, ORP %u, turbidity %u\n", phPts, orpPts, turbPts);
+}
+
+void printWatchLine() {
+  Serial.printf("pH  V=%.4f -> %s | ", phS.diag.voltage, phS.connected ? String(phS.value, 2).c_str() : "--");
+  Serial.printf("Turb ADC=%d -> %s NTU | ", turbS.diag.rawAdc, turbS.connected ? String(turbS.value, 1).c_str() : "--");
+  Serial.printf("ORP V=%.4f -> %s mV\n", orpS.diag.voltage, orpS.connected ? String(orpS.value, 1).c_str() : "--");
+}
+
+void printHelp() {
+  Serial.println();
+  Serial.println("==== AquaSense calibration (Serial Monitor: 115200 baud, Newline) ====");
+  Serial.println("watch           toggle a live line of input + value every second");
+  Serial.println("show            print the current calibration");
+  Serial.println("ph <value>      record a pH buffer point, e.g.  ph 7   then  ph 4  (and  ph 10)");
+  Serial.println("orp <mV>        record an ORP standard, e.g.  orp 225  (1 point = offset only)");
+  Serial.println("turb <NTU>      record a turbidity point, e.g.  turb 0  (clear water)  then  turb 100");
+  Serial.println("clear ph|orp|turb      forget captured points (keeps saved calibration)");
+  Serial.println("reset ph|orp|turb|all  restore factory defaults and save");
+  Serial.println("set ph|orp|turb <slope> <offset>   type a calibration in directly");
+  Serial.println("Rinse the probe between solutions and wait until 'watch' is steady before capturing.");
+  Serial.println();
+  Serial.println("==== Relays and feeder (bench tests) ====");
+  Serial.println("relay                  show relay settings and pin levels");
+  Serial.println("relay test             switch aerator, fill, drain ON for 2 s each, one at a time");
+  Serial.println("relay mode low|high    set trigger type (saved). Use 'high' if loads run while 'off'");
+  Serial.println("relay aerator|fill|drain on|off   switch one relay (pumps auto-stop after 10 s)");
+  Serial.println("relay enable|disable   allow / block dashboard relay commands (saved)");
+  Serial.println("servo <degrees>        move the feeder servo, e.g. servo 140 then servo 25");
+  Serial.println("feed                   run one feed cycle locally (no dashboard needed)");
+  Serial.println("selftest               run the boot self-test now (relays, servo, buzzer)");
+  Serial.println("selftest on|off        run it at every power-up or not (saved)");
+}
+
+// Bench pump test: auto-off so a pump can never be left running from the console.
+int benchPumpPin = -1;
+uint32_t benchPumpOffAt = 0;
+const uint32_t BENCH_PUMP_MAX_MS = 10000;
+
+void printRelayStatus() {
+  Serial.printf("Relays %s, %s trigger (OFF = %s, ON = %s)\n", relaysEnabled ? "ENABLED" : "disabled",
+                relayActiveLow ? "active-LOW" : "active-HIGH", relayLevel(false) ? "HIGH" : "LOW", relayLevel(true) ? "HIGH" : "LOW");
+  const int pins[] = {RELAY_AERATOR_PIN, RELAY_FILL_PIN, RELAY_DRAIN_PIN};
+  const char* names[] = {"aerator", "fill", "drain"};
+  for (int i = 0; i < 3; i++) {
+    const int level = digitalRead(pins[i]);
+    Serial.printf("  %-7s GPIO%-2d pin %s -> relay %s\n", names[i], pins[i], level ? "HIGH" : "LOW", level == relayLevel(true) ? "ON" : "off");
+  }
+}
+
+void restoreRelayOutputs() {
+  writeRelay(RELAY_AERATOR_PIN, relaysEnabled && aeratorOn);
+  writeRelay(RELAY_FILL_PIN, relaysEnabled && fillOn);
+  writeRelay(RELAY_DRAIN_PIN, relaysEnabled && drainOn);
+}
+
+void relayTest() {
+  if (fillOn || drainOn || waterBusy()) { Serial.println("Stop the pumps first (water phase must be IDLE)."); return; }
+  const int pins[] = {RELAY_AERATOR_PIN, RELAY_FILL_PIN, RELAY_DRAIN_PIN};
+  const char* names[] = {"AERATOR", "FILL", "DRAIN"};
+  Serial.println("Relay test: watch the relay LEDs and listen for clicks.");
+  allRelaysOff();
+  restoreRelayOutputs();
+  delay(500);
+  for (int i = 0; i < 3; i++) {
+    Serial.printf("  %s (GPIO%d) ON for 2 s...\n", names[i], pins[i]);
+    writeRelay(pins[i], true);
+    for (int t = 0; t < 20; t++) { mqtt.loop(); delay(100); }
+    writeRelay(pins[i], false);
+    Serial.printf("  %s off\n", names[i]);
+    for (int t = 0; t < 10; t++) { mqtt.loop(); delay(100); }
+  }
+  restoreRelayOutputs();
+  Serial.println("Done. If a relay was ON when it should be off (or the reverse), type: relay mode high");
+  Serial.println("If the relay LED follows correctly but the load does not, the load is wired to NC instead of NO.");
+}
+
+void handleRelayCommand(String rest) {
+  if (!rest.length()) { printRelayStatus(); return; }
+  if (rest == "test") { relayTest(); return; }
+  if (rest.startsWith("mode")) {
+    String m = rest.substring(4); m.trim();
+    if (m != "low" && m != "high") { Serial.println("Use: relay mode low|high"); return; }
+    relayActiveLow = (m == "low");
+    prefs.putBool("relayLow", relayActiveLow);
+    restoreRelayOutputs();
+    Serial.printf("Saved: %s trigger.\n", relayActiveLow ? "active-LOW" : "active-HIGH");
+    printRelayStatus();
+    return;
+  }
+  if (rest == "enable" || rest == "disable") {
+    relaysEnabled = (rest == "enable");
+    prefs.putBool("relayEn", relaysEnabled);
+    if (!relaysEnabled) { waterStop(); aeratorAuto = false; allRelaysOff(); }
+    Serial.printf("Saved: dashboard relay commands %s.\n", relaysEnabled ? "ALLOWED" : "blocked");
+    return;
+  }
+  const int sp = rest.indexOf(' ');
+  const String which = sp < 0 ? rest : rest.substring(0, sp);
+  String state = sp < 0 ? "" : rest.substring(sp + 1); state.trim();
+  const int pin = which == "aerator" ? RELAY_AERATOR_PIN : which == "fill" ? RELAY_FILL_PIN : which == "drain" ? RELAY_DRAIN_PIN : -1;
+  if (pin < 0 || (state != "on" && state != "off")) { Serial.println("Use: relay aerator|fill|drain on|off"); return; }
+  const bool on = state == "on";
+  if (pin != RELAY_AERATOR_PIN && on) {
+    if (fillOn || drainOn || waterBusy()) { Serial.println("A pump run is already active."); return; }
+    writeRelay(pin == RELAY_FILL_PIN ? RELAY_DRAIN_PIN : RELAY_FILL_PIN, false);   // never both pumps
+    benchPumpPin = pin; benchPumpOffAt = millis() + BENCH_PUMP_MAX_MS;
+  }
+  if (pin == benchPumpPin && !on) benchPumpPin = -1;
+  writeRelay(pin, on);
+  if (pin == RELAY_AERATOR_PIN) aeratorOn = on && relaysEnabled;
+  Serial.printf("%s relay %s%s\n", which.c_str(), on ? "ON" : "off", (pin != RELAY_AERATOR_PIN && on) ? " (auto-off in 10 s)" : "");
+}
+
+void serviceBenchPump() {
+  if (benchPumpPin >= 0 && (int32_t)(millis() - benchPumpOffAt) >= 0) {
+    writeRelay(benchPumpPin, false);
+    Serial.printf("Bench pump on GPIO%d auto-stopped.\n", benchPumpPin);
+    benchPumpPin = -1;
+  }
+}
+
+// Average ~3 s of readings; refuse if the input is still drifting.
+bool captureInput(int pin, bool useRaw, float maxSpread, float& mean) {
+  const int n = 30;
+  float sum = 0, lo = 1e9f, hi = -1e9f;
+  Serial.print("Sampling 3 s, keep the probe still");
+  for (int i = 0; i < n; i++) {
+    const AnalogDiag d = sampleADC(pin);
+    const float x = useRaw ? float(d.rawAdc) : d.voltage;
+    sum += x; lo = min(lo, x); hi = max(hi, x);
+    if (i % 6 == 0) Serial.print('.');
+    mqtt.loop();
+    delay(80);
+  }
+  mean = sum / n;
+  const float spread = hi - lo;
+  Serial.printf(" mean %s=%.4f spread %.4f\n", useRaw ? "ADC" : "V", mean, spread);
+  if (spread > maxSpread) {
+    Serial.printf("Not steady (spread above %.3f). Wait for the reading to settle and try again.\n", maxSpread);
+    return false;
+  }
+  return true;
+}
+
+bool fitLine(const float* x, const float* y, uint8_t n, float& slope, float& offset) {
+  float sx = 0, sy = 0, sxx = 0, sxy = 0;
+  for (uint8_t i = 0; i < n; i++) { sx += x[i]; sy += y[i]; sxx += x[i] * x[i]; sxy += x[i] * y[i]; }
+  const float d = n * sxx - sx * sx;
+  if (fabsf(d) < 1e-9f) return false;
+  slope = (n * sxy - sx * sy) / d;
+  offset = (sy - slope * sx) / n;
+  return true;
+}
+
+// Keep up to 3 points; a new point at the same reference replaces the old one.
+uint8_t addPoint(float* xs, float* ys, uint8_t count, float x, float y, float sameRef) {
+  for (uint8_t i = 0; i < count; i++) if (fabsf(ys[i] - y) <= sameRef) { xs[i] = x; ys[i] = y; return count; }
+  if (count == 3) { for (uint8_t i = 0; i < 2; i++) { xs[i] = xs[i + 1]; ys[i] = ys[i + 1]; } count = 2; }
+  xs[count] = x; ys[count] = y;
+  return count + 1;
+}
+
+float inputRange(const float* xs, uint8_t n) {
+  float lo = xs[0], hi = xs[0];
+  for (uint8_t i = 1; i < n; i++) { lo = min(lo, xs[i]); hi = max(hi, xs[i]); }
+  return hi - lo;
+}
+
+// Result codes are shared with the dashboard (via the signed acknowledgement),
+// so keep them short (< 64 chars) and stable.
+void setResult(char* out, size_t size, const char* text) { if (out && size) strlcpy(out, text, size); }
+
+void calibrate(const String& sensor, float reference, char* result, size_t resultSize) {
+  if (feederBusy() || fillOn || drainOn) { Serial.println("Wait until the feeder and pumps are idle."); setResult(result, resultSize, "rejected_busy"); return; }
+  float mean = 0;
+  uint8_t points = 0;
+  if (sensor == "ph") {
+    if (reference < 0 || reference > 14) { Serial.println("pH buffer must be 0-14."); setResult(result, resultSize, "rejected_out_of_range"); return; }
+    if (!phS.connected) Serial.println("Warning: pH input currently looks disconnected.");
+    if (!captureInput(PH_PIN, false, 0.02f, mean)) { setResult(result, resultSize, "rejected_not_steady"); return; }
+    phPts = points = addPoint(phPtX, phPtY, phPts, mean, reference, 0.05f);
+    Serial.printf("Recorded pH %.2f at %.4f V (%u point%s)\n", reference, mean, phPts, phPts > 1 ? "s" : "");
+    if (phPts < 2) {
+      Serial.println("Rinse, put the probe in a second buffer (e.g. pH 4), wait, then type: ph 4");
+      if (result) snprintf(result, resultSize, "recorded n=1 x=%.4f", mean);
+      return;
+    }
+    float slope, offset;
+    if (inputRange(phPtX, phPts) < 0.05f || !fitLine(phPtX, phPtY, phPts, slope, offset)) {
+      Serial.println("Buffers gave almost the same voltage: check the probe and buffers.");
+      setResult(result, resultSize, "rejected_same_input"); return;
+    }
+    const float mvPerPh = 1000.0f / fabsf(slope);
+    if (mvPerPh < 30 || mvPerPh > 400) {
+      Serial.printf("Rejected: %.1f mV per pH is not plausible. Check buffers and wiring.\n", mvPerPh);
+      setResult(result, resultSize, "rejected_implausible_slope"); return;
+    }
+    cal.phSlope = slope; cal.phOffset = offset;
+  } else if (sensor == "orp") {
+    if (reference < -2000 || reference > 2000) { Serial.println("ORP standard must be -2000..2000 mV."); setResult(result, resultSize, "rejected_out_of_range"); return; }
+    if (!captureInput(ORP_PIN, false, 0.02f, mean)) { setResult(result, resultSize, "rejected_not_steady"); return; }
+    orpPts = points = addPoint(orpPtX, orpPtY, orpPts, mean, reference, 5.0f);
+    Serial.printf("Recorded ORP %.1f mV at %.4f V (%u point%s)\n", reference, mean, orpPts, orpPts > 1 ? "s" : "");
+    float slope = cal.orpSlope, offset;
+    if (orpPts >= 2 && inputRange(orpPtX, orpPts) >= 0.05f && fitLine(orpPtX, orpPtY, orpPts, slope, offset)) {
+      if (fabsf(slope) < 100 || fabsf(slope) > 5000) {
+        Serial.printf("Rejected: slope %.1f mV/V is not plausible.\n", slope);
+        setResult(result, resultSize, "rejected_implausible_slope"); return;
+      }
+    } else {
+      offset = reference - cal.orpSlope * mean;   // one point: keep the slope, correct the offset
+      Serial.println("Single point: offset corrected, slope kept.");
+    }
+    cal.orpSlope = slope; cal.orpOffset = offset;
+  } else if (sensor == "turb") {
+    if (reference < 0 || reference > TURB_MAX_NTU) { Serial.println("Turbidity standard must be 0-3000 NTU."); setResult(result, resultSize, "rejected_out_of_range"); return; }
+    if (!captureInput(TURB_PIN, true, 40.0f, mean)) { setResult(result, resultSize, "rejected_not_steady"); return; }
+    turbPts = points = addPoint(turbPtX, turbPtY, turbPts, mean, reference, 0.5f);
+    Serial.printf("Recorded %.1f NTU at ADC %.0f (%u point%s)\n", reference, mean, turbPts, turbPts > 1 ? "s" : "");
+    float slope = cal.turbSlope, offset;
+    if (turbPts >= 2 && inputRange(turbPtX, turbPts) >= 100 && fitLine(turbPtX, turbPtY, turbPts, slope, offset)) {
+      if (slope > 0) Serial.println("Note: NTU rises with ADC on this sensor (most sensors fall). Check the standards.");
+    } else {
+      offset = reference - cal.turbSlope * mean;
+      Serial.println("Single point: offset corrected, slope kept. Add a second standard (e.g. turb 100) for a full calibration.");
+    }
+    cal.turbSlope = slope; cal.turbOffset = offset;
+  } else {
+    Serial.println("Unknown sensor. Use ph, orp or turb.");
+    setResult(result, resultSize, "rejected_bad_param");
+    return;
+  }
+  saveCalibration();
+  Serial.println("Saved.");
+  printCalibration();
+  float slope = 0, offset = 0;
+  calibrationOf(sensor, slope, offset);
+  if (result) snprintf(result, resultSize, "saved n=%u slope=%.5f offset=%.4f", points, slope, offset);
+}
+
+// Current slope/offset for one sensor; false for an unknown name.
+bool calibrationOf(const String& sensor, float& slope, float& offset) {
+  if (sensor == "ph") { slope = cal.phSlope; offset = cal.phOffset; return true; }
+  if (sensor == "orp") { slope = cal.orpSlope; offset = cal.orpOffset; return true; }
+  if (sensor == "turb") { slope = cal.turbSlope; offset = cal.turbOffset; return true; }
+  return false;
+}
+
+uint8_t capturedPoints(const String& sensor) { return sensor == "ph" ? phPts : sensor == "orp" ? orpPts : sensor == "turb" ? turbPts : 0; }
+
+// Dashboard calibration commands: CAL_CAPTURE "<sensor>:<reference>", CAL_STATUS/CAL_CLEAR/CAL_RESET "<sensor>".
+void runCalibrationCommand(const char* action, const char* param, char* result, size_t resultSize) {
+  String p = param; p.trim(); p.toLowerCase();
+  const int colon = p.indexOf(':');
+  const String sensor = colon < 0 ? p : p.substring(0, colon);
+  float slope = 0, offset = 0;
+  if (!calibrationOf(sensor, slope, offset)) { setResult(result, resultSize, "rejected_bad_param"); return; }
+  if (!strcmp(action, "CAL_CAPTURE")) {
+    if (colon < 0) { setResult(result, resultSize, "rejected_bad_param"); return; }
+    calibrate(sensor, p.substring(colon + 1).toFloat(), result, resultSize);
+    return;
+  }
+  if (!strcmp(action, "CAL_CLEAR")) {
+    if (sensor == "ph") phPts = 0; else if (sensor == "orp") orpPts = 0; else turbPts = 0;
+    setResult(result, resultSize, "cleared");
+    return;
+  }
+  if (!strcmp(action, "CAL_RESET")) {
+    if (sensor == "ph") { cal.phSlope = DEFAULT_CAL.phSlope; cal.phOffset = DEFAULT_CAL.phOffset; phPts = 0; }
+    else if (sensor == "orp") { cal.orpSlope = DEFAULT_CAL.orpSlope; cal.orpOffset = DEFAULT_CAL.orpOffset; orpPts = 0; }
+    else { cal.turbSlope = DEFAULT_CAL.turbSlope; cal.turbOffset = DEFAULT_CAL.turbOffset; turbPts = 0; }
+    saveCalibration();
+    calibrationOf(sensor, slope, offset);
+    snprintf(result, resultSize, "reset n=0 slope=%.5f offset=%.4f", slope, offset);
+    return;
+  }
+  // CAL_STATUS
+  snprintf(result, resultSize, "status n=%u slope=%.5f offset=%.4f", capturedPoints(sensor), slope, offset);
+}
+
+void handleSerialCommand(String line) {
+  line.trim();
+  line.toLowerCase();
+  if (!line.length()) return;
+  const int sp1 = line.indexOf(' ');
+  const String cmd = sp1 < 0 ? line : line.substring(0, sp1);
+  String rest = sp1 < 0 ? "" : line.substring(sp1 + 1);
+  rest.trim();
+
+  if (cmd == "help" || cmd == "?") { printHelp(); return; }
+  if (cmd == "show") { printCalibration(); printWatchLine(); return; }
+  if (cmd == "watch") { calWatch = !calWatch; Serial.printf("watch %s\n", calWatch ? "on" : "off"); return; }
+  if (cmd == "ph" || cmd == "orp" || cmd == "turb") {
+    if (!rest.length()) { Serial.printf("Give the reference value, e.g. %s\n", cmd == "ph" ? "ph 7" : cmd == "orp" ? "orp 225" : "turb 0"); return; }
+    calibrate(cmd, rest.toFloat(), nullptr, 0);
+    return;
+  }
+  if (cmd == "clear") {
+    if (rest == "ph") phPts = 0; else if (rest == "orp") orpPts = 0; else if (rest == "turb") turbPts = 0;
+    else { Serial.println("Use: clear ph|orp|turb"); return; }
+    Serial.println("Captured points cleared.");
+    return;
+  }
+  if (cmd == "reset") {
+    if (rest == "ph" || rest == "all") { cal.phSlope = DEFAULT_CAL.phSlope; cal.phOffset = DEFAULT_CAL.phOffset; phPts = 0; }
+    if (rest == "orp" || rest == "all") { cal.orpSlope = DEFAULT_CAL.orpSlope; cal.orpOffset = DEFAULT_CAL.orpOffset; orpPts = 0; }
+    if (rest == "turb" || rest == "all") { cal.turbSlope = DEFAULT_CAL.turbSlope; cal.turbOffset = DEFAULT_CAL.turbOffset; turbPts = 0; }
+    if (rest != "ph" && rest != "orp" && rest != "turb" && rest != "all") { Serial.println("Use: reset ph|orp|turb|all"); return; }
+    saveCalibration();
+    printCalibration();
+    return;
+  }
+  if (cmd == "set") {
+    const int sp2 = rest.indexOf(' ');
+    const int sp3 = sp2 < 0 ? -1 : rest.indexOf(' ', sp2 + 1);
+    if (sp2 < 0 || sp3 < 0) { Serial.println("Use: set ph|orp|turb <slope> <offset>"); return; }
+    const String which = rest.substring(0, sp2);
+    const float slope = rest.substring(sp2 + 1, sp3).toFloat();
+    const float offset = rest.substring(sp3 + 1).toFloat();
+    if (slope == 0) { Serial.println("Slope cannot be 0."); return; }
+    if (which == "ph") { cal.phSlope = slope; cal.phOffset = offset; }
+    else if (which == "orp") { cal.orpSlope = slope; cal.orpOffset = offset; }
+    else if (which == "turb") { cal.turbSlope = slope; cal.turbOffset = offset; }
+    else { Serial.println("Use: set ph|orp|turb <slope> <offset>"); return; }
+    saveCalibration();
+    printCalibration();
+    return;
+  }
+  if (cmd == "relay") { handleRelayCommand(rest); return; }
+  if (cmd == "servo") {
+    if (!rest.length()) { Serial.println("Use: servo <0-180>"); return; }
+    feederStep = FEED_IDLE;
+    const int deg = constrain(rest.toInt(), 0, 180);
+    servoAngle(deg);
+    Serial.printf("Servo -> %d degrees on GPIO%d. No movement? Check the servo's own 5-6 V supply (2 A+) and that its GND joins the ESP32 GND.\n", deg, SERVO_PIN);
+#if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
+    // What the pin is really doing: owner, PWM frequency and duty (14-bit of 20 ms).
+    Serial.printf("[SERVO] GPIO%d owner=%s freq=%lu Hz duty=%lu pulse=%lu us attached=%d\n", SERVO_PIN,
+                  perimanGetTypeName(perimanGetPinBusType(SERVO_PIN)), (unsigned long)ledcReadFreq(SERVO_PIN),
+                  (unsigned long)ledcRead(SERVO_PIN), (unsigned long)feederServo.readMicroseconds(), feederServo.attached());
+#endif
+    return;
+  }
+  if (cmd == "wifi") {
+    // Diagnostic: "wifi off" stops WiFi (and MQTT) until reboot, to test whether
+    // the servo moves without WiFi's current draw. "wifi on" reconnects.
+    if (rest == "off") { mqtt.disconnect(); WiFi.disconnect(true); WiFi.mode(WIFI_OFF); wifiDiagOff = true; Serial.println("WiFi OFF. Try: servo 140 / servo 25"); return; }
+    if (rest == "on")  { wifiDiagOff = false; WiFi.mode(WIFI_STA); Serial.println("WiFi reconnecting."); return; }
+    Serial.println("Use: wifi off|on");
+    return;
+  }
+  if (cmd == "feed") {
+    if (feederBusy()) { Serial.println("Feeder is busy."); return; }
+    feederTrigger();
+    Serial.printf("Feed cycle: %d -> %d -> %d degrees.\n", SERVO_CLOSED_DEG, SERVO_OPEN_DEG, SERVO_CLOSED_DEG);
+    return;
+  }
+  if (cmd == "selftest") {
+    if (rest == "on" || rest == "off") {
+      selfTestEnabled = rest == "on";
+      prefs.putBool("selfTest", selfTestEnabled);
+      Serial.printf("Saved: boot self-test %s.\n", selfTestEnabled ? "ON" : "off");
+      return;
+    }
+    if (feederBusy() || fillOn || drainOn || waterBusy()) { Serial.println("Wait until the feeder and pumps are idle."); return; }
+    feederStep = FEED_IDLE;
+    runSelfTest();
+    return;
+  }
+  Serial.println("Unknown command. Type: help");
+}
+
+void serviceSerial() {
+  while (Serial.available()) {
+    const char c = Serial.read();
+    if (c == '\n' || c == '\r') {
+      if (serialLen) { serialLine[serialLen] = '\0'; handleSerialCommand(String(serialLine)); serialLen = 0; }
+    } else if (serialLen < sizeof(serialLine) - 1) {
+      serialLine[serialLen++] = c;
+    }
+  }
+  if (calWatch && millis() - lastWatchPrint >= 1000) { lastWatchPrint = millis(); printWatchLine(); }
+}
+
+
+// =====================================================
 // WI-FI / MQTT
 // =====================================================
 
@@ -937,7 +1460,9 @@ bool ntpStarted = false;
 uint32_t lastWifiAttempt = 0, lastMqttAttempt = 0;
 
 void serviceWiFi() {
+  if (wifiDiagOff) return;
   if (WiFi.status() == WL_CONNECTED) {
+    WiFi.setSleep(false);   // modem sleep drops MQTT while the router still lists the ESP32
     if (!ntpStarted) {
       configTime(0, 0, "pool.ntp.org", "time.nist.gov", "asia.pool.ntp.org");   // UTC
       ntpStarted = true;
@@ -945,10 +1470,9 @@ void serviceWiFi() {
     }
     return;
   }
-  if (millis() - lastWifiAttempt < WIFI_RETRY_MS) return;
+  if (millis() - lastWifiAttempt < WIFI_RETRY_MS || WiFi.status() == WL_IDLE_STATUS) return;
   lastWifiAttempt = millis();
   Serial.println("[WIFI] connecting...");
-  WiFi.disconnect();
   WiFi.begin(Secrets::WIFI_SSID, Secrets::WIFI_PASSWORD);
 }
 
@@ -1016,6 +1540,81 @@ void updateLCD() {
 
 
 // =====================================================
+// BOOT SELF-TEST (relays, feeder servo, buzzer)
+// =====================================================
+// On power-up: open and close the feeder first, then beep and click each
+// relay (one at a time, never both pumps). The servo runs before the relays
+// so a pump brown-out cannot reset the board before the horn moves. Relays
+// are skipped after a crash, watchdog or brown-out. The servo sweep still
+// runs on that boot if it has never completed. "selftest off" disables both.
+
+const uint32_t SELF_TEST_RELAY_MS = 500;
+
+bool sweepFeederServo() {
+  Serial.printf("[TEST] feeder servo GPIO%d: %d -> %d -> %d degrees\n",
+                SERVO_PIN, SERVO_CLOSED_DEG, SERVO_OPEN_DEG, SERVO_CLOSED_DEG);
+  if (lcdPresent) lcdLine(1, "Feeder servo");
+  const int angles[] = {SERVO_CLOSED_DEG, SERVO_OPEN_DEG, SERVO_CLOSED_DEG};
+  const uint32_t holdMs[] = {700, SERVO_HOLD_MS, SERVO_HOLD_MS};
+  for (int i = 0; i < 3; i++) {
+    if (!servoAngle(angles[i])) {
+      Serial.println("[TEST] servo NOT tested: 50 Hz PWM did not start on GPIO18.");
+      return false;
+    }
+    Serial.printf("[TEST] servo at %d degrees\n", angles[i]);
+    delay(holdMs[i]);
+  }
+  prefs.putBool("servoBoot", true);
+  Serial.println("[TEST] feeder servo sweep finished");
+  return true;
+}
+
+void testBeep(uint32_t ms) {
+  buzzerSet(true);
+  delay(ms);
+  buzzerQuiet();
+}
+
+bool selfTestAfterThisReset() {
+  const esp_reset_reason_t r = esp_reset_reason();
+  return r == ESP_RST_POWERON || r == ESP_RST_EXT || r == ESP_RST_SW;
+}
+
+void runSelfTest() {
+  const int pins[] = {RELAY_AERATOR_PIN, RELAY_FILL_PIN, RELAY_DRAIN_PIN};
+  const char* names[] = {"Aerator", "Fill pump", "Drain pump"};
+  char b[24];
+  Serial.println("[TEST] self-test: feeder servo, then buzzer and relays");
+  if (lcdPresent) { lcd.clear(); lcdLine(0, "Self-test"); }
+  buzzerQuiet();
+  const bool servoOk = sweepFeederServo();
+
+  testBeep(150); delay(100); testBeep(150); delay(300);
+
+  for (int i = 0; i < 3; i++) {
+    snprintf(b, sizeof(b), "Relay: %s", names[i]);
+    if (lcdPresent) lcdLine(1, b);
+    Serial.printf("[TEST] %s relay (GPIO%d) ON\n", names[i], pins[i]);
+    testBeep(80);
+    writeRelay(pins[i], true);
+    delay(SELF_TEST_RELAY_MS);
+    writeRelay(pins[i], false);
+    delay(300);
+  }
+
+  restoreRelayOutputs();
+  if (lcdPresent) lcdLine(1, servoOk ? "Done" : "Servo failed");
+  testBeep(100); delay(80); testBeep(100);
+  buzzerQuiet();
+  if (!servoOk) {
+    Serial.println("[TEST] servo did not move. Use a separate 5-6 V supply for the SG90 and join its GND to the ESP32 GND.");
+  } else {
+    Serial.println("[TEST] done. A relay that did not click needs checking.");
+  }
+}
+
+
+// =====================================================
 // SETUP / LOOP
 // =====================================================
 
@@ -1023,17 +1622,23 @@ uint32_t lastSensor = 0, lastFrame = 0, lastLcd = 0, lastPage = 0, lastSchedSync
 bool networkWasUp = false;
 
 void setup() {
+  buzzerQuiet();   // first: the active buzzer stays off until a beep is requested
   Serial.begin(115200);
   delay(300);
   Serial.println("\n=== AquaSense ESP32 ===");
 
-  relaysInit();          // first: outputs safe before anything else
-  pwmSetup();
-  servoAngle(SERVO_CLOSED_DEG);
-
   prefs.begin("aquasense", false);
+  loadRelaySettings();   // polarity must be known before driving the relay pins
+  relaysInit();          // outputs safe before anything else
+  buzzerQuiet();
+  // Park the feeder closed straight away so the gate never floats at boot. The
+  // signal stays on from here, which keeps the horn at a known angle.
+  if (!servoAngle(SERVO_CLOSED_DEG)) Serial.println("[SERVO] 50 Hz PWM did not start on GPIO18; feeder disabled.");
   loadSeen();
   loadSchedules();
+  loadCalibration();
+  printCalibration();
+  Serial.println("Type 'help' for sensor calibration commands.");
 
   snprintf(bootId, sizeof(bootId), "esp-%08lx", (unsigned long)esp_random());
   snprintf(telemetryTopic, sizeof(telemetryTopic), "%s/devices/%s/telemetry/frame", TELEMETRY_NS, DEVICE_ID);
@@ -1045,6 +1650,22 @@ void setup() {
   lcdPresent = Wire.endTransmission() == 0;
   if (lcdPresent) { lcd.begin(LCD_COLS, LCD_ROWS); lcd.backlight(); lcdLine(0, "     AQUASENSE"); lcdLine(1, " Water Quality Mon."); lcdLine(3, "Starting..."); }
   Serial.printf("LCD %s\n", lcdPresent ? "found" : "not found");
+
+  selfTestEnabled = prefs.getBool("selfTest", true);
+  const bool servoNeverTested = !prefs.getBool("servoBoot", false);
+  if (selfTestEnabled && selfTestAfterThisReset()) runSelfTest();
+  else if (selfTestEnabled && servoNeverTested) {
+    Serial.printf("[TEST] first boot (reset %d): testing the feeder servo. Relays stay off.\n", (int)esp_reset_reason());
+    if (lcdPresent) { lcd.clear(); lcdLine(0, "Self-test"); }
+    if (!sweepFeederServo()) {
+      Serial.println("[TEST] servo did not move. Use a separate 5-6 V supply for the SG90 and join its GND to the ESP32 GND.");
+    }
+  } else {
+    // The servo was already parked closed above.
+    Serial.printf("[TEST] boot self-test skipped (%s, reset %d)\n",
+                  selfTestEnabled ? "restart after a fault" : "disabled", (int)esp_reset_reason());
+  }
+  buzzerQuiet();
 
   analogReadResolution(12);
   analogSetPinAttenuation(PH_PIN, ADC_11db);
@@ -1061,14 +1682,17 @@ void setup() {
   pinMode(ULTRASONIC_ECHO, INPUT);
 
   if (strlen(Secrets::DEVICE_KEY) < 32) Serial.println("WARNING: DEVICE_KEY shorter than 32 chars; backend will reject frames");
-  if (!RELAYS_COMMISSIONED) Serial.println("Relays disabled (RELAYS_COMMISSIONED=false): relay commands will be rejected");
+  Serial.printf("Relays: %s, %s trigger. Test with 'relay test' (see 'help').\n",
+                relaysEnabled ? "ENABLED" : "disabled (dashboard relay commands rejected)", relayActiveLow ? "active-LOW" : "active-HIGH");
 
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
+  WiFi.setSleep(false);
   mqtt.setServer(MQTT_HOST, MQTT_PORT);
   mqtt.setBufferSize(4096);
   mqtt.setCallback(onMqttMessage);
   mqtt.setKeepAlive(30);
+  mqtt.setSocketTimeout(3);
 }
 
 void loop() {
@@ -1077,6 +1701,8 @@ void loop() {
   serviceWiFi();
   serviceMqtt();
   mqtt.loop();
+  serviceSerial();
+  serviceBenchPump();
 
   const bool networkUp = WiFi.status() == WL_CONNECTED && mqtt.connected();
   if (networkWasUp && !networkUp && (fillOn || drainOn || exchangeRunning)) {
@@ -1100,7 +1726,7 @@ void loop() {
 
   // HTTP calls block for up to 4 s, so never while the feeder or pumps move.
   const bool actuatorsIdle = !feederBusy() && !fillOn && !drainOn;
-  if (httpEnabled() && WiFi.status() == WL_CONNECTED && actuatorsIdle) {
+  if (httpEnabled() && WiFi.status() == WL_CONNECTED && actuatorsIdle && (int32_t)(now - httpHoldoffUntil) >= 0) {
     if (lastSchedSync == 0 || now - lastSchedSync >= SCHEDULE_SYNC_MS) { lastSchedSync = now; syncSchedules(); }
     else if (now - lastHeartbeat >= STATE_HEARTBEAT_MS) { lastHeartbeat = now; sendStateHeartbeat(); }
   }

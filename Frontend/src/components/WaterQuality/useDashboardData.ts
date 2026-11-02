@@ -2,7 +2,8 @@ import { refreshDisplayReading } from './sensorDisplay';
 import { useEffect, useRef, useState } from 'react';
 import { useWaterQualityWebSocket } from '../../hooks/useWaterQualityWebSocket';
 import { apiClient, getApiErrorMessage } from '../../services/apiClient';
-import type { WaterQualityReading, HealthAlert, PredictiveAnalyticsResult, PredictionLog, TanMeasurementRecord } from '../../types/water';
+import type { WaterQualityReading, HealthAlert, PredictiveAnalyticsResult, PredictionLog, TanMeasurementRecord, RiskAssessment } from '../../types/water';
+import { DEFAULT_THRESHOLD_BANDS, type ThresholdBands } from './thresholdBands';
 import type { SmsLogEntry } from '../../types/sms';
 
 interface ChartDataPoint {
@@ -54,6 +55,8 @@ export const useDashboardData = () => {
   const [feedingSchedules, setFeedingSchedules] = useState<FeedingSchedule[]>([]);
   const [feedingLoading, setFeedingLoading] = useState(false);
   const [predictiveWarning, setPredictiveWarning] = useState<PredictiveAnalyticsResult | null>(null);
+  const [riskAssessment, setRiskAssessment] = useState<RiskAssessment | null>(null);
+  const [thresholdBands, setThresholdBands] = useState<ThresholdBands>(DEFAULT_THRESHOLD_BANDS);
   const [smsLogs, setSmsLogs] = useState<SmsLogEntry[]>([]);
   const [activeAlerts, setActiveAlerts] = useState<HealthAlert[]>([]);
   const [recentAlerts, setRecentAlerts] = useState<HealthAlert[]>([]);
@@ -155,7 +158,7 @@ export const useDashboardData = () => {
     const loadPredictiveBundle = async () => {
       const requestSequence=++dashboardRequestSequence.current;
       try {
-        const response = await apiClient.get<{ latest:WaterQualityReading|null; predictiveWarning: PredictiveAnalyticsResult; predictionHistory: PredictionLog[]; smsLogs: SmsLogEntry[] }>('/water/dashboard');
+        const response = await apiClient.get<{ latest:WaterQualityReading|null; predictiveWarning: PredictiveAnalyticsResult; riskAssessment?: RiskAssessment | null; thresholdBands?: ThresholdBands; predictionHistory: PredictionLog[]; smsLogs: SmsLogEntry[] }>('/water/dashboard');
         if (requestSequence!==dashboardRequestSequence.current) return;
         const incoming=response.data.latest;
         const incomingAt=incoming ? new Date(incoming.timestamp).getTime() : NaN;
@@ -171,6 +174,8 @@ export const useDashboardData = () => {
           return {...incoming,connectionState:'LIVE'};
         });
         setPredictiveWarning(response.data.predictiveWarning);
+        setRiskAssessment(response.data.riskAssessment ?? null);
+        if (response.data.thresholdBands) setThresholdBands(response.data.thresholdBands);
         setSmsLogs(response.data.smsLogs || []);
         setRestError(null);
       } catch {
@@ -251,6 +256,8 @@ export const useDashboardData = () => {
     feedingSchedules,
     feedingLoading,
     predictiveWarning,
+    riskAssessment,
+    thresholdBands,
     smsLogs,
     triggerManual,
     addSchedule,

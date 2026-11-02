@@ -12,10 +12,10 @@ import turbidityImage from '../assets/images/feature/turbidity.1.png';
 import iotDevicesImage from '../assets/images/feature/iotdevices.jpg';
 
 const sensors = [
-  { name: 'Temperature', image: temperatureImage, status: 'Calibration unverified', points: ['Physical sensor reading', 'History with min, max and average', 'Classified against 26–29 °C once calibrated'] },
-  { name: 'pH', image: phImage, status: 'Calibration required', points: ['Raw input reported', 'Reference calibration needed before classification', 'Classified against 7.0–8.5 once calibrated'] },
+  { name: 'Temperature', image: temperatureImage, status: 'Calibration unverified', points: ['Physical sensor reading', 'History with min, max and average', 'Normal inside 26–29 °C once calibrated; Warning and Alert use the threshold tab'] },
+  { name: 'pH', image: phImage, status: 'Calibration required', points: ['Raw input reported', 'Reference calibration needed before classification', 'Normal inside 7.0–8.5 once calibrated; Alert below 6.0 or above 8.5'] },
   { name: 'ORP / redox', image: iotDevicesImage, status: 'Commissioning required', points: ['Physical redox input in mV', 'Needs reference calibration', 'Not dissolved oxygen; DO is never inferred'] },
-  { name: 'Turbidity', image: turbidityImage, status: 'Calibration required', points: ['NTU shown when the signal converts', 'Accurate NTU needs a validated curve', 'No species limit, so not classified'] },
+  { name: 'Turbidity', image: turbidityImage, status: 'Calibration required', points: ['NTU shown when the signal converts', 'Accurate NTU needs a validated curve', 'Normal, Warning, and Alert follow the threshold tab. Those cuts are the alert rules, not a species limit'] },
 ];
 
 const controls = [

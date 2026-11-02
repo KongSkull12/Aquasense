@@ -30,7 +30,7 @@ It is honest about its data: every reading carries a sensor-health state (calibr
 ## Capabilities and Constraints
 
 - Public site: Landing, About, Features, How It Works, Contact; login and signup.
-- Dashboard: Overview, Parameters, Feeding, Water Change, Aerator, Alerts & Logs, Settings.
+- Dashboard: Overview, Parameters, Thresholds, Prediction model, Feeding, Water Change, Aerator, Alerts & Logs, SMS alerts, Calibration, Settings.
 - Stack: React 18, TypeScript, Vite, Tailwind CSS 3, Recharts, React Router 7.
 - Copy may be reworded for clarity, but every factual state and limitation must keep its meaning.
 

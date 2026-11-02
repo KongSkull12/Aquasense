@@ -9,6 +9,7 @@ import { initializeDeviceModel } from './Device';
 import { initializeAuditLogModel } from './AuditLog';
 import { initializeHardwareControlModels } from './HardwareControl';
 import { initializeWaterQualitySettingModel } from './WaterQualitySetting';
+import { initializeSmsRecipientSettingModel } from './SmsRecipientSetting';
 import { initializeTanMeasurementModel, TanMeasurement } from './TanMeasurement';
 import { User } from './User';
 import { SensorReading } from './SensorReading';
@@ -35,6 +36,7 @@ export const initializeAllModels = async (): Promise<void> => {
   initializeAuditLogModel();
   initializeHardwareControlModels();
   initializeWaterQualitySettingModel();
+  initializeSmsRecipientSettingModel();
   initializeTanMeasurementModel();
   await ensureSensorReadingSchemaCompat();
   await ensureUserSchemaCompat();
@@ -44,6 +46,8 @@ export const initializeAllModels = async (): Promise<void> => {
 const ensureSensorReadingSchemaCompat = async (): Promise<void> => {
   const sequelize = getDatabase();
   await sequelize.query('ALTER TABLE IF EXISTS sensor_readings ADD COLUMN IF NOT EXISTS "orp" DOUBLE PRECISION NULL;');
+  // Calibration commands carry a signed parameter such as "ph:6.86".
+  await sequelize.query('ALTER TABLE IF EXISTS hardware_commands ADD COLUMN IF NOT EXISTS "param" VARCHAR(32) NULL;');
   await sequelize.query('ALTER TABLE IF EXISTS sensor_readings ADD COLUMN IF NOT EXISTS "ammonia" DOUBLE PRECISION NOT NULL DEFAULT 0;');
   await sequelize.query('ALTER TABLE IF EXISTS sensor_readings ADD COLUMN IF NOT EXISTS sensor_health JSONB NULL, ADD COLUMN IF NOT EXISTS speciation JSONB NULL, ADD COLUMN IF NOT EXISTS turbidity_unit VARCHAR(16) NULL;');
   for (const column of ['temperature','ph','do','turbidity','ammonia']) {
@@ -64,6 +68,27 @@ const ensureUserSchemaCompat = async (): Promise<void> => {
     END$$;
   `);
   await sequelize.query('ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS "role" enum_users_role NOT NULL DEFAULT \'farmer\';');
+  // The first version of this table used camelCase columns. Sequelize writes user_id.
+  await sequelize.query(`
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'sms_recipient_settings' AND column_name = 'userId'
+      ) THEN
+        DROP TABLE sms_recipient_settings;
+      END IF;
+    END $$;
+  `);
+  await sequelize.query(`
+    CREATE TABLE IF NOT EXISTS sms_recipient_settings (
+      user_id UUID PRIMARY KEY,
+      enabled BOOLEAN NOT NULL DEFAULT true,
+      phones JSONB NOT NULL DEFAULT '[]',
+      created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+    );
+  `);
 };
 
 const ensureFeedingSchemaCompat = async (): Promise<void> => {

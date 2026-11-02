@@ -17,7 +17,7 @@ Feeding, Water change and Aerator pages, feeding schedules, and the LCD.
 | Fill pump relay | 26 |
 | Drain pump relay | 27 |
 | Feeder servo signal | 18 |
-| Buzzer | 19 |
+| Active buzzer (+ to the pin, − to GND) | 19 |
 
 ## 1. Backend
 
@@ -57,9 +57,25 @@ Open `AquaSense_ESP32.ino`, upload, and watch Serial Monitor at 115200 baud.
 | Feed now / Feeder on / off | The above; device registered to your account |
 | Feeding schedules | `BACKEND_HTTP_URL` reachable; kept in flash once synced |
 | Aerator on / off, Drain, Fill, Stop pumps | `RELAYS_COMMISSIONED = true` (see below) |
-| Run exchange | Measured `EXCHANGE_DRAIN_MS` / `EXCHANGE_FILL_MS` |
-| Aerator automatic | `AERATOR_POLICY_CONFIGURED = true` |
+| Run exchange | The dashboard duration, 1–60 s for the drain and again for the fill. A measured `EXCHANGE_DRAIN_MS` / `EXCHANGE_FILL_MS` can only shorten that phase |
+| Aerator automatic | Temperature policy: on at 29.5 °C, off at 28.5 °C. A missing temperature reading leaves the aerator on |
 | Water automation | `WATER_POLICY_CONFIGURED = true` plus exchange runtimes |
+
+## Sensor calibration (Serial Monitor)
+
+Open Serial Monitor at 115200 baud with line ending **Newline** and type `help`.
+Each sensor uses `value = slope × input + offset`; results are saved in flash.
+
+| Sensor | Steps |
+| --- | --- |
+| pH | `watch` → probe in pH 7 buffer, wait until steady → `ph 7` → rinse → pH 4 buffer → `ph 4` (optional third: `ph 10`) |
+| Turbidity | clear water → `turb 0` → known standard → `turb 100` (any known NTU) |
+| ORP | probe in ORP standard → `orp 225` (use the value printed on your solution) |
+
+Other commands: `show`, `clear ph|orp|turb`, `reset ph|orp|turb|all`,
+`set ph|orp|turb <slope> <offset>`. Temperature (DS18B20) needs no calibration.
+A capture saved from the dashboard is recorded by the server. A change made
+only in the Serial Monitor is not.
 
 ## Commissioning before pump power
 
@@ -79,8 +95,8 @@ the aerator keeps its state through a network blip; a fault sounds the buzzer un
 
 ## Honest limits
 
-- Sensor conversions use your calibration constants; the dashboard keeps marking readings
-  "calibration required" until the backend's calibration is commissioned.
+- Sensor conversions use the calibration saved on the device. The dashboard classifies
+  a sensor after the server records that saved capture. Temperature is factory calibrated.
 - ORP is a redox reading, not dissolved oxygen.
 - HiveMQ's public broker is unencrypted. Signatures stop anyone faking readings or commands,
   but others can see the traffic. Use a private TLS broker for real deployment.

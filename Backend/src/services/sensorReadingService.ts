@@ -4,6 +4,7 @@ import { Op } from 'sequelize';
 import { getDatabase } from '../database/connection';
 import {ruleEngine} from './ruleEngine.service';
 import { SensorValidator, SENSOR_NAMES, numeric, timestampMs, refreshHealth, ammoniaSpeciation, type HealthSummary, type ExtendedHealthSummary, type AmmoniaSpeciation, type UltrasonicReading, HEALTH_CONFIG } from './sensorHealth';
+import { commissionedSensors, type CalibratedSensor } from './deviceCalibration';
 export interface SensorReading {
   id: string; deviceId: string; temperature: number|null; ph: number|null; do: number|null;
   doMeasured: boolean; turbidity: number|null; orp: number|null; ammonia: number|null;
@@ -37,6 +38,7 @@ class SensorReadingService {
     const bootId=typeof payload.bootId==='string' && payload.bootId.length<=64 ? payload.bootId : null;
     const sequenceId=bootId!==null && Number.isSafeInteger(payload.sequence) && payload.sequence>=0 ? payload.sequence : null;
     const unit=payload.turbidityUnit === 'raw_adc' ? 'raw_adc' : payload.turbidityUnit === 'NTU' ? 'NTU' : 'unknown';
+    const commissioned=await commissionedSensors(deviceId);
     const result=await getDatabase().transaction(async transaction=>{
       await getDatabase().query('SELECT pg_advisory_xact_lock(hashtext(:deviceId))',{replacements:{deviceId},transaction});
       if (bootId!==null && sequenceId!==null) {
@@ -47,7 +49,8 @@ class SensorReadingService {
       if (latest && ((bootId!==null && latest.bootId===bootId && sequenceId!==null && latest.sequenceId!==null && sequenceId<=Number(latest.sequenceId)) || acquired <= new Date(latest.timestamp).getTime())) throw new Error('Obsolete sensor frame');
       const validationNow=Date.now();
       const sensorHealth=Object.fromEntries(SENSOR_NAMES.map(name=>[name,this.validator.validate(deviceId,name,
-        payload[name], payload.sensorTimestamps?.[name] ?? this.sensorTimestamp(payload.sensors?.[name],validationNow,timestamp),payload.sensors?.[name],validationNow,name==='turbidity'?unit:undefined)])) as unknown as ExtendedHealthSummary;
+        payload[name], payload.sensorTimestamps?.[name] ?? this.sensorTimestamp(payload.sensors?.[name],validationNow,timestamp),payload.sensors?.[name],validationNow,name==='turbidity'?unit:undefined,
+        { commissioned: name !== 'temperature' && commissioned.has(name as CalibratedSensor) })])) as unknown as ExtendedHealthSummary;
       const ultrasonic = this.readUltrasonic(payload, validationNow);
       if (ultrasonic) sensorHealth.ultrasonic = ultrasonic;
       const speciation=ammoniaSpeciation(sensorHealth,payload.tan,payload.waterType ?? 'freshwater',validationNow);
@@ -127,21 +130,22 @@ class SensorReadingService {
       const related=alerts.filter(a=>a.category.startsWith(prefix));
       if (related.some(a=>a.severity==='CRITICAL'||a.severity==='EMERGENCY')) return 'CRITICAL';
       if (related.length) return 'WARNING';
-      return sensorHealth[name].calibration==='CALIBRATED' && sensorHealth[name].stability==='STABLE' ? 'NORMAL' : 'CALIBRATION REQUIRED';
+      if (sensorHealth[name].calibration!=='CALIBRATED') return 'CALIBRATION REQUIRED';
+      return sensorHealth[name].stability==='STABLE' ? 'NORMAL' : 'SETTLING';
     };
     const waterQuality={temperature:condition('temperature','TEMP'),ph:condition('ph','PH'),turbidity:condition('turbidity','TURBIDITY'),orp:'NO WATER-QUALITY POLICY'};
     const qualityStates=Object.values(waterQuality);
     const status=qualityStates.includes('CRITICAL')?'critical':qualityStates.includes('WARNING')?'warning':
-      qualityStates.some(state=>state==='UNAVAILABLE' || state==='CALIBRATION REQUIRED' || state.startsWith('UNKNOWN'))?'unavailable':'normal';
+      qualityStates.some(state=>state==='UNAVAILABLE' || state==='CALIBRATION REQUIRED' || state==='SETTLING' || state.startsWith('UNKNOWN'))?'unavailable':'normal';
+    // Preserve fresh device-reported values for display/diagnostics when stability
+    // or commissioning checks reject them, but never a stale one: a sensor that
+    // stopped reporting shows no value. Decision logic above still uses `valid`.
+    const reported=(name:'ph'|'turbidity'|'orp')=>sensorHealth[name].health==='STALE'?null:sensorHealth[name].value;
     return {id:reading.id,deviceId:reading.deviceId,temperature:sensorHealth.temperature.valid?sensorHealth.temperature.value:null,
-      // Preserve fresh device-reported pH and NTU values for display/diagnostics
-      // when stability or commissioning checks reject them. Decision logic above
-      // still uses `valid`, and the dashboard labels these reports accordingly.
-      ph:sensorHealth.ph.value,
-      turbidity:sensorHealth.turbidity.value,
-      // Keep the device-reported ORP sample visible for diagnostics and trends;
-      // sensorHealth remains the authority for whether it is calibrated/usable.
-      orp:sensorHealth.orp.value,do:null,
+      ph:reported('ph'),
+      turbidity:reported('turbidity'),
+      // sensorHealth remains the authority for whether ORP is calibrated/usable.
+      orp:reported('orp'),do:null,
       doMeasured:false,ammonia:speciation.nh3N,sensorHealth,speciation,waterQuality,status,turbidityUnit:reading.turbidityUnit||'unknown',
       tankLevel:sensorHealth.ultrasonic ?? null,
       location:reading.location,timestamp:reading.timestamp,createdAt:reading.createdAt,updatedAt:reading.updatedAt};
