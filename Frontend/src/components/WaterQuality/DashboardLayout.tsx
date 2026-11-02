@@ -76,10 +76,10 @@ export const DashboardLayout: React.FC = () => {
     setIsMenuOpen(false);
     try {
       await apiClient.logout();
-    } finally {
-      localStorage.removeItem('user');
+    } catch {
+      // Leave anyway: the local session is cleared even if the server is unreachable.
     }
-    navigate('/login');
+    navigate('/login', { replace: true });
   };
 
   const currentLabel = navItems.find((item) => location.pathname.startsWith(item.to))?.label ?? 'Dashboard';

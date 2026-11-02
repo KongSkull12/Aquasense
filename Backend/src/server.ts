@@ -48,9 +48,10 @@ const createApp = (): Express => {
     })
   );
 
+  // The dashboard polls every 2-5 s per page, roughly 500-700 requests per 15 min for one open tab.
   const apiLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
-    max: 500,
+    max: parseInt(process.env.API_RATE_LIMIT_MAX || '3000', 10),
     standardHeaders: true,
     legacyHeaders: false,
   });

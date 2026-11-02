@@ -13,6 +13,18 @@ The running version is shown in the dashboard sidebar (App = frontend, API = bac
 3. Commit, tag and push: `git tag vX.Y.Z && git push kongskull main --tags`.
    Vercel and Render redeploy `main` automatically.
 
+## [1.1.1] - 2026-11-02
+
+### Fixed
+- Logout, saving SMS numbers, feeding schedules, relays, calibration and thresholds failed with
+  "CSRF token validation failed" when the frontend and backend are on different domains
+  (Vercel + Render). The backend now also returns the CSRF token from login, signup and
+  session checks, and the dashboard sends it from there.
+- Logout always returns to the sign-in page, even if the server cannot be reached.
+- Dashboards stopped refreshing after ~10-15 minutes because polling exceeded the API rate
+  limit (500 per 15 min). The limit is now 3000, configurable with `API_RATE_LIMIT_MAX`.
+- Sidebar showed "Signed in" instead of the account after a failed request cleared it.
+
 ## [1.1.0] - 2026-11-02
 
 ### Added

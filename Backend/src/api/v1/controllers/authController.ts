@@ -52,9 +52,12 @@ const setAuthCookie = (res: Response, token: string): void => {
   });
 };
 
-const establishSession = (res: Response, token: string): void => {
+// Returns the CSRF token in the body too: a frontend on another domain cannot read the cookie.
+const establishSession = (res: Response, token: string): string => {
+  const csrfToken = createCsrfToken();
   setAuthCookie(res, token);
-  setCsrfCookie(res, createCsrfToken());
+  setCsrfCookie(res, csrfToken);
+  return csrfToken;
 };
 
 const clearAuthCookie = (res: Response): void => {
@@ -108,11 +111,12 @@ export const signup = async (req: Request<ParamsDictionary, unknown, SignupReque
       role: user.role,
     });
 
-    establishSession(res, token);
+    const csrfToken = establishSession(res, token);
     const publicUser = userService.getPublicUser(user);
 
     sendSuccess(res, 201, 'User registered successfully', {
       user: publicUser,
+      csrfToken,
     });
 
     logger.info('User signup successful', { email: user.email });
@@ -166,11 +170,12 @@ export const login = async (req: Request<ParamsDictionary, unknown, LoginRequest
       role: user.role,
     });
 
-    establishSession(res, token);
+    const csrfToken = establishSession(res, token);
     const publicUser = userService.getPublicUser(user);
 
     sendSuccess(res, 200, 'Login successful', {
       user: publicUser,
+      csrfToken,
     });
 
     logger.info('User login successful', { email: user.email });
@@ -209,14 +214,17 @@ export const verifyToken = (req: Request, res: Response): void => {
       return;
     }
 
-    if (!getCookieValue(req, csrfCookieName)) {
-      setCsrfCookie(res, createCsrfToken());
+    let csrfToken = getCookieValue(req, csrfCookieName);
+    if (!csrfToken) {
+      csrfToken = createCsrfToken();
+      setCsrfCookie(res, csrfToken);
     }
 
     sendSuccess(res, 200, 'Token is valid', {
       userId: payload.userId,
       email: payload.email,
       role: payload.role,
+      csrfToken,
     });
   } catch (error) {
     logger.error('Token verification error', error);
