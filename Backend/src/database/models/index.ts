@@ -44,13 +44,13 @@ export const initializeAllModels = async (): Promise<void> => {
 const ensureSensorReadingSchemaCompat = async (): Promise<void> => {
   const sequelize = getDatabase();
   await sequelize.query('ALTER TABLE IF EXISTS sensor_readings ADD COLUMN IF NOT EXISTS "orp" DOUBLE PRECISION NULL;');
-  await sequelize.query('ALTER TABLE sensor_readings ADD COLUMN IF NOT EXISTS "ammonia" DOUBLE PRECISION NOT NULL DEFAULT 0;');
-  await sequelize.query('ALTER TABLE sensor_readings ADD COLUMN IF NOT EXISTS sensor_health JSONB NULL, ADD COLUMN IF NOT EXISTS speciation JSONB NULL, ADD COLUMN IF NOT EXISTS turbidity_unit VARCHAR(16) NULL;');
+  await sequelize.query('ALTER TABLE IF EXISTS sensor_readings ADD COLUMN IF NOT EXISTS "ammonia" DOUBLE PRECISION NOT NULL DEFAULT 0;');
+  await sequelize.query('ALTER TABLE IF EXISTS sensor_readings ADD COLUMN IF NOT EXISTS sensor_health JSONB NULL, ADD COLUMN IF NOT EXISTS speciation JSONB NULL, ADD COLUMN IF NOT EXISTS turbidity_unit VARCHAR(16) NULL;');
   for (const column of ['temperature','ph','do','turbidity','ammonia']) {
-    await sequelize.query('ALTER TABLE sensor_readings ALTER COLUMN "' + column + '" DROP NOT NULL, ALTER COLUMN "' + column + '" DROP DEFAULT;');
+    await sequelize.query('ALTER TABLE IF EXISTS sensor_readings ALTER COLUMN "' + column + '" DROP NOT NULL, ALTER COLUMN "' + column + '" DROP DEFAULT;');
   }
   // Historical rows have no evidence that DO was measured rather than defaulted.
-  await sequelize.query('ALTER TABLE sensor_readings ADD COLUMN IF NOT EXISTS "do_measured" BOOLEAN NOT NULL DEFAULT false;');
+  await sequelize.query('ALTER TABLE IF EXISTS sensor_readings ADD COLUMN IF NOT EXISTS "do_measured" BOOLEAN NOT NULL DEFAULT false;');
 };
 
 const ensureUserSchemaCompat = async (): Promise<void> => {
@@ -63,16 +63,16 @@ const ensureUserSchemaCompat = async (): Promise<void> => {
       END IF;
     END$$;
   `);
-  await sequelize.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS "role" enum_users_role NOT NULL DEFAULT \'farmer\';');
+  await sequelize.query('ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS "role" enum_users_role NOT NULL DEFAULT \'farmer\';');
 };
 
 const ensureFeedingSchemaCompat = async (): Promise<void> => {
   const sequelize = getDatabase();
 
   // Existing deployments may have feeding_schedules without `date`.
-  await sequelize.query('ALTER TABLE feeding_schedules ADD COLUMN IF NOT EXISTS "date" VARCHAR(10);');
-  await sequelize.query('ALTER TABLE feeding_schedules ADD COLUMN IF NOT EXISTS "user_id" UUID;');
-  await sequelize.query('ALTER TABLE feeding_commands ADD COLUMN IF NOT EXISTS "user_id" UUID;');
+  await sequelize.query('ALTER TABLE IF EXISTS feeding_schedules ADD COLUMN IF NOT EXISTS "date" VARCHAR(10);');
+  await sequelize.query('ALTER TABLE IF EXISTS feeding_schedules ADD COLUMN IF NOT EXISTS "user_id" UUID;');
+  await sequelize.query('ALTER TABLE IF EXISTS feeding_commands ADD COLUMN IF NOT EXISTS "user_id" UUID;');
   await sequelize.query(`
     CREATE TABLE IF NOT EXISTS devices (
       id UUID PRIMARY KEY,
