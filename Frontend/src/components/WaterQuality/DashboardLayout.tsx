@@ -19,6 +19,7 @@ const navItems: Array<{ to: string; label: string; icon: NavIcon }> = [
   { to: '/dashboard/parameters', label: 'Parameters', icon: 'chart' },
   { to: '/dashboard/thresholds', label: 'Thresholds', icon: 'limits' },
   { to: '/dashboard/prediction', label: 'Prediction model', icon: 'model' },
+  { to: '/dashboard/ammonia', label: 'Ammonia calculator', icon: 'flask' },
   { to: '/dashboard/feeding', label: 'Feeding', icon: 'feed' },
   { to: '/dashboard/water-change', label: 'Water change', icon: 'drain' },
   { to: '/dashboard/aerator', label: 'Aerator', icon: 'aerator' },

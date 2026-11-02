@@ -70,9 +70,9 @@ const tan={value:1,unit:'mg/L as N',source:'test_kit',validated:true,timestamp:s
 check('valid TAN retained while source sensor fails','TAN 1; temperature -127',[1,null],()=>{const s=ammoniaSpeciation(summary(-127),tan,'freshwater',now);return [s.tan?.value,s.nh3N];});
 test('reference equation and measured TAN concentration',()=>{
   const s=ammoniaSpeciation(calibratedSummary(),tan,'freshwater',now);
-  console.log(`Test: Emerson reference\nInput: 25 C, pH 8, TAN 1 mg/L as N\nExpected: pKa ~9.2448; fraction ~0.05384; NH3-N ~0.05384 mg/L as N\nActual: ${JSON.stringify(s)}\nPASS`);
-  assert.ok(Math.abs(s.pKa!-9.2448)<0.001);assert.ok(Math.abs(s.fraction!-0.05384)<0.0001);
-  assert.ok(Math.abs(s.percent!-5.384)<0.01);assert.equal(s.nh3N,s.fraction);assert.equal(s.concentrationUnit,'mg/L as N');
+  console.log(`Test: Emerson reference\nInput: 25 C, pH 8, TAN 1 mg/L as N\nExpected: pKa ~9.2464; fraction ~0.05366; NH3-N ~0.05366 mg/L as N\nActual: ${JSON.stringify(s)}\nPASS`);
+  assert.ok(Math.abs(s.pKa!-9.2464)<0.001);assert.ok(Math.abs(s.fraction!-0.05366)<0.0001);
+  assert.ok(Math.abs(s.percent!-5.366)<0.01);assert.equal(s.nh3N,s.fraction);assert.equal(s.concentrationUnit,'mg/L as N');
 });
 test('NH3-N requires TAN, pH and temperature acquisition times to align',()=>{
   const staleTan={...tan,timestamp:stamp(now-16000)};

@@ -1,3 +1,4 @@
+import { ammoniaPKa, nh3Fraction } from './ammoniaCalculator';
 // Technical diagnostics, deliberately separate from husbandry thresholds.
 export const SENSOR_NAMES = ['temperature', 'ph', 'turbidity', 'orp'] as const;
 export type SensorName = typeof SENSOR_NAMES[number];
@@ -154,8 +155,8 @@ export function ammoniaSpeciation(health: HealthSummary, tan?: unknown, waterTyp
   }
   if (waterType !== 'freshwater') return {...result,reason:'Freshwater equation requires freshwater conditions; salinity correction is not implemented'};
   if (temperature.value < 0 || temperature.value > 50) return {...result,reason:'Outside freshwater speciation temperature domain (0–50 C)'};
-  result.pKa=0.09018+2729.92/(273.2+temperature.value);
-  result.fraction=1/(1+10**(result.pKa-ph.value)); result.percent=result.fraction*100; result.status='AVAILABLE';
+  result.pKa=ammoniaPKa(temperature.value);
+  result.fraction=nh3Fraction(result.pKa,ph.value); result.percent=result.fraction*100; result.status='AVAILABLE';
   result.reason='Fraction of TAN only; source-sensor accuracy has not been formally verified';
   if (result.tan) {
     const tanAt=timestampMs(result.tan.timestamp);

@@ -25,6 +25,19 @@ export interface WaterQualityReading {
   connectionState?: 'LIVE' | 'ERROR';
 }
 
+export interface AmmoniaCalculation {
+  temperatureC: number;
+  ph: number;
+  pKa: number;
+  nh3Fraction: number;
+  nh3Percent: number;
+  tan: number | null;
+  nh3N: number | null;
+  tanOrigin: 'measured' | 'calculated' | null;
+  nh3NOrigin: 'measured' | 'calculated' | null;
+  concentrationUnit: 'mg/L as N';
+}
+
 export type TanSource = 'test_kit' | 'laboratory' | 'external_sensor' | 'manual';
 
 export interface TanMeasurementRecord {

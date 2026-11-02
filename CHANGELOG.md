@@ -13,6 +13,22 @@ The running version is shown in the dashboard sidebar (App = frontend, API = bac
 3. Commit, tag and push: `git tag vX.Y.Z && git push kongskull main --tags`.
    Vercel and Render redeploy `main` automatically.
 
+## [1.2.0] - 2026-11-02
+
+### Added
+- Ammonia calculator page (Dashboard → Ammonia calculator) that walks through all seven steps:
+  sensor temperature and pH (live or entered manually), pKa, NH₃ fraction, NH₃ percentage, the
+  ammonia measurement, the resulting concentrations, and a results summary.
+- Option B: a measured NH₃-N gives TAN = NH₃-N / fNH₃. Option A (NH₃-N = TAN × fNH₃) is also
+  available in the calculator.
+- `POST /api/v1/water/ammonia/calculate` with `temperature`, `ph` and optionally `tan` or `nh3N`
+  (mg/L as N).
+
+### Changed
+- pKa now uses T + 273.15 (was 273.2), matching the documented formula
+  pKa = 0.09018 + 2729.92 / (T + 273.15). At 25 °C, pKa moves from 9.2448 to 9.2464.
+- Live speciation and the calculator share one implementation (`ammoniaCalculator.ts`).
+
 ## [1.1.3] - 2026-11-02
 
 ### Fixed

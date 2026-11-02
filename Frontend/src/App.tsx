@@ -19,6 +19,7 @@ import DashboardSettingsPage from './pages/dashboard/DashboardSettingsPage';
 import DashboardPredictionPage from './pages/dashboard/DashboardPredictionPage';
 import DashboardSmsPage from './pages/dashboard/DashboardSmsPage';
 import DashboardThresholdsPage from './pages/dashboard/DashboardThresholdsPage';
+import DashboardAmmoniaPage from './pages/dashboard/DashboardAmmoniaPage';
 import { apiClient } from './services/apiClient';
 import './App.css';
 
@@ -105,6 +106,7 @@ function App(): JSX.Element {
           <Route path="parameters" element={<DashboardParametersPage />} />
           <Route path="thresholds" element={<DashboardThresholdsPage />} />
           <Route path="prediction" element={<DashboardPredictionPage />} />
+          <Route path="ammonia" element={<DashboardAmmoniaPage />} />
           <Route path="feeding" element={<DashboardFeedingPage />} />
           <Route path="water-change" element={<DashboardWaterChangePage />} />
           <Route path="aerator" element={<DashboardAeratorPage />} />

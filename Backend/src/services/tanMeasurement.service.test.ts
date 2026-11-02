@@ -54,7 +54,7 @@ test('TAN entry keeps collection time separate from server entry time and handle
   assert.equal(record.value, 1);
   assert.equal(record.validationStatus, 'USER_ATTESTED');
   assert.equal(record.environmentalReadingId, 'water-1');
-  assert.ok(Math.abs((record.nh3N ?? 0) - 0.05384) < 0.0001);
+  assert.ok(Math.abs((record.nh3N ?? 0) - 0.05366) < 0.0001);
 });
 
 test('TAN remains recorded but NH3-N unavailable without a matching environmental sample', async () => {

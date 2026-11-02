@@ -19,6 +19,7 @@ import { deviceService } from '../../../services/device.service';
 import { TanMeasurementInputError, tanMeasurementService } from '../../../services/tanMeasurement.service';
 import { auditLogService } from '../../../services/auditLog.service';
 import { riskAssessmentService } from '../../../services/riskAssessment.service';
+import { AmmoniaInputError, calculateAmmonia } from '../../../services/ammoniaCalculator';
 import { loadThresholdBands, saveThresholdBands, thresholdBandIssue, type ThresholdBands } from '../../../services/thresholdBands';
 
 const getReadingDeviceScope = async (req: AuthenticatedRequest): Promise<string[] | undefined> => {
@@ -80,6 +81,27 @@ const ingestMeta: IngestMeta = {
   lastReceivedAt: null,
   lastSourceIp: null,
   lastLocation: null,
+};
+
+/**
+ * Ammonia speciation calculator (steps 2–6): NH3 fraction from temperature and pH, then
+ * NH3-N from measured TAN (Option A) or TAN from measured NH3-N (Option B).
+ * POST /api/v1/water/ammonia/calculate
+ */
+export const calculateAmmoniaSpeciation = (req: Request, res: Response): void => {
+  try {
+    const { temperature, ph, tan, nh3N } = req.body as { temperature: number; ph: number; tan?: number; nh3N?: number };
+    const measurement = tan !== undefined ? { kind: 'TAN' as const, value: tan }
+      : nh3N !== undefined ? { kind: 'NH3_N' as const, value: nh3N } : null;
+    sendSuccess(res, 200, 'Ammonia speciation calculated', calculateAmmonia({ temperatureC: temperature, ph, measurement }));
+  } catch (error) {
+    if (error instanceof AmmoniaInputError) {
+      sendError(res, 400, error.message);
+      return;
+    }
+    logger.error('Failed to calculate ammonia speciation', error);
+    sendError(res, 500, 'Failed to calculate ammonia speciation');
+  }
 };
 
 export const createTanMeasurement = async (req: AuthenticatedRequest, res: Response): Promise<void> => {

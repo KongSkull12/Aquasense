@@ -89,6 +89,16 @@ export const tanMeasurementEntrySchema = z.object({
   attestMeasurement: z.literal(true),
 }).strict();
 
+// Exactly one of tan / nh3N may be given; neither returns the NH3 fraction only.
+export const ammoniaCalculationSchema = z.object({
+  temperature: z.number().finite(),
+  ph: z.number().finite(),
+  tan: z.number().finite().nonnegative().optional(),
+  nh3N: z.number().finite().nonnegative().optional(),
+}).strict().refine((body) => body.tan === undefined || body.nh3N === undefined, {
+  message: 'Provide either measured TAN or measured NH3-N, not both',
+});
+
 export const tanMeasurementQuerySchema = z.object({
   deviceId: z.string().trim().min(1).max(120).optional(),
   limit: z.coerce.number().int().min(1).max(100).default(30),
