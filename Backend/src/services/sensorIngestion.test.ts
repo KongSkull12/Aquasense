@@ -161,7 +161,9 @@ test('public MQTT persists only timestamped v1 frames on the exact configured de
     publishFrame({...frame,acquiredAt:'not-a-date'});
     publishFrame(frame,'other-device');
     publishFrame(frame,'esp32-feeder-1','0'.repeat(64));
+    assert.equal(service.getStatus().lastPublicFrameRejectedReason,'bad_signature');
     publishFrame(frame);
+    assert.equal(service.getStatus().lastPublicFrameRejectedReason,null);
     await new Promise<void>(resolve=>setImmediate(resolve));
     assert.equal(rows.length,1);
     assert.equal(rows[0].deviceId,'esp32-feeder-1');

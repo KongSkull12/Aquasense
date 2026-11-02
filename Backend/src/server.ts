@@ -73,6 +73,7 @@ const createApp = (): Express => {
           lastPublicFrameReceivedAt: mqttStatus.lastPublicFrameReceivedAt,
           lastPublicFrameVerifiedAt: mqttStatus.lastPublicFrameVerifiedAt,
           lastPublicFramePersistedAt: mqttStatus.lastPublicFramePersistedAt,
+          lastPublicFrameRejectedReason: mqttStatus.lastPublicFrameRejectedReason,
         },
       },
     };

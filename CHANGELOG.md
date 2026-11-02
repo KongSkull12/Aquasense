@@ -13,6 +13,13 @@ The running version is shown in the dashboard sidebar (App = frontend, API = bac
 3. Commit, tag and push: `git tag vX.Y.Z && git push kongskull main --tags`.
    Vercel and Render redeploy `main` automatically.
 
+## [1.1.2] - 2026-11-02
+
+### Added
+- `/health` reports `mqtt.lastPublicFrameRejectedReason` (`no_device_key`, `bad_signature` or
+  `invalid_frame`) and the backend logs a warning when ESP32 frames are dropped. A
+  `bad_signature` means `DEVICE_KEYS` on the server does not match `DEVICE_KEY` in the firmware.
+
 ## [1.1.1] - 2026-11-02
 
 ### Fixed
