@@ -63,11 +63,25 @@ const ensureUserSchemaCompat = async (): Promise<void> => {
     DO $$
     BEGIN
       IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'enum_users_role') THEN
-        CREATE TYPE enum_users_role AS ENUM ('admin', 'farmer', 'guest');
+        CREATE TYPE enum_users_role AS ENUM ('admin', 'farmer', 'staff', 'guest');
+      END IF;
+    END$$;
+  `);
+  // ADD VALUE cannot reliably run inside DO $$ on older Postgres; apply outside the block.
+  await sequelize.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_enum e
+        JOIN pg_type t ON t.oid = e.enumtypid
+        WHERE t.typname = 'enum_users_role' AND e.enumlabel = 'staff'
+      ) THEN
+        EXECUTE 'ALTER TYPE enum_users_role ADD VALUE ''staff''';
       END IF;
     END$$;
   `);
   await sequelize.query('ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS "role" enum_users_role NOT NULL DEFAULT \'farmer\';');
+  await sequelize.query('ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS employer_user_id UUID');
   // The first version of this table used camelCase columns. Sequelize writes user_id.
   await sequelize.query(`
     DO $$

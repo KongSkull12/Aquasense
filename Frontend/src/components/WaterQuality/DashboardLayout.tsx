@@ -4,6 +4,7 @@ import { DashboardIcon } from './DashboardUi';
 import { getDashboardProfile } from './dashboardProfile';
 import { apiClient } from '../../services/apiClient';
 import { API_BASE_URL } from '../../config/runtime';
+import { canAccessDashboardPath, isStaffRole, readSessionUser, readUserRole, staffHomePath } from '../../auth/session';
 import logo from '../../assets/images/AquaSense_Logo.png';
 
 type NavIcon = Parameters<typeof DashboardIcon>[0]['name'];
@@ -14,7 +15,7 @@ const formatRelease = (release: Release | null): string =>
 
 const appRelease: Release = { version: __APP_VERSION__, commit: __APP_COMMIT__ || null };
 
-const navItems: Array<{ to: string; label: string; icon: NavIcon }> = [
+const allNavItems: Array<{ to: string; label: string; icon: NavIcon }> = [
   { to: '/dashboard/overview', label: 'Overview', icon: 'home' },
   { to: '/dashboard/parameters', label: 'Parameters', icon: 'chart' },
   { to: '/dashboard/thresholds', label: 'Thresholds', icon: 'limits' },
@@ -26,16 +27,13 @@ const navItems: Array<{ to: string; label: string; icon: NavIcon }> = [
   { to: '/dashboard/alerts', label: 'Alerts & logs', icon: 'bell' },
   { to: '/dashboard/sms', label: 'SMS alerts', icon: 'sms' },
   { to: '/dashboard/calibration', label: 'Calibration', icon: 'pulse' },
+  { to: '/dashboard/firmware', label: 'Firmware update', icon: 'chip' },
   { to: '/dashboard/settings', label: 'Settings', icon: 'settings' },
 ];
 
 const readUserLabel = (): string => {
-  try {
-    const user = JSON.parse(localStorage.getItem('user') || '{}') as { fullName?: string; name?: string; email?: string };
-    return user.fullName || user.name || user.email || 'Signed in';
-  } catch {
-    return 'Signed in';
-  }
+  const user = readSessionUser();
+  return user?.fullName || user?.name || user?.email || 'Signed in';
 };
 
 export const DashboardLayout: React.FC = () => {
@@ -45,6 +43,14 @@ export const DashboardLayout: React.FC = () => {
   const [profile, setProfile] = useState(getDashboardProfile());
   const [apiRelease, setApiRelease] = useState<Release | null>(null);
   const userLabel = readUserLabel();
+  const role = readUserRole();
+  const navItems = allNavItems.filter((item) => canAccessDashboardPath(item.to, role));
+
+  useEffect(() => {
+    if (isStaffRole(role) && !canAccessDashboardPath(location.pathname, role)) {
+      navigate(staffHomePath, { replace: true });
+    }
+  }, [location.pathname, navigate, role]);
 
   // Show which backend release this dashboard is talking to, next to its own build.
   useEffect(() => {

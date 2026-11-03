@@ -119,6 +119,12 @@ export const smsRecipientsSchema = z.object({
   phones: z.array(z.string().trim().max(24)).max(4),
 }).strict();
 
+export const createStaffSchema = z.object({
+  fullName: z.string().trim().min(1).max(255),
+  email: z.string().trim().email().max(255),
+  password: z.string().min(12).max(256),
+}).strict();
+
 const finiteNumber = z.number().finite();
 
 export const thresholdSchema = z.object({

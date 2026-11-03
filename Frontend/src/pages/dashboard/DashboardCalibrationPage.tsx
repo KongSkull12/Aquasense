@@ -18,13 +18,14 @@ const SENSORS: Array<{
   {
     key: 'ph', health: 'ph', title: 'pH', input: 'voltage', inputUnit: 'V', steadyWithin: 0.01,
     refLabel: 'Buffer value', refUnit: 'pH', min: 0, max: 14, presets: [6.86, 4.01, 9.18],
-    steps: ['Rinse the probe with distilled water and blot it dry.', 'Put it in the 6.86 buffer, wait for Steady, then capture.', 'Repeat with 4.01, then 9.18. Two points save a calibration; the third refines it.'],
+    steps: ['Rinse the probe with distilled water and blot it dry.', 'Put it in the 6.86 buffer, wait for Steady, then capture — the offset saves immediately so this buffer should read correctly.', 'Repeat with 4.01 (and optionally 9.18) to fit the slope as well.'],
     hint: 'Buffer values are for 25 °C. At 30 °C use 6.85, 4.01 and 9.14 (or the table on your sachet).',
   },
   {
-    key: 'turb', health: 'turbidity', title: 'Turbidity', input: 'rawAdc', inputUnit: 'ADC', steadyWithin: 30,
+    key: 'turb', health: 'turbidity', title: 'Turbidity', input: 'voltage', inputUnit: 'V', steadyWithin: 0.03,
     refLabel: 'Standard', refUnit: 'NTU', min: 0, max: 3000, presets: [0],
-    steps: ['Put the sensor in clear water, wait for Steady, and capture 0 NTU.', 'Put it in a known standard (e.g. 100 NTU), wait, and capture that value.'],
+    steps: ['Power the module from 5 V and set its switch to Analog (A).', 'Put the sensor in clear water, wait for Steady (~2–3 V or higher), and capture 0 NTU.', 'Put it in a known standard (e.g. 100 NTU), wait, and capture that value.'],
+    hint: 'If voltage stays near 0 V, the sensor is not reaching the ESP32 — check 5 V power, the A/D switch, and GPIO34 wiring.',
   },
   {
     key: 'orp', health: 'orp', title: 'ORP / redox', input: 'voltage', inputUnit: 'V', steadyWithin: 0.01,
@@ -148,7 +149,7 @@ const DashboardCalibrationPage: React.FC = () => {
     <div className="space-y-5">
       <PageHead
         title="Calibration"
-        description="Calibrate pH, turbidity and ORP against reference solutions. The device averages 3 seconds of readings for each point, fits a line once it has two, and saves it on the device."
+        description="Calibrate pH, turbidity and ORP against reference solutions. One buffer corrects the offset immediately; a second reference fits the slope. Captures are saved on the ESP32."
         meta={<MetaItem label="Device"><StateMark state={fresh ? 'ok' : 'off'} className="!text-sm !font-semibold">{fresh ? 'Online' : 'Offline or stale'}</StateMark></MetaItem>}
       />
 

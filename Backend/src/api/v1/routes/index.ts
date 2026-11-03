@@ -8,6 +8,7 @@ import smsRoutes from './sms';
 import feedingRoutes from './feeding';
 import deviceRoutes from './devices';
 import hardwareRoutes from './hardware';
+import staffRoutes from './staff';
 
 const router = Router();
 
@@ -40,6 +41,7 @@ router.use(feedingRoutes);
 // Device management routes
 router.use(deviceRoutes);
 router.use(hardwareRoutes);
+router.use(staffRoutes);
 
 // Add more route modules here as needed:
 // router.use(userRoutes);

@@ -8,8 +8,20 @@ import { predictiveAnalyticsService } from './predictiveAnalytics.service';
 import { predictionLogService } from './predictionLog.service';
 import { smsLogService } from './smsLogService';
 import { waterQualityService } from '../iot/water/services/waterQualityService';
+import { mockDeviceAccess, type TestDevice, type TestUser } from './deviceAccessTestDoubles';
 
 afterEach(() => mock.restoreAll());
+
+const users: TestUser[] = [
+  { id: 'farmer-a', role: 'farmer' },
+  { id: 'farmer-b', role: 'farmer' },
+  { id: 'admin-a', role: 'admin' },
+];
+const scopedTanks: TestDevice[] = [
+  { deviceId: 'tank-a', userId: 'farmer-a', isActive: true },
+  { deviceId: 'tank-old', userId: 'farmer-a', isActive: false },
+  { deviceId: 'tank-b', userId: 'farmer-b', isActive: true },
+];
 
 const request = (userId?: string, userRole?: 'admin' | 'farmer') => ({ userId, userRole, query: {} }) as any;
 const response = () => {
@@ -23,19 +35,18 @@ const response = () => {
 };
 
 test('latest reading scopes farmers to active owned devices and leaves admin scope global', async () => {
-  const listByUser = mock.method(deviceService, 'listByUser', async () => [
-    { deviceId: 'owned-active', isActive: true },
-    { deviceId: 'owned-inactive', isActive: false },
-  ] as any);
+  mockDeviceAccess(users, [
+    { deviceId: 'owned-active', userId: 'farmer-a', isActive: true },
+    { deviceId: 'owned-inactive', userId: 'farmer-a', isActive: false },
+    { deviceId: 'other-farmer', userId: 'farmer-b', isActive: true },
+  ]);
   const getLatestReading = mock.method(sensorReadingService, 'getLatestReading', async () => null);
 
   await getLatestReadingController(request('farmer-a', 'farmer'));
   assert.deepEqual(getLatestReading.mock.calls[0].arguments[0], ['owned-active']);
-  assert.deepEqual(listByUser.mock.calls[0].arguments, ['farmer-a']);
 
   await getLatestReadingController(request('admin-a', 'admin'));
   assert.equal(getLatestReading.mock.calls[1].arguments[0], undefined);
-  assert.equal(listByUser.mock.callCount(), 1);
 });
 
 test('latest reading with missing identity passes an empty scope and does not list devices', async () => {
@@ -49,10 +60,7 @@ test('latest reading with missing identity passes an empty scope and does not li
 });
 
 test('time-range readings and statistics receive the active owned-device scope', async () => {
-  mock.method(deviceService, 'listByUser', async () => [
-    { deviceId: 'tank-a', isActive: true },
-    { deviceId: 'tank-old', isActive: false },
-  ] as any);
+  mockDeviceAccess(users, scopedTanks);
   const getReadings = mock.method(sensorReadingService, 'getReadingsByTimeRange', async () => [] as any);
   const getStatistics = mock.method(sensorReadingService, 'getStatistics', async () => ({
     orp: {}, temperature: {}, ph: {}, do: {}, turbidity: {}, ammonia: {}, healthScore: null,
@@ -66,10 +74,7 @@ test('time-range readings and statistics receive the active owned-device scope',
 });
 
 test('dashboard latest and statistics receive the active owned-device scope', async () => {
-  mock.method(deviceService, 'listByUser', async () => [
-    { deviceId: 'tank-a', isActive: true },
-    { deviceId: 'tank-old', isActive: false },
-  ] as any);
+  mockDeviceAccess(users, scopedTanks);
   const getLatestReading = mock.method(sensorReadingService, 'getLatestReading', async () => null);
   const getStatistics = mock.method(sensorReadingService, 'getStatistics', async () => ({
     orp: {}, temperature: {}, ph: {}, do: {}, turbidity: {}, ammonia: {}, healthScore: null,

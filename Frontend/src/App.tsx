@@ -20,6 +20,7 @@ import DashboardPredictionPage from './pages/dashboard/DashboardPredictionPage';
 import DashboardSmsPage from './pages/dashboard/DashboardSmsPage';
 import DashboardThresholdsPage from './pages/dashboard/DashboardThresholdsPage';
 import DashboardAmmoniaPage from './pages/dashboard/DashboardAmmoniaPage';
+import DashboardFirmwarePage from './pages/dashboard/DashboardFirmwarePage';
 import { apiClient } from './services/apiClient';
 import './App.css';
 
@@ -113,6 +114,7 @@ function App(): JSX.Element {
           <Route path="alerts" element={<DashboardAlertsPage />} />
           <Route path="sms" element={<DashboardSmsPage />} />
           <Route path="calibration" element={<DashboardCalibrationPage />} />
+          <Route path="firmware" element={<DashboardFirmwarePage />} />
           <Route path="settings" element={<DashboardSettingsPage />} />
         </Route>
       </Routes>

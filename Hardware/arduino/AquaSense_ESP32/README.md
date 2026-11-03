@@ -49,6 +49,25 @@ Arduino IDE, board **ESP32 Dev Module**, libraries from the Library Manager:
 PubSubClient 2.8, ArduinoJson 6.21.x, OneWire, DallasTemperature, LiquidCrystal_I2C.
 Open `AquaSense_ESP32.ino`, upload, and watch Serial Monitor at 115200 baud.
 
+### Flash from the dashboard instead
+
+You can compile once and then flash any board from **Dashboard → Firmware update**, in Chrome
+or Edge on a computer, without uploading through the Arduino IDE:
+
+1. In the Arduino IDE, choose **Sketch → Export Compiled Binary**. It writes a `build/` folder
+   next to the sketch. With arduino-cli:
+   `arduino-cli compile --fqbn esp32:esp32:esp32 --export-binaries Hardware/arduino/AquaSense_ESP32`.
+2. Close Serial Monitor, plug in the board, open the Firmware update page and click **Connect**.
+   Hold BOOT while connecting if the board does not enter download mode by itself.
+3. Pick a file and click **Flash firmware**:
+   - `AquaSense_ESP32.ino.bin` (app only, written at `0x10000`). Use this for normal updates.
+     It keeps the calibration and settings saved on the device.
+   - `AquaSense_ESP32.ino.merged.bin` (full 4 MB image, written at `0x0`). Use this for a new or
+     wiped board. It also clears the saved settings.
+
+The exported `.bin` files contain the Wi-Fi password and device key from `Secrets.h`. They are
+git-ignored; do not share or upload them.
+
 ## What works when
 
 | Feature | Needs |
@@ -68,8 +87,8 @@ Each sensor uses `value = slope × input + offset`; results are saved in flash.
 
 | Sensor | Steps |
 | --- | --- |
-| pH | `watch` → probe in pH 7 buffer, wait until steady → `ph 7` → rinse → pH 4 buffer → `ph 4` (optional third: `ph 10`) |
-| Turbidity | clear water → `turb 0` → known standard → `turb 100` (any known NTU) |
+| pH | `watch` → probe in pH 6.86/7 buffer, wait until steady → `ph 6.86` (offset saves immediately) → rinse → pH 4.01 → `ph 4.01` (fits slope; optional third: `ph 9.18`) |
+| Turbidity | 5 V power, module switch on **A**nalog → clear water → `turb 0` → known standard → `turb 100` (uses voltage, not raw ADC) |
 | ORP | probe in ORP standard → `orp 225` (use the value printed on your solution) |
 
 Other commands: `show`, `clear ph|orp|turb`, `reset ph|orp|turb|all`,

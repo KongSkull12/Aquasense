@@ -86,7 +86,7 @@ export const StatusBadge = ({ label, tone }: { label: string; tone: Tone }) => (
   </span>
 );
 
-export const DashboardIcon = ({ name }: { name: 'home' | 'chart' | 'feed' | 'alert' | 'battery' | 'tank' | 'pulse' | 'sms' | 'clock' | 'bell' | 'settings' | 'user' | 'aerator' | 'drain' | 'fill' | 'model' | 'limits' | 'flask' }) => {
+export const DashboardIcon = ({ name }: { name: 'home' | 'chart' | 'feed' | 'alert' | 'battery' | 'tank' | 'pulse' | 'sms' | 'clock' | 'bell' | 'settings' | 'user' | 'aerator' | 'drain' | 'fill' | 'model' | 'limits' | 'flask' | 'chip' }) => {
   const common = 'h-4 w-4 fill-none stroke-current';
   switch (name) {
     case 'home':
@@ -123,6 +123,8 @@ export const DashboardIcon = ({ name }: { name: 'home' | 'chart' | 'feed' | 'ale
       return <svg viewBox="0 0 24 24" className={common} strokeWidth="2"><path d="M12 3v4M12 17v4M5 8l3 2M16 14l3 2M5 16l3-2M16 10l3-2" /><circle cx="12" cy="12" r="3" /></svg>;
     case 'flask':
       return <svg viewBox="0 0 24 24" className={common} strokeWidth="2"><path d="M9 3h6" /><path d="M10 3v6L4.5 18.5A1.7 1.7 0 0 0 6 21h12a1.7 1.7 0 0 0 1.5-2.5L14 9V3" /><path d="M7.5 15h9" /></svg>;
+    case 'chip':
+      return <svg viewBox="0 0 24 24" className={common} strokeWidth="2"><rect x="6" y="6" width="12" height="12" rx="1.5" /><path d="M10 2v4M14 2v4M10 18v4M14 18v4M2 10h4M2 14h4M18 10h4M18 14h4" /></svg>;
     case 'limits':
       return <svg viewBox="0 0 24 24" className={common} strokeWidth="2"><path d="M4 7h16" /><path d="M4 12h16" /><path d="M4 17h16" /><path d="M8 7v10" /><path d="M16 7v10" /></svg>;
   }

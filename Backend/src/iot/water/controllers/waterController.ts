@@ -21,14 +21,12 @@ import { auditLogService } from '../../../services/auditLog.service';
 import { riskAssessmentService } from '../../../services/riskAssessment.service';
 import { AmmoniaInputError, calculateAmmonia } from '../../../services/ammoniaCalculator';
 import { loadThresholdBands, saveThresholdBands, thresholdBandIssue, type ThresholdBands } from '../../../services/thresholdBands';
+import { accessibleDeviceIds, listAccessibleDevices, verifyDeviceAccess } from '../../../services/deviceAccess';
 
 const getReadingDeviceScope = async (req: AuthenticatedRequest): Promise<string[] | undefined> => {
   // An absent identity must never fall through to the service's unfiltered query.
   if (!req.userId) return [];
-  if (req.userRole === 'admin') return undefined;
-  return (await deviceService.listByUser(req.userId))
-    .filter((device) => device.isActive)
-    .map((device) => device.deviceId);
+  return accessibleDeviceIds(req.userId, req.userRole);
 };
 
 const mapDbStatsToWaterStats = async (minutes: number, deviceIds?: string[]): Promise<WaterQualityStats> => {
@@ -108,10 +106,10 @@ export const createTanMeasurement = async (req: AuthenticatedRequest, res: Respo
   try {
     if (!req.userId) { sendError(res, 401, 'Unauthorized'); return; }
     const { deviceId, value, source, sampleCollectedAt, validationEvidence } = req.body;
-    const activeDevice = req.userRole === 'admin'
+    const allowed = req.userRole === 'admin'
       ? await deviceService.getActiveDevice(deviceId)
-      : await deviceService.verifyOwnership(req.userId, deviceId);
-    if (!activeDevice) { sendError(res, 403, 'Device must be active and registered to the authenticated user'); return; }
+      : await verifyDeviceAccess(req.userId, deviceId, req.userRole);
+    if (!allowed) { sendError(res, 403, 'Device must be active and registered to the authenticated user'); return; }
 
     const measurement = await tanMeasurementService.record(req.userId, { deviceId, value, source, sampleCollectedAt, validationEvidence });
     await auditLogService.createLog({
@@ -141,11 +139,11 @@ export const getTanMeasurements = async (req: AuthenticatedRequest, res: Respons
     if (requestedDevice) {
       const allowed = req.userRole === 'admin'
         ? await deviceService.getActiveDevice(requestedDevice)
-        : await deviceService.verifyOwnership(req.userId, requestedDevice);
+        : await verifyDeviceAccess(req.userId, requestedDevice, req.userRole);
       if (!allowed) { sendError(res, 403, 'Device must be active and available to the authenticated user'); return; }
       deviceIds = [requestedDevice];
     } else if (req.userRole !== 'admin') {
-      deviceIds = (await deviceService.listByUser(req.userId)).filter((device) => device.isActive).map((device) => device.deviceId);
+      deviceIds = (await listAccessibleDevices(req.userId, req.userRole)).map((device) => device.deviceId);
     }
     const limit = typeof req.query.limit === 'number' ? req.query.limit : Number(req.query.limit ?? 30);
     const measurements = await tanMeasurementService.list(deviceIds, limit);
@@ -240,7 +238,7 @@ export const getAlerts = (req: AuthenticatedRequest, res: Response): void => {
   void (async () => {
     try {
     const limit = parseInt(req.query.limit as string, 10) || 50;
-    const deviceIds = req.userRole === 'admin' ? undefined : (req.userId ? (await deviceService.listByUser(req.userId)).filter((device) => device.isActive).map((device) => device.deviceId) : []);
+    const deviceIds = req.userId ? await accessibleDeviceIds(req.userId, req.userRole) : [];
     const alerts = await alertService.getAlerts(limit, undefined, deviceIds);
     sendSuccess(res, 200, 'Alerts retrieved', alerts);
     } catch (error) {

@@ -19,6 +19,8 @@ const deviceResultText: Record<string, string> = {
   rejected_out_of_range: 'That reference value is outside the allowed range for this sensor.',
   rejected_same_input: 'The references gave almost the same input. Check the probe and the solutions.',
   rejected_implausible_slope: 'The fitted line is not plausible for this sensor. Check the solutions and wiring, then clear the points and try again.',
+  rejected_turb_voltage_low: 'Turbidity voltage is too low. Power the module from 5 V, set its switch to Analog (A), and check the wire to GPIO34.',
+  rejected_turb_curve: 'Turbidity voltage could not be converted. Check the sensor power and wiring, then try again.',
   rejected_bad_param: 'The device did not understand the calibration request.',
 };
 

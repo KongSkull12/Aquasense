@@ -5,16 +5,30 @@
 import bcryptjs from 'bcryptjs';
 import { logger } from '../utils/logger';
 import { User as UserModel } from '../database/models/User';
+import type { UserRole } from './userRoles';
 
 export interface User {
   id: string;
   fullName: string;
   email: string;
-  role: 'admin' | 'farmer' | 'guest';
+  role: UserRole;
+  employerUserId?: string | null;
   passwordHash?: string;
   createdAt: Date;
   updatedAt: Date;
 }
+
+const validatePasswordStrength = (password: string): void => {
+  if (
+    password.length < 12 ||
+    !/[A-Z]/.test(password) ||
+    !/[a-z]/.test(password) ||
+    !/\d/.test(password) ||
+    !/[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?]/.test(password)
+  ) {
+    throw new Error('Password must be at least 12 characters and include uppercase, lowercase, number, and special character');
+  }
+};
 
 class UserService {
   /**
@@ -28,16 +42,7 @@ class UserService {
         throw new Error('Invalid email format');
       }
 
-      // Validate password strength
-      if (
-        password.length < 12 ||
-        !/[A-Z]/.test(password) ||
-        !/[a-z]/.test(password) ||
-        !/\d/.test(password) ||
-        !/[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?]/.test(password)
-      ) {
-        throw new Error('Password must be at least 12 characters and include uppercase, lowercase, number, and special character');
-      }
+      validatePasswordStrength(password);
 
       // Check if user already exists
       const existingUser = await UserModel.findOne({
@@ -66,6 +71,48 @@ class UserService {
       logger.error('Error registering user', error);
       throw error;
     }
+  }
+
+  /** Admin creates a staff account that shares the admin tank devices. */
+  async createStaffAccount(employerUserId: string, fullName: string, email: string, password: string): Promise<User> {
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) throw new Error('Invalid email format');
+    validatePasswordStrength(password);
+
+    const employer = await UserModel.findByPk(employerUserId);
+    if (!employer || employer.role !== 'admin') {
+      throw new Error('Only an admin can create staff accounts');
+    }
+
+    const existingUser = await UserModel.findOne({ where: { email: email.toLowerCase() } });
+    if (existingUser) throw new Error('User with this email already exists');
+
+    const passwordHash = await bcryptjs.hash(password, 10);
+    const user = await UserModel.create({
+      fullName: fullName.trim(),
+      email: email.toLowerCase(),
+      role: 'staff',
+      employerUserId,
+      passwordHash,
+    });
+    logger.info('Staff account created', { id: user.id, email: user.email, employerUserId });
+    return this.mapUserModel(user);
+  }
+
+  async listStaffForEmployer(employerUserId: string): Promise<User[]> {
+    const rows = await UserModel.findAll({
+      where: { employerUserId, role: 'staff' },
+      order: [['createdAt', 'DESC']],
+    });
+    return rows.map((row) => this.mapUserModel(row));
+  }
+
+  async removeStaffAccount(employerUserId: string, staffUserId: string): Promise<boolean> {
+    const staff = await UserModel.findOne({ where: { id: staffUserId, employerUserId, role: 'staff' } });
+    if (!staff) return false;
+    await staff.destroy();
+    logger.info('Staff account removed', { staffUserId, employerUserId });
+    return true;
   }
 
   /**
@@ -144,6 +191,7 @@ class UserService {
       fullName: user.fullName,
       email: user.email,
       role: user.role,
+      employerUserId: user.employerUserId,
       passwordHash: user.passwordHash,
       createdAt: user.createdAt,
       updatedAt: user.updatedAt,

@@ -12,13 +12,11 @@ import { alertPhonesForDevice } from '../../../services/smsRecipients';
 import type { AlertStatus } from '../../../services/alert.service';
 import type { AlertSeverity } from '../../../services/ruleEngine.service';
 import type { AuthenticatedRequest } from '../../../middleware/authMiddleware';
-import { deviceService } from '../../../services/device.service';
+import { accessibleDeviceIds } from '../../../services/deviceAccess';
 
 const visibleDeviceIds = async (req: AuthenticatedRequest): Promise<string[] | undefined> => {
-  if (req.userRole === 'admin') return undefined;
   if (!req.userId) return [];
-  const devices = await deviceService.listByUser(req.userId);
-  return devices.filter((device) => device.isActive).map((device) => device.deviceId);
+  return accessibleDeviceIds(req.userId, req.userRole);
 };
 
 const parseLimit = (value: unknown): number => {

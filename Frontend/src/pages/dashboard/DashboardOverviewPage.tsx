@@ -6,6 +6,7 @@ import { isReadingLive, LIVE_READING_MS } from '../../components/WaterQuality/se
 import { BandChart, BandKey, ChartPanel, KeyValues, MetaItem, Notice, PageHead, Panel, StateMark, type MarkState } from '../../components/WaterQuality/Console';
 import { bandLabel, classifyBand, formatNormalBand, type BandKey as LimitKey } from '../../components/WaterQuality/thresholdBands';
 import { RiskAssessmentPanel } from '../../components/WaterQuality/RiskAssessmentPanel';
+import { isStaffRole } from '../../auth/session';
 
 type Status = { label: string; state: MarkState };
 type NextStep = { text: string; to?: string; cta?: string };
@@ -31,6 +32,7 @@ const nextFeed = (schedules: Array<{ date: string | null; time: string; enabled:
 const DashboardOverviewPage: React.FC = () => {
   const { isConnected, latestReading, chartData, riskAssessment, thresholdBands, error, activeAlerts, feedingSchedules } = useDashboardData();
   const [profile, setProfile] = useState(getDashboardProfile());
+  const staffSession = isStaffRole();
 
   useEffect(() => {
     const refreshProfile = () => setProfile(getDashboardProfile());
@@ -136,17 +138,17 @@ const DashboardOverviewPage: React.FC = () => {
   // One plain sentence on what to do next, derived only from reported state.
   const nextSteps: NextStep[] = [];
   if (!isConnected) nextSteps.push({ text: 'Live connection lost. Check that the AquaSense server is running.' });
-  if (!latestReading) nextSteps.push({ text: 'Waiting for the first sensor reading. Make sure your device is registered.', to: '/dashboard/settings', cta: 'Open settings' });
+  if (!latestReading) nextSteps.push({ text: 'Waiting for the first sensor reading. Make sure your device is registered.', ...(staffSession ? {} : { to: '/dashboard/settings', cta: 'Open settings' }) });
   else if (!live) nextSteps.push({ text: `No data from the ESP32 in the last ${LIVE_READING_MS / 1000} seconds, so no readings are shown. Check the device's power, Wi-Fi and MQTT connection.` });
   if (activeAlerts.length) nextSteps.splice(isConnected && live ? 0 : nextSteps.length, 0, { text: `${activeAlerts.length} active alert${activeAlerts.length > 1 ? 's' : ''} need${activeAlerts.length > 1 ? '' : 's'} review.`, to: '/dashboard/alerts', cta: 'Review alerts' });
   if (live && latestReading) {
     const named = (label: 'Alert' | 'Warning') => readings.filter((reading) => reading.status.label === label).map((reading) => reading.label);
     const alertNames = named('Alert');
     const warningNames = named('Warning');
-    if (alertNames.length) nextSteps.unshift({ text: `${alertNames.join(' and ')} ${alertNames.length > 1 ? 'are' : 'is'} in Alert. Check the tank.`, to: '/dashboard/thresholds', cta: 'Thresholds' });
-    else if (warningNames.length) nextSteps.unshift({ text: `${warningNames.join(' and ')} ${warningNames.length > 1 ? 'are' : 'is'} in Warning.`, to: '/dashboard/thresholds', cta: 'Thresholds' });
+    if (alertNames.length) nextSteps.unshift({ text: `${alertNames.join(' and ')} ${alertNames.length > 1 ? 'are' : 'is'} in Alert. Check the tank.`, ...(staffSession ? {} : { to: '/dashboard/thresholds', cta: 'Thresholds' }) });
+    else if (warningNames.length) nextSteps.unshift({ text: `${warningNames.join(' and ')} ${warningNames.length > 1 ? 'are' : 'is'} in Warning.`, ...(staffSession ? {} : { to: '/dashboard/thresholds', cta: 'Thresholds' }) });
     const uncalibrated = (['temperature', 'ph'] as const).filter((name) => latestReading.sensorHealth?.[name] && !isCalibrated(name));
-    if (uncalibrated.length) nextSteps.push({ text: `Calibrate the ${uncalibrated.map((name) => name === 'ph' ? 'pH' : 'temperature').join(' and ')} probe${uncalibrated.length > 1 ? 's' : ''} so readings can be classified and the NH₃ fraction estimated.`, to: '/dashboard/calibration', cta: 'Calibrate' });
+    if (uncalibrated.length) nextSteps.push({ text: `Calibrate the ${uncalibrated.map((name) => name === 'ph' ? 'pH' : 'temperature').join(' and ')} probe${uncalibrated.length > 1 ? 's' : ''} so readings can be classified and the NH₃ fraction estimated.`, ...(staffSession ? {} : { to: '/dashboard/calibration', cta: 'Calibrate' }) });
     const silent = [latestReading.orp == null ? 'ORP' : null, readings[4].value == null ? 'tank level' : null].filter(Boolean);
     if (silent.length) nextSteps.push({ text: `${silent.join(' and ')} ${silent.length > 1 ? 'sensors are' : 'sensor is'} not reporting.` });
     if (riskAssessment?.status === 'AVAILABLE' && (riskAssessment.level === 'High' || riskAssessment.level === 'Extreme')) {

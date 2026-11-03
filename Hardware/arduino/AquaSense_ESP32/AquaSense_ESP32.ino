@@ -13,12 +13,16 @@
     signed on aquasense-control-dev/<DEVICE_ID>/command. Each is checked for
     signature, device, expiry and replay, executed, then answered with a
     signed acknowledgement on aquasense-control-dev/<DEVICE_ID>/state.
-  * Feeding schedules are pulled over HTTP from the backend and kept in flash,
-    so scheduled feeds continue during network outages.
-  * 20x4 I2C LCD with three rotating pages.
-  * Power-up self-test: the feeder opens and closes first, then each relay
-    clicks, with beeps between steps ("selftest off" disables it). The servo
-    still sweeps on the first boot even if a fault reset skips the relays.
+  * Feeding schedules are pulled over HTTP(S) from the backend and kept in
+    flash, so scheduled feeds continue during network outages. An https://
+    BACKEND_HTTP_URL is verified against RootCerts.h.
+  * 20x4 I2C LCD with three rotating pages; a feeder command jumps to the
+    status page so the feeder state is visible straight away.
+  * Feeder servo: at power-up it moves once to the closed (home) angle and
+    its signal is switched off. After that it moves only for Feed now,
+    Feeder on, Feeder off or a schedule, and is switched off after each move.
+  * Power-up self-test: each relay clicks, with beeps between steps
+    ("selftest off" disables it). The servo is not part of it.
 
   Setup: copy Secrets.example.h to Secrets.h and fill it in. Read the
   "COMMISSIONING" section below before connecting pump power.
@@ -32,6 +36,7 @@
 #include <Wire.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
+#include <WiFiClientSecure.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
 #include <Preferences.h>
@@ -49,6 +54,7 @@
 #include <esp32-hal-periman.h>
 #endif
 #include "Secrets.h"
+#include "RootCerts.h"
 
 
 // =====================================================
@@ -130,30 +136,43 @@ const int      SERVO_OPEN_DEG   = 140;
 const uint32_t FEED_PRE_MS      = 800;
 const uint32_t FEED_OPEN_MS     = 1000;
 const uint32_t FEED_POST_MS     = 800;
-const uint32_t FEED_ON_HOLD_MS  = 10000;   // "ON" closes again after this
+// "Feeder on" holds the gate open until "Feeder off". This is only a safety
+// close in case the OFF command never arrives, so the hopper cannot empty.
+const uint32_t FEED_ON_MAX_MS   = 60000;
 
 
 // =====================================================
 // SENSOR CALIBRATION
 // =====================================================
-// Each sensor uses a straight line:  value = slope * input + offset
-//   pH  and ORP: input = probe voltage (V)
-//   turbidity:   input = raw ADC count (0-4095)
-// These are the starting defaults. Calibrate from the Serial Monitor (type
-// "help"); the results are saved in flash and survive reboots and re-flashing.
+// Each sensor uses a straight line after a base conversion:
+//   pH  and ORP: value = slope * voltage + offset
+//   turbidity:   value = turbSlope * sen0189Curve(voltage) + turbOffset
+// SEN0189 (5 V module) curve from the DFRobot example; calibrate with clear
+// water (0 NTU) and a known standard. Results are saved in flash (key "cal2").
 
 struct Calibration {
   float phSlope, phOffset;       // pH per volt
   float orpSlope, orpOffset;     // mV per volt
-  float turbSlope, turbOffset;   // NTU per ADC count
+  float turbSlope, turbOffset;   // gain / offset on the voltage→NTU curve
 };
 const Calibration DEFAULT_CAL = {
-  -5.70f, 21.34f,
+  -5.70f, 21.34f,                // pH ≈ 7 near 2.5 V before a buffer capture
   1333.33f, -2000.0f,
-  -0.4f, 1200.0f,                // = clear water at ADC 3000 -> 0 NTU, ADC 500 -> 1000 NTU
+  1.0f, 0.0f,                    // start on the SEN0189 curve; calibrate to match your standards
 };
 Calibration cal = DEFAULT_CAL;
 const float TURB_MAX_NTU = 3000.0;
+const char* const CAL_NVS_KEY = "cal2";
+
+// DFRobot SEN0189 example (5 V powered module). Output voltage falls as water
+// gets cloudier. Clamp after the curve; calibration gain/offset refine it.
+float turbidityFromVoltage(float volts) {
+  if (!isfinite(volts) || volts < 0.05f) return NAN;
+  float ntu = (-1120.4f * volts * volts) + (5742.3f * volts) - 4352.9f;
+  if (ntu < 0.0f) ntu = 0.0f;
+  if (ntu > TURB_MAX_NTU) ntu = TURB_MAX_NTU;
+  return ntu;
+}
 
 const float TANK_FULL_DISTANCE_CM  = 10.0;
 const float TANK_EMPTY_DISTANCE_CM = 100.0;
@@ -300,9 +319,11 @@ bool signatureMatches(const char* message, const char* signature) {
 // feeder firmware: hand-rolled LEDC code compiled and reported success on
 // this board but the horn never moved, while ESP32Servo moves it. attach(pin)
 // uses 544-2400 us, the range SERVO_CLOSED_DEG / SERVO_OPEN_DEG were tuned
-// against. The servo stays attached so the gate is held closed.
+// against. After each move the signal is switched off (detach) once the horn
+// has arrived, so the servo stops instead of buzzing or creeping between commands.
 Servo feederServo;
 const uint32_t SERVO_HOLD_MS = 1500;   // time for the horn to reach a new angle
+uint32_t servoReleaseAt = 0;           // millis() when to switch the signal off; 0 = nothing pending
 bool buzzerOn = false;
 bool wifiDiagOff = false;   // serial "wifi off" diagnostic
 
@@ -327,7 +348,16 @@ bool attachServo() {
 bool servoAngle(int degrees) {
   if (!attachServo()) return false;
   feederServo.write(constrain(degrees, 0, 180));
+  servoReleaseAt = millis() + SERVO_HOLD_MS;
+  if (servoReleaseAt == 0) servoReleaseAt = 1;
   return true;
+}
+
+void servoRelease() {
+  servoReleaseAt = 0;
+  if (!feederServo.attached()) return;
+  feederServo.detach();
+  Serial.println("[SERVO] signal off (servo stopped)");
 }
 
 // Saved in flash (see loadRelaySettings); defaults used on first boot.
@@ -376,31 +406,54 @@ void loadRelaySettings() {
 FeederStep feederStep = FEED_IDLE;
 uint32_t feederStepAt = 0;
 char feedSuppressedMinute[20] = "";   // OFF / ALL_OFF block a scheduled feed in this minute
+bool feederStateChanged = false;      // shows the LCD status page on the next loop
 
 bool feederBusy() { return feederStep != FEED_IDLE; }
+
+const char* feederStateText() {
+  if (feederStep == FEED_IDLE) return "closed";
+  return feederStep == FEED_HOLD_OPEN ? "OPEN" : "FEEDING";
+}
 
 bool feederStart(FeederStep step, int angle) {
   const FeederStep previous = feederStep;
   feederStep = step;
   feederStepAt = millis();
-  if (servoAngle(angle)) return true;
+  if (servoAngle(angle)) {
+    if (step != previous) { feederStateChanged = true; Serial.printf("[FEED] feeder %s\n", feederStateText()); }
+    return true;
+  }
   feederStep = previous;
   return false;
 }
 
+// Feed now: closed -> open -> closed, once.
 bool feederTrigger() { return !feederBusy() && feederStart(FEED_PRE, SERVO_CLOSED_DEG); }
+// Feeder on: open and stay open until Feeder off (or the FEED_ON_MAX_MS safety close).
 bool feederHoldOpen() { return feederStart(FEED_HOLD_OPEN, SERVO_OPEN_DEG); }
-bool feederStop() { feederStep = FEED_IDLE; return servoAngle(SERVO_CLOSED_DEG); }
+// Feeder off: close now, also cancelling a feed cycle that is running.
+bool feederStop() {
+  if (!servoAngle(SERVO_CLOSED_DEG)) return false;
+  if (feederStep != FEED_IDLE) { feederStep = FEED_IDLE; feederStateChanged = true; Serial.println("[FEED] feeder closed"); }
+  return true;
+}
 
 void updateFeeder() {
   const uint32_t elapsed = millis() - feederStepAt;
   switch (feederStep) {
     case FEED_PRE:       if (elapsed >= FEED_PRE_MS) feederStart(FEED_OPEN, SERVO_OPEN_DEG); break;
     case FEED_OPEN:      if (elapsed >= FEED_OPEN_MS) feederStart(FEED_POST, SERVO_CLOSED_DEG); break;
-    case FEED_POST:      if (elapsed >= FEED_POST_MS) feederStep = FEED_IDLE; break;
-    case FEED_HOLD_OPEN: if (elapsed >= FEED_ON_HOLD_MS) feederStop(); break;
+    case FEED_POST:
+      if (elapsed >= FEED_POST_MS) { feederStep = FEED_IDLE; feederStateChanged = true; Serial.println("[FEED] feed cycle done"); }
+      break;
+    case FEED_HOLD_OPEN:
+      if (elapsed >= FEED_ON_MAX_MS) { Serial.println("[FEED] safety close: no Feeder off within 60 s"); feederStop(); }
+      break;
     default: break;
   }
+  // Stop the servo once it has reached its angle and is resting (closed, or held open).
+  if (servoReleaseAt && (int32_t)(millis() - servoReleaseAt) >= 0 &&
+      (feederStep == FEED_IDLE || feederStep == FEED_HOLD_OPEN)) servoRelease();
 }
 
 void suppressFeedingThisMinute() {
@@ -571,12 +624,27 @@ void readAnalogSensors() {
   // pH first: an unplugged pH input rails high and can bleed into the next pin.
   phS.diag = sampleADC(PH_PIN); phS.sampledAtMs = millis();
   trackConnection(phS, adcLooksConnected(phS.diag, PH_CONNECT_MIN, PH_CONNECT_MAX), "pH");
-  if (phS.connected) phS.value = constrain(phS.diag.voltage * cal.phSlope + cal.phOffset, 0.0f, 14.0f);
+  if (phS.connected) {
+    // Mild Nernst correction when temperature is available (slope rated near 25 °C).
+    float slope = cal.phSlope;
+    if (tempS.connected && isfinite(tempS.value) && tempS.value > -5.0f && tempS.value < 60.0f) {
+      slope = cal.phSlope * (298.15f / (tempS.value + 273.15f));
+    }
+    phS.value = constrain(phS.diag.voltage * slope + cal.phOffset, 0.0f, 14.0f);
+  }
   delay(2);
 
   turbS.diag = sampleADC(TURB_PIN); turbS.sampledAtMs = millis();
-  trackConnection(turbS, adcLooksConnected(turbS.diag, TURB_CONNECT_MIN, TURB_CONNECT_MAX), "TURB");
-  if (turbS.connected) turbS.value = constrain(turbS.diag.rawAdc * cal.turbSlope + cal.turbOffset, 0.0f, TURB_MAX_NTU);
+  // Prefer characterized volts: a powered SEN0189 sits well above ~0.4 V.
+  const bool turbOk = isfinite(turbS.diag.voltage)
+    && turbS.diag.voltage >= 0.40f && turbS.diag.voltage <= 3.10f
+    && (turbS.diag.maximum - turbS.diag.minimum) <= STABILITY_MAX_DEV;
+  trackConnection(turbS, turbOk, "TURB");
+  if (turbS.connected) {
+    const float curve = turbidityFromVoltage(turbS.diag.voltage);
+    if (isfinite(curve)) turbS.value = constrain(cal.turbSlope * curve + cal.turbOffset, 0.0f, TURB_MAX_NTU);
+    else turbS.value = NAN;
+  }
   delay(2);
 
   orpS.diag = sampleADC(ORP_PIN); orpS.sampledAtMs = millis();
@@ -969,17 +1037,24 @@ uint32_t httpHoldoffUntil = 0;
 uint32_t httpBackoffMs = 0;
 
 bool httpPost(const char* path, const String& body, String& response) {
-  WiFiClient httpClient;   // separate socket: sharing the MQTT client would drop MQTT
-  httpClient.setTimeout(3);   // seconds; a dead LAN address must not stall MQTT for minutes
+  // Separate sockets from MQTT: sharing the MQTT client would drop MQTT.
+  // A hosted backend (https://, e.g. Render) is verified against RootCerts.h.
+  const bool https = !strncmp(Secrets::BACKEND_HTTP_URL, "https://", 8);
+  WiFiClient plainClient;
+  WiFiClientSecure secureClient;
+  if (https) { secureClient.setCACert(BACKEND_ROOT_CAS); secureClient.setTimeout(8); }
+  else plainClient.setTimeout(3);   // seconds; a dead LAN address must not stall MQTT for minutes
+  WiFiClient& httpClient = https ? static_cast<WiFiClient&>(secureClient) : plainClient;
   HTTPClient http;
   const String url = String(Secrets::BACKEND_HTTP_URL) + path;
   if (!http.begin(httpClient, url)) return false;
 #if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
-  http.setConnectTimeout(2500);
-  http.setTimeout(2500);
+  // TLS handshakes take 1-2 s on the ESP32; plain LAN calls stay short.
+  http.setConnectTimeout(https ? 8000 : 2500);
+  http.setTimeout(https ? 8000 : 2500);
 #else
   // Core 2 passes this value straight through to WiFiClient as seconds.
-  http.setTimeout(3);
+  http.setTimeout(https ? 8 : 3);
 #endif
   http.addHeader("Content-Type", "application/json");
   http.addHeader("x-device-key", Secrets::DEVICE_KEY);
@@ -1056,22 +1131,32 @@ char serialLine[64];
 uint8_t serialLen = 0;
 
 void loadCalibration() {
-  if (prefs.getBytesLength("cal") == sizeof(Calibration)) prefs.getBytes("cal", &cal, sizeof(cal));
+  if (prefs.getBytesLength(CAL_NVS_KEY) == sizeof(Calibration)) {
+    prefs.getBytes(CAL_NVS_KEY, &cal, sizeof(cal));
+    return;
+  }
+  // Older "cal" blob used ADC counts for turbidity — keep pH/ORP, reset turb defaults.
+  if (prefs.getBytesLength("cal") == sizeof(Calibration)) {
+    prefs.getBytes("cal", &cal, sizeof(cal));
+    cal.turbSlope = DEFAULT_CAL.turbSlope;
+    cal.turbOffset = DEFAULT_CAL.turbOffset;
+    prefs.putBytes(CAL_NVS_KEY, &cal, sizeof(cal));
+  }
 }
 
-void saveCalibration() { prefs.putBytes("cal", &cal, sizeof(cal)); }
+void saveCalibration() { prefs.putBytes(CAL_NVS_KEY, &cal, sizeof(cal)); }
 
 void printCalibration() {
   Serial.println("---- calibration (value = slope * input + offset) ----");
   Serial.printf("pH   : slope %.4f pH/V   offset %.4f   (%.1f mV per pH)\n", cal.phSlope, cal.phOffset, cal.phSlope != 0 ? 1000.0f / fabsf(cal.phSlope) : 0.0f);
   Serial.printf("ORP  : slope %.3f mV/V   offset %.2f mV\n", cal.orpSlope, cal.orpOffset);
-  Serial.printf("Turb : slope %.5f NTU/count   offset %.3f NTU\n", cal.turbSlope, cal.turbOffset);
+  Serial.printf("Turb : gain %.4f × SEN0189(V) + offset %.3f NTU\n", cal.turbSlope, cal.turbOffset);
   Serial.printf("Captured points: pH %u, ORP %u, turbidity %u\n", phPts, orpPts, turbPts);
 }
 
 void printWatchLine() {
   Serial.printf("pH  V=%.4f -> %s | ", phS.diag.voltage, phS.connected ? String(phS.value, 2).c_str() : "--");
-  Serial.printf("Turb ADC=%d -> %s NTU | ", turbS.diag.rawAdc, turbS.connected ? String(turbS.value, 1).c_str() : "--");
+  Serial.printf("Turb V=%.3f ADC=%d -> %s NTU | ", turbS.diag.voltage, turbS.diag.rawAdc, turbS.connected ? String(turbS.value, 1).c_str() : "--");
   Serial.printf("ORP V=%.4f -> %s mV\n", orpS.diag.voltage, orpS.connected ? String(orpS.value, 1).c_str() : "--");
 }
 
@@ -1080,9 +1165,9 @@ void printHelp() {
   Serial.println("==== AquaSense calibration (Serial Monitor: 115200 baud, Newline) ====");
   Serial.println("watch           toggle a live line of input + value every second");
   Serial.println("show            print the current calibration");
-  Serial.println("ph <value>      record a pH buffer point, e.g.  ph 7   then  ph 4  (and  ph 10)");
+  Serial.println("ph <value>      one buffer corrects offset now; a second buffer fits the slope (e.g. ph 6.86 then ph 4.01)");
   Serial.println("orp <mV>        record an ORP standard, e.g.  orp 225  (1 point = offset only)");
-  Serial.println("turb <NTU>      record a turbidity point, e.g.  turb 0  (clear water)  then  turb 100");
+  Serial.println("turb <NTU>      clear water: turb 0; then a known standard: turb 100 (uses probe voltage)");
   Serial.println("clear ph|orp|turb      forget captured points (keeps saved calibration)");
   Serial.println("reset ph|orp|turb|all  restore factory defaults and save");
   Serial.println("set ph|orp|turb <slope> <offset>   type a calibration in directly");
@@ -1250,8 +1335,12 @@ void calibrate(const String& sensor, float reference, char* result, size_t resul
     phPts = points = addPoint(phPtX, phPtY, phPts, mean, reference, 0.05f);
     Serial.printf("Recorded pH %.2f at %.4f V (%u point%s)\n", reference, mean, phPts, phPts > 1 ? "s" : "");
     if (phPts < 2) {
-      Serial.println("Rinse, put the probe in a second buffer (e.g. pH 4), wait, then type: ph 4");
-      if (result) snprintf(result, resultSize, "recorded n=1 x=%.4f", mean);
+      // One buffer: keep the Nernst-ish slope, correct offset so this solution reads true now.
+      cal.phOffset = reference - cal.phSlope * mean;
+      saveCalibration();
+      Serial.println("Offset saved from this buffer. Rinse and capture a second buffer (e.g. ph 4.01) to fit the slope.");
+      printCalibration();
+      if (result) snprintf(result, resultSize, "saved n=1 slope=%.5f offset=%.4f", cal.phSlope, cal.phOffset);
       return;
     }
     float slope, offset;
@@ -1283,15 +1372,22 @@ void calibrate(const String& sensor, float reference, char* result, size_t resul
     cal.orpSlope = slope; cal.orpOffset = offset;
   } else if (sensor == "turb") {
     if (reference < 0 || reference > TURB_MAX_NTU) { Serial.println("Turbidity standard must be 0-3000 NTU."); setResult(result, resultSize, "rejected_out_of_range"); return; }
-    if (!captureInput(TURB_PIN, true, 40.0f, mean)) { setResult(result, resultSize, "rejected_not_steady"); return; }
-    turbPts = points = addPoint(turbPtX, turbPtY, turbPts, mean, reference, 0.5f);
-    Serial.printf("Recorded %.1f NTU at ADC %.0f (%u point%s)\n", reference, mean, turbPts, turbPts > 1 ? "s" : "");
+    // Fit against the SEN0189 voltage curve, not raw ADC counts.
+    if (!captureInput(TURB_PIN, false, 0.05f, mean)) { setResult(result, resultSize, "rejected_not_steady"); return; }
+    if (mean < 0.40f) {
+      Serial.println("Turbidity voltage is too low. Check 5 V power, the A/D mode switch (must be Analog), and wiring to GPIO34.");
+      setResult(result, resultSize, "rejected_turb_voltage_low"); return;
+    }
+    const float curve = turbidityFromVoltage(mean);
+    if (!isfinite(curve)) { setResult(result, resultSize, "rejected_turb_curve"); return; }
+    turbPts = points = addPoint(turbPtX, turbPtY, turbPts, curve, reference, 0.5f);
+    Serial.printf("Recorded %.1f NTU at %.3f V (curve %.1f NTU, %u point%s)\n", reference, mean, curve, turbPts, turbPts > 1 ? "s" : "");
     float slope = cal.turbSlope, offset;
-    if (turbPts >= 2 && inputRange(turbPtX, turbPts) >= 100 && fitLine(turbPtX, turbPtY, turbPts, slope, offset)) {
-      if (slope > 0) Serial.println("Note: NTU rises with ADC on this sensor (most sensors fall). Check the standards.");
+    if (turbPts >= 2 && inputRange(turbPtX, turbPts) >= 5.0f && fitLine(turbPtX, turbPtY, turbPts, slope, offset)) {
+      if (slope <= 0) Serial.println("Note: fitted gain is not positive. Check that clear water is 0 NTU and the dirty standard is higher.");
     } else {
-      offset = reference - cal.turbSlope * mean;
-      Serial.println("Single point: offset corrected, slope kept. Add a second standard (e.g. turb 100) for a full calibration.");
+      offset = reference - cal.turbSlope * curve;
+      Serial.println("Single point: offset corrected, gain kept. Add a second standard (e.g. turb 100) for a full calibration.");
     }
     cal.turbSlope = slope; cal.turbOffset = offset;
   } else {
@@ -1527,29 +1623,46 @@ void updateLCD() {
   } else {
     snprintf(b, sizeof(b), "WiFi %s", WiFi.status() == WL_CONNECTED ? "OK" : "connecting");
     lcdLine(0, b);
-    snprintf(b, sizeof(b), "MQTT %s", mqtt.connected() ? "OK" : "connecting");
+    snprintf(b, sizeof(b), "MQTT %-10s Aer %s", mqtt.connected() ? "OK" : "connecting", aeratorOn ? "ON" : "off");
     lcdLine(1, b);
     char date[12], hm[6];
     if (localDateTime(date, sizeof(date), hm, sizeof(hm))) snprintf(b, sizeof(b), "%s %s", date + 5, hm);
     else snprintf(b, sizeof(b), "Clock not set");
     lcdLine(2, b);
-    snprintf(b, sizeof(b), "Aer %s Feed %s", aeratorOn ? "ON" : "off", feederBusy() ? "busy" : "idle");
+    snprintf(b, sizeof(b), "Feeder: %s", feederStateText());
     lcdLine(3, b);
   }
 }
 
 
 // =====================================================
-// BOOT SELF-TEST (relays, feeder servo, buzzer)
+// BOOT SELF-TEST (relays, buzzer) and FEEDER HOMING
 // =====================================================
-// On power-up: open and close the feeder first, then beep and click each
-// relay (one at a time, never both pumps). The servo runs before the relays
-// so a pump brown-out cannot reset the board before the horn moves. Relays
-// are skipped after a crash, watchdog or brown-out. The servo sweep still
-// runs on that boot if it has never completed. "selftest off" disables both.
+// Every power-up homes the feeder: one move to SERVO_CLOSED_DEG, then the
+// signal is switched off. The self-test then beeps and clicks each relay (one
+// at a time, never both pumps); it is skipped after a crash, watchdog or
+// brown-out, and "selftest off" disables it. The servo is not swept at boot:
+// it moves only for dashboard commands, schedules, or the serial "feed" /
+// "servo" / "servo sweep" commands.
 
 const uint32_t SELF_TEST_RELAY_MS = 500;
 
+bool homeFeederServo() {
+  Serial.printf("[SERVO] homing feeder to %d degrees (closed)\n", SERVO_CLOSED_DEG);
+  if (lcdPresent) lcdLine(2, "Feeder: homing");
+  if (!servoAngle(SERVO_CLOSED_DEG)) {
+    Serial.println("[SERVO] 50 Hz PWM did not start on GPIO18; feeder disabled.");
+    if (lcdPresent) lcdLine(2, "Feeder: servo fail");
+    return false;
+  }
+  delay(SERVO_HOLD_MS);
+  servoRelease();
+  feederStep = FEED_IDLE;
+  if (lcdPresent) lcdLine(2, "Feeder: closed");
+  return true;
+}
+
+// Manual check from the Serial Monitor ("servo sweep"): closed -> open -> closed.
 bool sweepFeederServo() {
   Serial.printf("[TEST] feeder servo GPIO%d: %d -> %d -> %d degrees\n",
                 SERVO_PIN, SERVO_CLOSED_DEG, SERVO_OPEN_DEG, SERVO_CLOSED_DEG);
@@ -1564,7 +1677,7 @@ bool sweepFeederServo() {
     Serial.printf("[TEST] servo at %d degrees\n", angles[i]);
     delay(holdMs[i]);
   }
-  prefs.putBool("servoBoot", true);
+  servoRelease();
   Serial.println("[TEST] feeder servo sweep finished");
   return true;
 }
@@ -1731,6 +1844,11 @@ void loop() {
     else if (now - lastHeartbeat >= STATE_HEARTBEAT_MS) { lastHeartbeat = now; sendStateHeartbeat(); }
   }
 
+  if (feederStateChanged) {
+    // Jump to the status page (feeder line) and keep it up for a full page interval.
+    feederStateChanged = false;
+    lcdPage = 2; lastPage = now; lastLcd = now; updateLCD();
+  }
   if (now - lastLcd >= LCD_INTERVAL_MS) { lastLcd = now; updateLCD(); }
   if (now - lastPage >= LCD_PAGE_MS) { lastPage = now; lcdPage = (lcdPage + 1) % 3; }
 }

@@ -13,6 +13,31 @@ The running version is shown in the dashboard sidebar (App = frontend, API = bac
 3. Commit, tag and push: `git tag vX.Y.Z && git push kongskull main --tags`.
    Vercel and Render redeploy `main` automatically.
 
+## [1.3.0] - 2026-11-03
+
+### Added
+- Firmware update page (Dashboard → Firmware update) that flashes the ESP32 over USB from Chrome
+  or Edge, without the Arduino IDE. It recognizes app-only (`.ino.bin`, written at `0x10000`) and
+  full merged images (`.ino.merged.bin`, written at `0x0`), refuses bootloader, partition-table
+  and wrong-chip files, verifies the written data by MD5, and restarts the board. The file stays
+  in the browser and is never uploaded. Uses Espressif's `esptool-js` 0.7.0, loaded only on Connect.
+- Staff accounts: an admin creates staff logins (`GET/POST /api/v1/staff`,
+  `DELETE /api/v1/staff/:id`) that share the admin's tank devices. Staff see Overview, Parameters,
+  Feeding, Water change and Alerts only. Device access for readings, alerts, commands and the
+  live socket goes through one shared check (`deviceAccess.ts`).
+
+### Changed
+- Firmware: "Feeder on" holds the gate open until "Feeder off", with a 60 s safety close; the servo
+  signal switches off once the horn arrives, so it stops buzzing.
+- Firmware: turbidity uses the DFRobot SEN0189 voltage curve with a gain and offset calibration,
+  and pH accepts a one- or two-buffer calibration.
+- Firmware: an `https://` `BACKEND_HTTP_URL` (such as Render) is verified against the root
+  certificates in `RootCerts.h`; plain LAN calls time out after 3 s instead of stalling MQTT.
+
+### Upgrade notes
+- Calibration is now saved under the flash key `cal2`. pH and ORP calibration carry over, but
+  turbidity resets to defaults on first boot, so recalibrate it (`turb 0`, then a known standard).
+
 ## [1.2.0] - 2026-11-02
 
 ### Added

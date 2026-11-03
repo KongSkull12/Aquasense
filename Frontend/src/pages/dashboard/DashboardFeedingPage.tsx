@@ -3,6 +3,7 @@ import { useDashboardData } from '../../components/WaterQuality/useDashboardData
 import { apiClient, getApiErrorMessage } from '../../services/apiClient';
 import { DeviceSelect, EmptyState, KeyValues, MetaItem, Notice, PageHead, Panel, StateMark } from '../../components/WaterQuality/Console';
 import { describeDeviceResult } from '../../components/WaterQuality/deviceResults';
+import { isStaffRole } from '../../auth/session';
 
 interface Device { deviceId: string; name?: string; isActive: boolean }
 interface FeedingCommand { id: string; action: string; status: 'PENDING' | 'ACKED'; metadata?: Record<string, unknown> | null; executedAt?: string | null; createdAt?: string }
@@ -28,6 +29,7 @@ const DashboardFeedingPage: React.FC = () => {
   const [editLabel, setEditLabel] = useState('');
   const enabledCount = feedingSchedules.filter((item) => item.enabled).length;
   const deviceOnline = !!hardwareState?.online && loadedAt !== null && Date.now() - loadedAt < 20000;
+  const staffView = isStaffRole();
 
   const refreshState = useCallback(async (selectedId = deviceId) => {
     if (!selectedId) return;
@@ -93,10 +95,10 @@ const DashboardFeedingPage: React.FC = () => {
     <div className="space-y-5">
       <PageHead
         title="Feeding"
-        description="Send feeder commands and manage feeding schedules for the ESP32 feeder."
+        description={staffView ? 'Send feeder commands for the farm’s registered device.' : 'Send feeder commands and manage feeding schedules for the ESP32 feeder.'}
         meta={
           <>
-            <MetaItem label="Active schedules">{enabledCount} of {feedingSchedules.length}</MetaItem>
+            {!staffView && <MetaItem label="Active schedules">{enabledCount} of {feedingSchedules.length}</MetaItem>}
             <MetaItem label="Feeder">
               <StateMark state={manualBusy || hardwareState?.state?.feederBusy ? 'warn' : deviceOnline ? 'ok' : 'off'} className="!text-sm !font-semibold">{feederStatus}</StateMark>
             </MetaItem>
@@ -104,7 +106,7 @@ const DashboardFeedingPage: React.FC = () => {
         }
       />
 
-      <div className="grid gap-4 lg:grid-cols-2">
+      <div className={`grid gap-4 ${staffView ? '' : 'lg:grid-cols-2'}`}>
         <Panel title="Manual control" description="Device-reported logical state. It does not confirm food was physically dispensed.">
           <div className="space-y-4">
             <DeviceSelect
@@ -133,72 +135,76 @@ const DashboardFeedingPage: React.FC = () => {
           </div>
         </Panel>
 
-        <Panel title="Add a schedule" description="Leave the date empty for a daily feed.">
-          <form onSubmit={(event) => { event.preventDefault(); void saveSchedule(); }} className="space-y-4">
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div>
-                <label className="field-label" htmlFor="schedule-date">Date <span className="font-normal text-ink-3">(optional)</span></label>
-                <input id="schedule-date" type="date" value={scheduleDate} onChange={(e) => setScheduleDate(e.target.value)} className="field" />
+        {!staffView && (
+          <Panel title="Add a schedule" description="Leave the date empty for a daily feed.">
+            <form onSubmit={(event) => { event.preventDefault(); void saveSchedule(); }} className="space-y-4">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div>
+                  <label className="field-label" htmlFor="schedule-date">Date <span className="font-normal text-ink-3">(optional)</span></label>
+                  <input id="schedule-date" type="date" value={scheduleDate} onChange={(e) => setScheduleDate(e.target.value)} className="field" />
+                </div>
+                <div>
+                  <label className="field-label" htmlFor="schedule-time">Time</label>
+                  <input id="schedule-time" type="time" required value={scheduleTime} onChange={(e) => setScheduleTime(e.target.value)} className="field" />
+                </div>
               </div>
               <div>
-                <label className="field-label" htmlFor="schedule-time">Time</label>
-                <input id="schedule-time" type="time" required value={scheduleTime} onChange={(e) => setScheduleTime(e.target.value)} className="field" />
+                <label className="field-label" htmlFor="schedule-label">Label <span className="font-normal text-ink-3">(optional)</span></label>
+                <input id="schedule-label" type="text" value={scheduleLabel} onChange={(e) => setScheduleLabel(e.target.value)} placeholder="e.g. Morning feed" className="field" />
               </div>
-            </div>
-            <div>
-              <label className="field-label" htmlFor="schedule-label">Label <span className="font-normal text-ink-3">(optional)</span></label>
-              <input id="schedule-label" type="text" value={scheduleLabel} onChange={(e) => setScheduleLabel(e.target.value)} placeholder="e.g. Morning feed" className="field" />
-            </div>
-            <button type="submit" disabled={feedingLoading || !scheduleTime} className="btn-primary">Save schedule</button>
-          </form>
-        </Panel>
+              <button type="submit" disabled={feedingLoading || !scheduleTime} className="btn-primary">Save schedule</button>
+            </form>
+          </Panel>
+        )}
       </div>
 
-      <Panel title="Scheduled feedings" description={`${enabledCount} enabled`} bodyClassName="p-0">
-        {feedingLoading ? (
-          <div className="space-y-2 p-5" aria-busy="true">
-            {Array.from({ length: 3 }).map((_, index) => <div key={index} className="h-11 animate-pulse rounded bg-water" />)}
-          </div>
-        ) : feedingSchedules.length === 0 ? (
-          <div className="p-5"><EmptyState title="No schedules yet">Add a time above and the feeder will run it every day, or on the date you pick.</EmptyState></div>
-        ) : (
-          <ul className="divide-y divide-line-soft">
-            {feedingSchedules.map((item) => (
-              <li key={item.id} className="px-4 py-3 sm:px-5">
-                {editingScheduleId === item.id ? (
-                  <form onSubmit={(event) => { event.preventDefault(); void updateSchedule(item.id, editDate, editTime, editLabel).then(() => setEditingScheduleId(null)); }} className="space-y-3">
-                    <div className="grid gap-3 sm:grid-cols-3">
-                      <input aria-label="Date" type="date" value={editDate} onChange={(e) => setEditDate(e.target.value)} className="field" />
-                      <input aria-label="Time" type="time" required value={editTime} onChange={(e) => setEditTime(e.target.value)} className="field" />
-                      <input aria-label="Label" type="text" value={editLabel} onChange={(e) => setEditLabel(e.target.value)} className="field" />
-                    </div>
-                    <div className="flex gap-2">
-                      <button type="submit" className="btn-primary btn-sm">Save</button>
-                      <button type="button" onClick={() => setEditingScheduleId(null)} className="btn-quiet btn-sm">Cancel</button>
-                    </div>
-                  </form>
-                ) : (
-                  <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-                    <div className="flex min-w-0 items-baseline gap-4">
-                      <p className="num w-14 shrink-0 text-base font-semibold">{item.time}</p>
-                      <div className="min-w-0">
-                        <p className="truncate text-sm text-ink">{item.label || 'Feed'}</p>
-                        <p className="text-xs text-ink-3">{item.date ? item.date : 'Daily'}</p>
+      {!staffView && (
+        <Panel title="Scheduled feedings" description={`${enabledCount} enabled`} bodyClassName="p-0">
+          {feedingLoading ? (
+            <div className="space-y-2 p-5" aria-busy="true">
+              {Array.from({ length: 3 }).map((_, index) => <div key={index} className="h-11 animate-pulse rounded bg-water" />)}
+            </div>
+          ) : feedingSchedules.length === 0 ? (
+            <div className="p-5"><EmptyState title="No schedules yet">Add a time above and the feeder will run it every day, or on the date you pick.</EmptyState></div>
+          ) : (
+            <ul className="divide-y divide-line-soft">
+              {feedingSchedules.map((item) => (
+                <li key={item.id} className="px-4 py-3 sm:px-5">
+                  {editingScheduleId === item.id ? (
+                    <form onSubmit={(event) => { event.preventDefault(); void updateSchedule(item.id, editDate, editTime, editLabel).then(() => setEditingScheduleId(null)); }} className="space-y-3">
+                      <div className="grid gap-3 sm:grid-cols-3">
+                        <input aria-label="Date" type="date" value={editDate} onChange={(e) => setEditDate(e.target.value)} className="field" />
+                        <input aria-label="Time" type="time" required value={editTime} onChange={(e) => setEditTime(e.target.value)} className="field" />
+                        <input aria-label="Label" type="text" value={editLabel} onChange={(e) => setEditLabel(e.target.value)} className="field" />
+                      </div>
+                      <div className="flex gap-2">
+                        <button type="submit" className="btn-primary btn-sm">Save</button>
+                        <button type="button" onClick={() => setEditingScheduleId(null)} className="btn-quiet btn-sm">Cancel</button>
+                      </div>
+                    </form>
+                  ) : (
+                    <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+                      <div className="flex min-w-0 items-baseline gap-4">
+                        <p className="num w-14 shrink-0 text-base font-semibold">{item.time}</p>
+                        <div className="min-w-0">
+                          <p className="truncate text-sm text-ink">{item.label || 'Feed'}</p>
+                          <p className="text-xs text-ink-3">{item.date ? item.date : 'Daily'}</p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <StateMark state={item.enabled ? 'ok' : 'off'} className="mr-3 !text-xs">{item.enabled ? 'Enabled' : 'Disabled'}</StateMark>
+                        <button type="button" onClick={() => void toggleSchedule(item)} className="btn-quiet btn-sm">{item.enabled ? 'Disable' : 'Enable'}</button>
+                        <button type="button" onClick={() => { setEditingScheduleId(item.id); setEditDate(item.date || ''); setEditTime(item.time); setEditLabel(item.label || ''); }} className="btn-quiet btn-sm">Edit</button>
+                        <button type="button" onClick={() => void removeSchedule(item.id)} className="btn-quiet btn-sm !text-alarm hover:!bg-alarm-bg">Remove</button>
                       </div>
                     </div>
-                    <div className="flex items-center gap-1">
-                      <StateMark state={item.enabled ? 'ok' : 'off'} className="mr-3 !text-xs">{item.enabled ? 'Enabled' : 'Disabled'}</StateMark>
-                      <button type="button" onClick={() => void toggleSchedule(item)} className="btn-quiet btn-sm">{item.enabled ? 'Disable' : 'Enable'}</button>
-                      <button type="button" onClick={() => { setEditingScheduleId(item.id); setEditDate(item.date || ''); setEditTime(item.time); setEditLabel(item.label || ''); }} className="btn-quiet btn-sm">Edit</button>
-                      <button type="button" onClick={() => void removeSchedule(item.id)} className="btn-quiet btn-sm !text-alarm hover:!bg-alarm-bg">Remove</button>
-                    </div>
-                  </div>
-                )}
-              </li>
-            ))}
-          </ul>
-        )}
-      </Panel>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </Panel>
+      )}
     </div>
   );
 };

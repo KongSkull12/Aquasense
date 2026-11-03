@@ -1,7 +1,10 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { DeviceManagement } from '../../components/WaterQuality/DeviceManagement';
+import { StaffAccountsPanel } from '../../components/WaterQuality/StaffAccountsPanel';
 import { DashboardProfile, getDashboardProfile, saveDashboardProfile } from '../../components/WaterQuality/dashboardProfile';
 import { KeyValues, PageHead, Panel, StateMark } from '../../components/WaterQuality/Console';
+import { isAdminRole } from '../../auth/session';
+import { apiClient } from '../../services/apiClient';
 
 const fields: Array<{ key: keyof DashboardProfile; label: string; wide?: boolean; hint?: string; type?: string }> = [
   { key: 'farmerName', label: 'Farmer name' },
@@ -14,6 +17,15 @@ const fields: Array<{ key: keyof DashboardProfile; label: string; wide?: boolean
 const DashboardSettingsPage: React.FC = () => {
   const [profile, setProfile] = useState<DashboardProfile>(getDashboardProfile);
   const [saved, setSaved] = useState(false);
+  const [showStaffPanel, setShowStaffPanel] = useState(isAdminRole);
+
+  useEffect(() => {
+    let active = true;
+    void apiClient.verifyAuth().then((ok) => {
+      if (active && ok) setShowStaffPanel(isAdminRole());
+    });
+    return () => { active = false; };
+  }, []);
 
   const updateField = (field: keyof DashboardProfile, value: string) => {
     setProfile((current) => ({ ...current, [field]: value }));
@@ -31,6 +43,8 @@ const DashboardSettingsPage: React.FC = () => {
       <PageHead title="Settings" description="Devices registered to your account, and the farm details shown across the dashboard." />
 
       <DeviceManagement />
+
+      {showStaffPanel && <StaffAccountsPanel />}
 
       <form onSubmit={handleSubmit} className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
         <Panel

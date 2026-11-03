@@ -1,5 +1,6 @@
 import { DataTypes, Model } from 'sequelize';
 import { getDatabase } from '../connection';
+import type { UserRole } from '../../services/userRoles';
 
 /**
  * User model for AquaSense database
@@ -8,7 +9,8 @@ export class User extends Model {
   declare id: string;
   declare fullName: string;
   declare email: string;
-  declare role: 'admin' | 'farmer' | 'guest';
+  declare role: UserRole;
+  declare employerUserId: string | null;
   declare passwordHash: string;
   declare createdAt: Date;
   declare updatedAt: Date;
@@ -40,9 +42,14 @@ export const initializeUserModel = (): void => {
         },
       },
       role: {
-        type: DataTypes.ENUM('admin', 'farmer', 'guest'),
+        type: DataTypes.ENUM('admin', 'farmer', 'staff', 'guest'),
         allowNull: false,
         defaultValue: 'farmer',
+      },
+      employerUserId: {
+        type: DataTypes.UUID,
+        allowNull: true,
+        field: 'employer_user_id',
       },
       passwordHash: {
         type: DataTypes.STRING(255),

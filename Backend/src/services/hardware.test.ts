@@ -22,6 +22,7 @@ import { MQTTService } from './mqttService';
 import { sensorReadingService } from './sensorReadingService';
 import { waterAlertNotificationService } from './waterAlertNotification.service';
 import { csrfProtection } from '../middleware/csrfProtection';
+import { mockDeviceAccess, type TestDevice } from './deviceAccessTestDoubles';
 
 const originalKeys = config.device.keys;
 afterEach(() => { mock.restoreAll(); config.device.keys = originalKeys; });
@@ -365,12 +366,14 @@ test('HTTP sync requires a configured matching key and active device even in dev
     assert.equal((await post('/hardware/device/sync', { deviceId: 'board', state }, { 'x-device-key': 'test-key' })).status, 403);
     assert.equal((await post('/hardware/commands', { deviceId: 'board', action: 'ALL_OFF' })).status, 401);
     mock.method(tokenService, 'verifyToken', () => ({ userId: 'owner', email: 'test@example.test', role: 'farmer' }));
-    mock.method(deviceService, 'verifyOwnership', async () => false);
+    // The caller owns no device yet, so the command is refused.
+    const ownedDevices: TestDevice[] = [];
+    mockDeviceAccess([{ id: 'owner', role: 'farmer' }], ownedDevices);
     const expiry = new Date(Date.now() + 120_000);
     const queued = mock.method(hardwareService, 'queue', async () => ({ id, action: 'ALL_OFF', status: 'PENDING', result: null, expiresAt: expiry }));
     assert.equal((await post('/hardware/commands', { deviceId: 'board', action: 'ALL_OFF' }, { Authorization: 'Bearer test' })).status, 403);
     assert.equal(queued.mock.callCount(), 0);
-    mock.method(deviceService, 'verifyOwnership', async () => true);
+    ownedDevices.push({ deviceId: 'board', userId: 'owner', isActive: true });
     const queueResponse = await post('/hardware/commands', { deviceId: 'board', action: 'ALL_OFF' }, { Authorization: 'Bearer test' });
     assert.equal(queueResponse.status, 202);
     const body = await queueResponse.json() as { data: { id: string; commandId: string; action: string; status: string; result: string | null; expiresAt: string; published: boolean } };
@@ -411,7 +414,7 @@ test('manual feeding fails fast without creating a pending command when private 
   config.mqtt.publicTelemetryOnly = true;
   config.mqtt.actuatorCommandsEnabled = true;
   mock.method(tokenService, 'verifyToken', () => ({ userId: 'owner', email: 'test@example.test', role: 'farmer' }));
-  mock.method(deviceService, 'verifyOwnership', async () => true);
+  mockDeviceAccess([{ id: 'owner', role: 'farmer' }], [{ deviceId: 'esp32-feeder-1', userId: 'owner', isActive: true }]);
   mock.method(MQTTService.prototype, 'isActuatorCommandChannelConnected', () => false);
   const feedingQueue = mock.method(feedingService, 'queueManualCommand', async () => { throw new Error('must not queue'); });
   const app = express(); app.use(express.json(), csrfProtection, feedingRoutes);
@@ -437,7 +440,7 @@ test('manual feeding accepts fresh verified HiveMQ telemetry as the device liven
   config.mqtt.publicTelemetryOnly = true;
   config.mqtt.actuatorCommandsEnabled = true;
   mock.method(tokenService, 'verifyToken', () => ({ userId: 'owner', email: 'test@example.test', role: 'farmer' }));
-  mock.method(deviceService, 'verifyOwnership', async () => true);
+  mockDeviceAccess([{ id: 'owner', role: 'farmer' }], [{ deviceId: 'esp32-feeder-1', userId: 'owner', isActive: true }]);
   mock.method(MQTTService.prototype, 'isActuatorCommandChannelConnected', () => true);
   mock.method(MQTTService.prototype, 'isTelemetryDeviceOnline', () => true);
   mock.method(hardwareService, 'getState', async () => ({ deviceId: 'esp32-feeder-1', online: false, receivedAt: null, state: null, commands: [] }));
@@ -467,7 +470,7 @@ test('manual feeding removes the pending row when MQTT rejects a publish after t
   config.mqtt.publicTelemetryOnly = true;
   config.mqtt.actuatorCommandsEnabled = true;
   mock.method(tokenService, 'verifyToken', () => ({ userId: 'owner', email: 'test@example.test', role: 'farmer' }));
-  mock.method(deviceService, 'verifyOwnership', async () => true);
+  mockDeviceAccess([{ id: 'owner', role: 'farmer' }], [{ deviceId: 'esp32-feeder-1', userId: 'owner', isActive: true }]);
   mock.method(MQTTService.prototype, 'isActuatorCommandChannelConnected', () => true);
   mock.method(MQTTService.prototype, 'dispatchHardwareCommand', async () => false);
   mock.method(hardwareService, 'getState', async () => ({ deviceId: 'esp32-feeder-1', online: true, receivedAt: new Date(), state }));

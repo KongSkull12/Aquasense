@@ -196,7 +196,7 @@ export const login = async (req: Request<ParamsDictionary, unknown, LoginRequest
  * Verify token
  * GET /api/v1/auth/verify
  */
-export const verifyToken = (req: Request, res: Response): void => {
+export const verifyToken = async (req: Request, res: Response): Promise<void> => {
   try {
     const authHeader = req.headers['authorization'];
     const bearerToken = authHeader && authHeader.split(' ')[1];
@@ -214,6 +214,10 @@ export const verifyToken = (req: Request, res: Response): void => {
       return;
     }
 
+    // Prefer the live database role so Settings can show Staff accounts after a promotion.
+    const user = await userService.getUserById(payload.userId);
+    const role = user?.role || payload.role || 'farmer';
+
     let csrfToken = getCookieValue(req, csrfCookieName);
     if (!csrfToken) {
       csrfToken = createCsrfToken();
@@ -222,8 +226,9 @@ export const verifyToken = (req: Request, res: Response): void => {
 
     sendSuccess(res, 200, 'Token is valid', {
       userId: payload.userId,
-      email: payload.email,
-      role: payload.role,
+      email: user?.email || payload.email,
+      role,
+      fullName: user?.fullName,
       csrfToken,
     });
   } catch (error) {

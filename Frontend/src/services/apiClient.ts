@@ -113,10 +113,20 @@ class ApiClient {
 
   async verifyAuth(): Promise<boolean> {
     try {
-      const response = await this.get<{ email?: string }>('/auth/verify');
-      // A 401 elsewhere clears the stored user; keep at least the email for the sidebar label.
-      if (!localStorage.getItem('user') && response.data?.email) {
-        localStorage.setItem('user', JSON.stringify({ email: response.data.email }));
+      const response = await this.get<{ userId?: string; email?: string; role?: string; fullName?: string }>('/auth/verify');
+      // Keep role and email so staff nav and settings stay accurate after refresh.
+      if (response.data?.email || response.data?.role) {
+        const existing = (() => {
+          try { return JSON.parse(localStorage.getItem('user') || '{}') as Record<string, unknown>; }
+          catch { return {}; }
+        })();
+        localStorage.setItem('user', JSON.stringify({
+          ...existing,
+          id: response.data.userId || existing.id,
+          email: response.data.email || existing.email,
+          fullName: response.data.fullName || existing.fullName,
+          role: response.data.role || existing.role,
+        }));
       }
       return true;
     } catch {
