@@ -13,6 +13,16 @@ The running version is shown in the dashboard sidebar (App = frontend, API = bac
 3. Commit, tag and push: `git tag vX.Y.Z && git push kongskull main --tags`.
    Vercel and Render redeploy `main` automatically.
 
+## [1.3.1] - 2026-11-03
+
+### Fixed
+- Firmware update page: flashing stopped right after the chip was detected with "Failed to
+  fetch dynamically imported module …/stub_flasher/esp32.json". Vite left esptool-js's flasher
+  stubs unbundled; the build now bundles them as small per-chip chunks.
+- Firmware: the sketch did not compile in v1.3.0 (`'FeederStep' was not declared`). The new
+  `turbidityFromVoltage()` sat above the shared types, where the Arduino builder inserts its
+  function prototypes; it now lives in the SENSORS section.
+
 ## [1.3.0] - 2026-11-03
 
 ### Added

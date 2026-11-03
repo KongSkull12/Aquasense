@@ -164,16 +164,6 @@ Calibration cal = DEFAULT_CAL;
 const float TURB_MAX_NTU = 3000.0;
 const char* const CAL_NVS_KEY = "cal2";
 
-// DFRobot SEN0189 example (5 V powered module). Output voltage falls as water
-// gets cloudier. Clamp after the curve; calibration gain/offset refine it.
-float turbidityFromVoltage(float volts) {
-  if (!isfinite(volts) || volts < 0.05f) return NAN;
-  float ntu = (-1120.4f * volts * volts) + (5742.3f * volts) - 4352.9f;
-  if (ntu < 0.0f) ntu = 0.0f;
-  if (ntu > TURB_MAX_NTU) ntu = TURB_MAX_NTU;
-  return ntu;
-}
-
 const float TANK_FULL_DISTANCE_CM  = 10.0;
 const float TANK_EMPTY_DISTANCE_CM = 100.0;
 
@@ -586,6 +576,18 @@ void updateBuzzer() {
 // =====================================================
 // SENSORS
 // =====================================================
+
+// DFRobot SEN0189 example (5 V powered module). Output voltage falls as water
+// gets cloudier. Clamp after the curve; calibration gain/offset refine it.
+// Defined here, after the GLOBALS types: the Arduino builder inserts function
+// prototypes before the first function in the file.
+float turbidityFromVoltage(float volts) {
+  if (!isfinite(volts) || volts < 0.05f) return NAN;
+  float ntu = (-1120.4f * volts * volts) + (5742.3f * volts) - 4352.9f;
+  if (ntu < 0.0f) ntu = 0.0f;
+  if (ntu > TURB_MAX_NTU) ntu = TURB_MAX_NTU;
+  return ntu;
+}
 
 AnalogDiag sampleADC(int pin, int samples = 12) {
   AnalogDiag d;
