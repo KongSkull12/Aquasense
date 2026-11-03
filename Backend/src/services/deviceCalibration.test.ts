@@ -13,3 +13,8 @@ test('a single pH point and a device status reply do not commission a sensor', (
   assert.equal(calibrationEffect('CAL_STATUS', 'orp', 'status n=1 slope=1333.32996 offset=-2038.3469'), null);
   assert.equal(calibrationEffect('CAL_CAPTURE', 'turb:0', 'saved n=1 slope=-0.40000 offset=1200.0000')?.sensor, 'turbidity');
 });
+
+test('an optional temperature capture and reset are recorded like the other sensors', () => {
+  assert.deepEqual(calibrationEffect('CAL_CAPTURE', 'temp:28.4', 'saved n=1 slope=1.00000 offset=0.3500'), { sensor: 'temperature', commissioned: true });
+  assert.equal(calibrationEffect('CAL_RESET', 'temp', 'reset n=0 slope=1.00000 offset=0.0000')?.commissioned, false);
+});

@@ -8,8 +8,8 @@ export const hardwareActions = ['FILL', 'DRAIN', 'WATER_EXCHANGE', 'WATER_STOP',
 export type HardwareAction = typeof hardwareActions[number];
 export const calibrationActions: readonly HardwareAction[] = ['CAL_CAPTURE', 'CAL_CLEAR', 'CAL_RESET', 'CAL_STATUS'];
 // Calibration commands carry "<sensor>" or, for a capture, "<sensor>:<reference>" (e.g. "ph:6.86").
-const calibrationSensorParam = /^(ph|orp|turb)$/;
-const calibrationCaptureParam = /^(ph|orp|turb):-?\d{1,4}(\.\d{1,3})?$/;
+const calibrationSensorParam = /^(ph|orp|turb|temp)$/;
+const calibrationCaptureParam = /^(ph|orp|turb|temp):-?\d{1,4}(\.\d{1,3})?$/;
 export const COMMAND_TTL_MS = 120_000;
 export const DEVICE_ONLINE_MS = 45_000;
 export const MAX_PUMP_RUNTIME_MS = 60_000; // Keep aligned with the firmware commissioning cap.
@@ -26,8 +26,8 @@ export const hardwareCommandSchema = z.object({ deviceId, action: z.enum(hardwar
   if (calibration) {
     const pattern = value.action === 'CAL_CAPTURE' ? calibrationCaptureParam : calibrationSensorParam;
     if (value.param === undefined || !pattern.test(value.param)) context.addIssue({ code: z.ZodIssueCode.custom,
-      message: value.action === 'CAL_CAPTURE' ? 'param must be "<ph|orp|turb>:<reference value>", e.g. "ph:6.86"'
-        : 'param must be the sensor: "ph", "orp" or "turb"' });
+      message: value.action === 'CAL_CAPTURE' ? 'param must be "<ph|orp|turb|temp>:<reference value>", e.g. "ph:6.86"'
+        : 'param must be the sensor: "ph", "orp", "turb" or "temp"' });
   }
 });
 export const hardwareStateSchema = z.object({

@@ -164,6 +164,15 @@ Calibration cal = DEFAULT_CAL;
 const float TURB_MAX_NTU = 3000.0;
 const char* const CAL_NVS_KEY = "cal2";
 
+// Temperature: the DS18B20 is factory calibrated, so this correction is optional
+// (°C = tempSlope * sensor °C + tempOffset). Saved under its own key so adding it
+// leaves the "cal2" blob, and the pH/ORP/turbidity calibration in it, untouched.
+struct TempCalibration { float slope, offset; };
+const TempCalibration DEFAULT_TEMP_CAL = {1.0f, 0.0f};
+TempCalibration tempCal = DEFAULT_TEMP_CAL;
+const char* const TEMP_CAL_NVS_KEY = "calT";
+float tempRawC = NAN;   // last uncorrected DS18B20 reading
+
 const float TANK_FULL_DISTANCE_CM  = 10.0;
 const float TANK_EMPTY_DISTANCE_CM = 100.0;
 
@@ -660,7 +669,7 @@ void readTemperature() {
   if (tempConversionPending) {
     const float t = tempSensor.getTempCByIndex(0);
     trackConnection(tempS, t != DEVICE_DISCONNECTED_C && t > -55.0f && t < 125.0f, "TEMP");
-    if (tempS.connected && t != DEVICE_DISCONNECTED_C) tempS.value = t;
+    if (tempS.connected && t != DEVICE_DISCONNECTED_C) { tempRawC = t; tempS.value = tempCal.slope * t + tempCal.offset; }
   } else {
     trackConnection(tempS, false, "TEMP");
   }
@@ -1127,12 +1136,14 @@ void checkSchedules() {
 float phPtX[3], phPtY[3];     uint8_t phPts = 0;
 float orpPtX[3], orpPtY[3];   uint8_t orpPts = 0;
 float turbPtX[3], turbPtY[3]; uint8_t turbPts = 0;
+float tempPtX[3], tempPtY[3]; uint8_t tempPts = 0;
 bool calWatch = false;
 uint32_t lastWatchPrint = 0;
 char serialLine[64];
 uint8_t serialLen = 0;
 
 void loadCalibration() {
+  if (prefs.getBytesLength(TEMP_CAL_NVS_KEY) == sizeof(TempCalibration)) prefs.getBytes(TEMP_CAL_NVS_KEY, &tempCal, sizeof(tempCal));
   if (prefs.getBytesLength(CAL_NVS_KEY) == sizeof(Calibration)) {
     prefs.getBytes(CAL_NVS_KEY, &cal, sizeof(cal));
     return;
@@ -1146,20 +1157,25 @@ void loadCalibration() {
   }
 }
 
-void saveCalibration() { prefs.putBytes(CAL_NVS_KEY, &cal, sizeof(cal)); }
+void saveCalibration() {
+  prefs.putBytes(CAL_NVS_KEY, &cal, sizeof(cal));
+  prefs.putBytes(TEMP_CAL_NVS_KEY, &tempCal, sizeof(tempCal));
+}
 
 void printCalibration() {
   Serial.println("---- calibration (value = slope * input + offset) ----");
   Serial.printf("pH   : slope %.4f pH/V   offset %.4f   (%.1f mV per pH)\n", cal.phSlope, cal.phOffset, cal.phSlope != 0 ? 1000.0f / fabsf(cal.phSlope) : 0.0f);
   Serial.printf("ORP  : slope %.3f mV/V   offset %.2f mV\n", cal.orpSlope, cal.orpOffset);
   Serial.printf("Turb : gain %.4f × SEN0189(V) + offset %.3f NTU\n", cal.turbSlope, cal.turbOffset);
-  Serial.printf("Captured points: pH %u, ORP %u, turbidity %u\n", phPts, orpPts, turbPts);
+  Serial.printf("Temp : slope %.4f   offset %.3f C   (optional; DS18B20 is factory calibrated)\n", tempCal.slope, tempCal.offset);
+  Serial.printf("Captured points: pH %u, ORP %u, turbidity %u, temperature %u\n", phPts, orpPts, turbPts, tempPts);
 }
 
 void printWatchLine() {
   Serial.printf("pH  V=%.4f -> %s | ", phS.diag.voltage, phS.connected ? String(phS.value, 2).c_str() : "--");
   Serial.printf("Turb V=%.3f ADC=%d -> %s NTU | ", turbS.diag.voltage, turbS.diag.rawAdc, turbS.connected ? String(turbS.value, 1).c_str() : "--");
-  Serial.printf("ORP V=%.4f -> %s mV\n", orpS.diag.voltage, orpS.connected ? String(orpS.value, 1).c_str() : "--");
+  Serial.printf("ORP V=%.4f -> %s mV | ", orpS.diag.voltage, orpS.connected ? String(orpS.value, 1).c_str() : "--");
+  Serial.printf("Temp raw=%.2f -> %s C\n", tempRawC, tempS.connected ? String(tempS.value, 2).c_str() : "--");
 }
 
 void printHelp() {
@@ -1170,9 +1186,10 @@ void printHelp() {
   Serial.println("ph <value>      one buffer corrects offset now; a second buffer fits the slope (e.g. ph 6.86 then ph 4.01)");
   Serial.println("orp <mV>        record an ORP standard, e.g.  orp 225  (1 point = offset only)");
   Serial.println("turb <NTU>      clear water: turb 0; then a known standard: turb 100 (uses probe voltage)");
-  Serial.println("clear ph|orp|turb      forget captured points (keeps saved calibration)");
-  Serial.println("reset ph|orp|turb|all  restore factory defaults and save");
-  Serial.println("set ph|orp|turb <slope> <offset>   type a calibration in directly");
+  Serial.println("temp <C>        optional: the reading of a trusted thermometer in the same water, e.g. temp 28.4");
+  Serial.println("clear ph|orp|turb|temp      forget captured points (keeps saved calibration)");
+  Serial.println("reset ph|orp|turb|temp|all  restore factory defaults and save");
+  Serial.println("set ph|orp|turb|temp <slope> <offset>   type a calibration in directly");
   Serial.println("Rinse the probe between solutions and wait until 'watch' is steady before capturing.");
   Serial.println();
   Serial.println("==== Relays and feeder (bench tests) ====");
@@ -1298,6 +1315,35 @@ bool captureInput(int pin, bool useRaw, float maxSpread, float& mean) {
   return true;
 }
 
+// DS18B20 version: average 5 uncorrected conversions (~4 s); false if one fails or they drift.
+bool captureTemperature(float maxSpread, float& mean) {
+  const int n = 5;
+  float sum = 0, lo = 1e9f, hi = -1e9f;
+  bool ok = true;
+  Serial.print("Sampling the DS18B20, keep the probe still");
+  tempSensor.setWaitForConversion(true);
+  for (int i = 0; i < n && ok; i++) {
+    tempSensor.requestTemperatures();
+    const float t = tempSensor.getTempCByIndex(0);
+    if (t == DEVICE_DISCONNECTED_C || t <= -55.0f || t >= 125.0f) { ok = false; break; }
+    sum += t; lo = min(lo, t); hi = max(hi, t);
+    Serial.print('.');
+    mqtt.loop();
+  }
+  // Back to the non-blocking reads that readTemperature() expects.
+  tempSensor.setWaitForConversion(false);
+  tempSensor.requestTemperatures();
+  tempConversionPending = true;
+  if (!ok) { Serial.println(" no reading. Check the DS18B20 wiring and its 4.7 kOhm pull-up."); return false; }
+  mean = sum / n;
+  Serial.printf(" mean %.3f C spread %.3f C\n", mean, hi - lo);
+  if (hi - lo > maxSpread) {
+    Serial.printf("Not steady (spread above %.2f C). Stir, wait for the reading to settle and try again.\n", maxSpread);
+    return false;
+  }
+  return true;
+}
+
 bool fitLine(const float* x, const float* y, uint8_t n, float& slope, float& offset) {
   float sx = 0, sy = 0, sxx = 0, sxy = 0;
   for (uint8_t i = 0; i < n; i++) { sx += x[i]; sy += y[i]; sxx += x[i] * x[i]; sxy += x[i] * y[i]; }
@@ -1392,8 +1438,26 @@ void calibrate(const String& sensor, float reference, char* result, size_t resul
       Serial.println("Single point: offset corrected, gain kept. Add a second standard (e.g. turb 100) for a full calibration.");
     }
     cal.turbSlope = slope; cal.turbOffset = offset;
+  } else if (sensor == "temp") {
+    // Optional: the reference is a trusted thermometer in the same, stirred water.
+    if (reference < -10 || reference > 60) { Serial.println("Reference temperature must be -10 to 60 C."); setResult(result, resultSize, "rejected_out_of_range"); return; }
+    if (!captureTemperature(0.25f, mean)) { setResult(result, resultSize, "rejected_not_steady"); return; }
+    tempPts = points = addPoint(tempPtX, tempPtY, tempPts, mean, reference, 0.5f);
+    Serial.printf("Recorded %.2f C at sensor %.3f C (%u point%s)\n", reference, mean, tempPts, tempPts > 1 ? "s" : "");
+    float slope = tempCal.slope, offset;
+    if (tempPts >= 2 && inputRange(tempPtX, tempPts) >= 5.0f && fitLine(tempPtX, tempPtY, tempPts, slope, offset)) {
+      if (slope < 0.8f || slope > 1.25f) {
+        Serial.printf("Rejected: slope %.3f is not plausible for a DS18B20. Check the reference readings.\n", slope);
+        setResult(result, resultSize, "rejected_implausible_slope"); return;
+      }
+    } else {
+      offset = reference - tempCal.slope * mean;   // one point (or points < 5 C apart): offset only
+      Serial.println("Offset corrected, slope kept. A second point at least 5 C away (e.g. ice water) also fits the slope.");
+    }
+    tempCal.slope = slope; tempCal.offset = offset;
+    if (isfinite(tempRawC)) tempS.value = tempCal.slope * tempRawC + tempCal.offset;
   } else {
-    Serial.println("Unknown sensor. Use ph, orp or turb.");
+    Serial.println("Unknown sensor. Use ph, orp, turb or temp.");
     setResult(result, resultSize, "rejected_bad_param");
     return;
   }
@@ -1410,10 +1474,29 @@ bool calibrationOf(const String& sensor, float& slope, float& offset) {
   if (sensor == "ph") { slope = cal.phSlope; offset = cal.phOffset; return true; }
   if (sensor == "orp") { slope = cal.orpSlope; offset = cal.orpOffset; return true; }
   if (sensor == "turb") { slope = cal.turbSlope; offset = cal.turbOffset; return true; }
+  if (sensor == "temp") { slope = tempCal.slope; offset = tempCal.offset; return true; }
   return false;
 }
 
-uint8_t capturedPoints(const String& sensor) { return sensor == "ph" ? phPts : sensor == "orp" ? orpPts : sensor == "turb" ? turbPts : 0; }
+uint8_t capturedPoints(const String& sensor) {
+  return sensor == "ph" ? phPts : sensor == "orp" ? orpPts : sensor == "turb" ? turbPts : sensor == "temp" ? tempPts : 0;
+}
+
+void resetCalibration(const String& sensor) {
+  if (sensor == "ph") { cal.phSlope = DEFAULT_CAL.phSlope; cal.phOffset = DEFAULT_CAL.phOffset; phPts = 0; }
+  else if (sensor == "orp") { cal.orpSlope = DEFAULT_CAL.orpSlope; cal.orpOffset = DEFAULT_CAL.orpOffset; orpPts = 0; }
+  else if (sensor == "turb") { cal.turbSlope = DEFAULT_CAL.turbSlope; cal.turbOffset = DEFAULT_CAL.turbOffset; turbPts = 0; }
+  else if (sensor == "temp") { tempCal = DEFAULT_TEMP_CAL; tempPts = 0; }
+}
+
+bool clearPoints(const String& sensor) {
+  if (sensor == "ph") phPts = 0;
+  else if (sensor == "orp") orpPts = 0;
+  else if (sensor == "turb") turbPts = 0;
+  else if (sensor == "temp") tempPts = 0;
+  else return false;
+  return true;
+}
 
 // Dashboard calibration commands: CAL_CAPTURE "<sensor>:<reference>", CAL_STATUS/CAL_CLEAR/CAL_RESET "<sensor>".
 void runCalibrationCommand(const char* action, const char* param, char* result, size_t resultSize) {
@@ -1428,14 +1511,12 @@ void runCalibrationCommand(const char* action, const char* param, char* result, 
     return;
   }
   if (!strcmp(action, "CAL_CLEAR")) {
-    if (sensor == "ph") phPts = 0; else if (sensor == "orp") orpPts = 0; else turbPts = 0;
+    clearPoints(sensor);
     setResult(result, resultSize, "cleared");
     return;
   }
   if (!strcmp(action, "CAL_RESET")) {
-    if (sensor == "ph") { cal.phSlope = DEFAULT_CAL.phSlope; cal.phOffset = DEFAULT_CAL.phOffset; phPts = 0; }
-    else if (sensor == "orp") { cal.orpSlope = DEFAULT_CAL.orpSlope; cal.orpOffset = DEFAULT_CAL.orpOffset; orpPts = 0; }
-    else { cal.turbSlope = DEFAULT_CAL.turbSlope; cal.turbOffset = DEFAULT_CAL.turbOffset; turbPts = 0; }
+    resetCalibration(sensor);
     saveCalibration();
     calibrationOf(sensor, slope, offset);
     snprintf(result, resultSize, "reset n=0 slope=%.5f offset=%.4f", slope, offset);
@@ -1457,22 +1538,23 @@ void handleSerialCommand(String line) {
   if (cmd == "help" || cmd == "?") { printHelp(); return; }
   if (cmd == "show") { printCalibration(); printWatchLine(); return; }
   if (cmd == "watch") { calWatch = !calWatch; Serial.printf("watch %s\n", calWatch ? "on" : "off"); return; }
-  if (cmd == "ph" || cmd == "orp" || cmd == "turb") {
-    if (!rest.length()) { Serial.printf("Give the reference value, e.g. %s\n", cmd == "ph" ? "ph 7" : cmd == "orp" ? "orp 225" : "turb 0"); return; }
+  if (cmd == "ph" || cmd == "orp" || cmd == "turb" || cmd == "temp") {
+    if (!rest.length()) {
+      Serial.printf("Give the reference value, e.g. %s\n", cmd == "ph" ? "ph 7" : cmd == "orp" ? "orp 225" : cmd == "turb" ? "turb 0" : "temp 28.4");
+      return;
+    }
     calibrate(cmd, rest.toFloat(), nullptr, 0);
     return;
   }
   if (cmd == "clear") {
-    if (rest == "ph") phPts = 0; else if (rest == "orp") orpPts = 0; else if (rest == "turb") turbPts = 0;
-    else { Serial.println("Use: clear ph|orp|turb"); return; }
+    if (!clearPoints(rest)) { Serial.println("Use: clear ph|orp|turb|temp"); return; }
     Serial.println("Captured points cleared.");
     return;
   }
   if (cmd == "reset") {
-    if (rest == "ph" || rest == "all") { cal.phSlope = DEFAULT_CAL.phSlope; cal.phOffset = DEFAULT_CAL.phOffset; phPts = 0; }
-    if (rest == "orp" || rest == "all") { cal.orpSlope = DEFAULT_CAL.orpSlope; cal.orpOffset = DEFAULT_CAL.orpOffset; orpPts = 0; }
-    if (rest == "turb" || rest == "all") { cal.turbSlope = DEFAULT_CAL.turbSlope; cal.turbOffset = DEFAULT_CAL.turbOffset; turbPts = 0; }
-    if (rest != "ph" && rest != "orp" && rest != "turb" && rest != "all") { Serial.println("Use: reset ph|orp|turb|all"); return; }
+    if (rest == "all") { for (const char* s : {"ph", "orp", "turb", "temp"}) resetCalibration(s); }
+    else if (rest == "ph" || rest == "orp" || rest == "turb" || rest == "temp") resetCalibration(rest);
+    else { Serial.println("Use: reset ph|orp|turb|temp|all"); return; }
     saveCalibration();
     printCalibration();
     return;
@@ -1480,7 +1562,7 @@ void handleSerialCommand(String line) {
   if (cmd == "set") {
     const int sp2 = rest.indexOf(' ');
     const int sp3 = sp2 < 0 ? -1 : rest.indexOf(' ', sp2 + 1);
-    if (sp2 < 0 || sp3 < 0) { Serial.println("Use: set ph|orp|turb <slope> <offset>"); return; }
+    if (sp2 < 0 || sp3 < 0) { Serial.println("Use: set ph|orp|turb|temp <slope> <offset>"); return; }
     const String which = rest.substring(0, sp2);
     const float slope = rest.substring(sp2 + 1, sp3).toFloat();
     const float offset = rest.substring(sp3 + 1).toFloat();
@@ -1488,7 +1570,8 @@ void handleSerialCommand(String line) {
     if (which == "ph") { cal.phSlope = slope; cal.phOffset = offset; }
     else if (which == "orp") { cal.orpSlope = slope; cal.orpOffset = offset; }
     else if (which == "turb") { cal.turbSlope = slope; cal.turbOffset = offset; }
-    else { Serial.println("Use: set ph|orp|turb <slope> <offset>"); return; }
+    else if (which == "temp") { tempCal.slope = slope; tempCal.offset = offset; }
+    else { Serial.println("Use: set ph|orp|turb|temp <slope> <offset>"); return; }
     saveCalibration();
     printCalibration();
     return;

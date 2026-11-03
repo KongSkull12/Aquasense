@@ -25,7 +25,9 @@ test('calibration commands validate their param', () => {
   assert.equal(ok({ deviceId: 'd', action: 'CAL_CAPTURE', param: 'turb:100' }), true);
   assert.equal(ok({ deviceId: 'd', action: 'CAL_CAPTURE', param: 'ph' }), false);
   assert.equal(ok({ deviceId: 'd', action: 'CAL_CAPTURE' }), false);
-  assert.equal(ok({ deviceId: 'd', action: 'CAL_CAPTURE', param: 'temp:25' }), false);
+  assert.equal(ok({ deviceId: 'd', action: 'CAL_CAPTURE', param: 'temp:28.4' }), true);
+  assert.equal(ok({ deviceId: 'd', action: 'CAL_RESET', param: 'temp' }), true);
+  assert.equal(ok({ deviceId: 'd', action: 'CAL_CAPTURE', param: 'do:7' }), false);
   assert.equal(ok({ deviceId: 'd', action: 'CAL_STATUS', param: 'orp' }), true);
   assert.equal(ok({ deviceId: 'd', action: 'CAL_RESET', param: 'ph:7' }), false);
   assert.equal(ok({ deviceId: 'd', action: 'FILL', durationMs: 5000, param: 'ph' }), false);

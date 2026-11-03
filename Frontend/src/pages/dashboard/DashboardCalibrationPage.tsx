@@ -8,11 +8,13 @@ import { DeviceSelect, EmptyState, MetaItem, Notice, PageHead, Panel, StateMark,
 interface Device { deviceId: string; name?: string; isActive: boolean }
 interface ApiCommand { id: string; action: string; param?: string | null; status: 'PENDING' | 'ACKED' | 'EXPIRED'; result?: string | null; createdAt?: string }
 interface HardwareState { online: boolean; receivedAt: string | null; commands?: ApiCommand[] }
-type SensorKey = 'ph' | 'turb' | 'orp';
+type SensorKey = 'ph' | 'turb' | 'orp' | 'temp';
 type CalAction = 'CAL_CAPTURE' | 'CAL_STATUS' | 'CAL_CLEAR' | 'CAL_RESET';
 
 const SENSORS: Array<{
-  key: SensorKey; health: 'ph' | 'turbidity' | 'orp'; title: string; input: 'voltage' | 'rawAdc'; inputUnit: string;
+  key: SensorKey; health: 'ph' | 'turbidity' | 'orp' | 'temperature'; title: string; optional?: boolean;
+  // 'value' when the sensor is digital and reports no separate probe input (DS18B20).
+  input: 'voltage' | 'rawAdc' | 'value'; inputUnit: string;
   steadyWithin: number; refLabel: string; refUnit: string; min: number; max: number; presets: number[]; steps: string[]; hint?: string;
 }> = [
   {
@@ -31,6 +33,12 @@ const SENSORS: Array<{
     key: 'orp', health: 'orp', title: 'ORP / redox', input: 'voltage', inputUnit: 'V', steadyWithin: 0.01,
     refLabel: 'Standard', refUnit: 'mV', min: -2000, max: 2000, presets: [],
     steps: ['Put the probe in an ORP standard solution and wait for Steady.', 'Enter the mV value printed on the solution and capture. One point corrects the offset; a second standard fits the slope too.'],
+  },
+  {
+    key: 'temp', health: 'temperature', title: 'Temperature', optional: true, input: 'value', inputUnit: '°C', steadyWithin: 0.2,
+    refLabel: 'Reference thermometer', refUnit: '°C', min: -10, max: 60, presets: [],
+    steps: ['Put the DS18B20 and a trusted thermometer in the same water. Stir and wait for Steady.', 'Enter what the thermometer reads and capture. One point corrects the offset.', 'Optionally capture a second point at least 5 °C away (for example ice water at 0 °C) to fit the slope too.'],
+    hint: 'Optional. The DS18B20 is factory calibrated (±0.5 °C) and its readings are used without this. Calibrate only if it disagrees with a thermometer you trust.',
   },
 ];
 
@@ -51,7 +59,7 @@ const parseResult = (sensor: SensorKey, result?: string | null): { state: MarkSt
 
 const sensorOfParam = (param?: string | null): SensorKey | null => {
   const key = (param || '').split(':')[0];
-  return key === 'ph' || key === 'turb' || key === 'orp' ? key : null;
+  return key === 'ph' || key === 'turb' || key === 'orp' || key === 'temp' ? key : null;
 };
 
 const actionLabel: Record<CalAction, string> = { CAL_CAPTURE: 'Capture', CAL_STATUS: 'Read calibration', CAL_CLEAR: 'Clear points', CAL_RESET: 'Reset' };
@@ -62,11 +70,11 @@ const DashboardCalibrationPage: React.FC = () => {
   const [deviceId, setDeviceId] = useState('');
   const [hardware, setHardware] = useState<HardwareState | null>(null);
   const [loadedAt, setLoadedAt] = useState<number | null>(null);
-  const [references, setReferences] = useState<Record<SensorKey, string>>({ ph: '6.86', turb: '0', orp: '' });
+  const [references, setReferences] = useState<Record<SensorKey, string>>({ ph: '6.86', turb: '0', orp: '', temp: '' });
   const [sending, setSending] = useState<SensorKey | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [lastCommand, setLastCommand] = useState<Partial<Record<SensorKey, string>>>({});
-  const recentInputs = useRef<Record<SensorKey, number[]>>({ ph: [], turb: [], orp: [] });
+  const recentInputs = useRef<Record<SensorKey, number[]>>({ ph: [], turb: [], orp: [], temp: [] });
   const lastFrame = useRef<string | null>(null);
 
   const refresh = useCallback(async (selectedId = deviceId) => {
@@ -149,7 +157,7 @@ const DashboardCalibrationPage: React.FC = () => {
     <div className="space-y-5">
       <PageHead
         title="Calibration"
-        description="Calibrate pH, turbidity and ORP against reference solutions. One buffer corrects the offset immediately; a second reference fits the slope. Captures are saved on the ESP32."
+        description="Calibrate pH, turbidity and ORP against reference solutions, and optionally temperature against a trusted thermometer. One reference corrects the offset immediately; a second fits the slope. Captures are saved on the ESP32."
         meta={<MetaItem label="Device"><StateMark state={fresh ? 'ok' : 'off'} className="!text-sm !font-semibold">{fresh ? 'Online' : 'Offline or stale'}</StateMark></MetaItem>}
       />
 
@@ -158,18 +166,19 @@ const DashboardCalibrationPage: React.FC = () => {
           <DeviceSelect id="calibration-device" value={deviceId} devices={devices} onChange={(value) => { setDeviceId(value); setHardware(null); setLastCommand({}); }} />
         </Panel>
         <Notice tone="info" title="Before you start">
-          A saved capture is stored on the ESP32 and recorded by the server, so the dashboard can classify that sensor. Temperature (DS18B20) is factory calibrated and does not need a capture. Resetting a sensor clears that record.
+          A saved capture is stored on the ESP32 and recorded by the server, so the dashboard can classify that sensor. Temperature (DS18B20) is factory calibrated, so its calibration is optional; capture it only to match a trusted thermometer. Resetting a sensor clears that record.
         </Notice>
       </div>
 
       {!fresh && <Notice tone="warn" title="Device not reporting">Captures need live readings. Check that the ESP32 is powered and connected, then come back.</Notice>}
       {error && <Notice tone="alarm">{error}</Notice>}
 
-      <div className="grid gap-4 xl:grid-cols-3">
+      <div className="grid gap-4 lg:grid-cols-2 2xl:grid-cols-4">
         {SENSORS.map((sensor) => {
           const health = live ? latestReading?.sensorHealth?.[sensor.health] : undefined;
           const input = health ? health[sensor.input] : null;
-          const reading = !live ? null : sensor.key === 'ph' ? latestReading?.ph : sensor.key === 'turb' ? (latestReading?.turbidityUnit === 'NTU' ? latestReading?.turbidity : null) : latestReading?.orp;
+          const reading = !live ? null : sensor.key === 'ph' ? latestReading?.ph : sensor.key === 'turb' ? (latestReading?.turbidityUnit === 'NTU' ? latestReading?.turbidity : null)
+            : sensor.key === 'temp' ? latestReading?.temperature : latestReading?.orp;
           const samples = recentInputs.current[sensor.key];
           const spread = samples.length >= 3 ? Math.max(...samples) - Math.min(...samples) : null;
           const steady = spread !== null && spread <= sensor.steadyWithin;
@@ -189,18 +198,22 @@ const DashboardCalibrationPage: React.FC = () => {
           return (
             <Panel
               key={sensor.key}
-              title={sensor.title}
+              title={sensor.optional
+                ? <span className="inline-flex items-center gap-2">{sensor.title}<span className="rounded border border-line px-1.5 py-px text-[11px] font-medium text-ink-3">Optional</span></span>
+                : sensor.title}
               actions={<StateMark state={settle.state}>{settle.text}</StateMark>}
               bodyClassName="flex flex-col gap-4 p-4 sm:p-5"
             >
-              <div className="grid grid-cols-2 gap-px overflow-hidden rounded-md border border-line-soft bg-line-soft">
-                <div className="bg-white px-3.5 py-3">
-                  <p className="text-xs text-ink-3">Probe input</p>
-                  <p className="num mt-0.5 text-xl font-semibold">{input == null ? '—' : sensor.input === 'voltage' ? input.toFixed(4) : Math.round(input)}<span className="ml-1 text-xs font-medium text-ink-3">{sensor.inputUnit}</span></p>
-                </div>
+              <div className={`grid gap-px overflow-hidden rounded-md border border-line-soft bg-line-soft ${sensor.input === 'value' ? 'grid-cols-1' : 'grid-cols-2'}`}>
+                {sensor.input !== 'value' && (
+                  <div className="bg-white px-3.5 py-3">
+                    <p className="text-xs text-ink-3">Probe input</p>
+                    <p className="num mt-0.5 text-xl font-semibold">{input == null ? '—' : sensor.input === 'voltage' ? input.toFixed(4) : Math.round(input)}<span className="ml-1 text-xs font-medium text-ink-3">{sensor.inputUnit}</span></p>
+                  </div>
+                )}
                 <div className="bg-white px-3.5 py-3">
                   <p className="text-xs text-ink-3">Current reading</p>
-                  <p className="num mt-0.5 text-xl font-semibold">{reading == null ? '—' : reading.toFixed(sensor.key === 'ph' ? 2 : 1)}<span className="ml-1 text-xs font-medium text-ink-3">{sensor.key === 'ph' ? '' : sensor.refUnit}</span></p>
+                  <p className="num mt-0.5 text-xl font-semibold">{reading == null ? '—' : reading.toFixed(sensor.key === 'ph' || sensor.key === 'temp' ? 2 : 1)}<span className="ml-1 text-xs font-medium text-ink-3">{sensor.key === 'ph' ? '' : sensor.refUnit}</span></p>
                 </div>
               </div>
 
@@ -225,7 +238,7 @@ const DashboardCalibrationPage: React.FC = () => {
                 <div className="flex gap-2">
                   <input id={`ref-${sensor.key}`} type="number" inputMode="decimal" step="any" min={sensor.min} max={sensor.max}
                     value={references[sensor.key]} onChange={(event) => setReferences((current) => ({ ...current, [sensor.key]: event.target.value }))}
-                    placeholder={sensor.key === 'orp' ? 'e.g. 225' : ''} className="field num min-w-0 flex-1" />
+                    placeholder={sensor.key === 'orp' ? 'e.g. 225' : sensor.key === 'temp' ? 'e.g. 28.4' : ''} className="field num min-w-0 flex-1" />
                   <button type="submit" disabled={!deviceId || !fresh || busy} className="btn-primary h-10 shrink-0">
                     {busy ? 'Capturing…' : 'Capture point'}
                   </button>

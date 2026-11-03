@@ -13,6 +13,23 @@ The running version is shown in the dashboard sidebar (App = frontend, API = bac
 3. Commit, tag and push: `git tag vX.Y.Z && git push kongskull main --tags`.
    Vercel and Render redeploy `main` automatically.
 
+## [1.4.0] - 2026-11-03
+
+### Added
+- Optional temperature calibration (Dashboard → Calibration → Temperature). Capture what a trusted
+  thermometer reads in the same water: one point corrects the offset, a second point at least
+  5 °C away also fits the slope. The DS18B20 stays counted as calibrated without it, so readings
+  and the ammonia calculator work whether or not it is done.
+- Calibration commands accept `temp` (`CAL_CAPTURE temp:<°C>`, `CAL_STATUS`/`CAL_CLEAR`/`CAL_RESET temp`).
+- Firmware: the temperature correction is applied to the DS18B20 reading and saved under its own
+  flash key `calT`, leaving the pH, ORP and turbidity calibration untouched. A capture averages
+  5 conversions and is refused if they spread more than 0.25 °C; slopes outside 0.8–1.25 are
+  rejected. Serial Monitor: `temp <°C>`, `clear temp`, `reset temp`, `set temp <slope> <offset>`.
+
+### Upgrade notes
+- Flash the new firmware (app-only `.ino.bin`) to use temperature calibration. Older firmware
+  answers `temp` commands with `rejected_bad_param`.
+
 ## [1.3.1] - 2026-11-03
 
 ### Fixed

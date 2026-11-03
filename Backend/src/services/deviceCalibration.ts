@@ -2,7 +2,8 @@ import { Op } from 'sequelize';
 import { HardwareCommand } from '../database/models/HardwareControl';
 import { logger } from '../utils/logger';
 
-export type CalibratedSensor = 'ph' | 'orp' | 'turbidity';
+// Temperature calibration is optional: the DS18B20 counts as calibrated without one.
+export type CalibratedSensor = 'ph' | 'orp' | 'turbidity' | 'temperature';
 
 const SAVED = /^saved n=\d+ slope=-?\d+(?:\.\d+)? offset=-?\d+(?:\.\d+)?$/;
 const RESET = /^reset /;
@@ -17,6 +18,7 @@ export function sensorFromCalibrationParam(param: string | null | undefined): Ca
   const sensor = param?.split(':')[0]?.trim().toLowerCase();
   if (sensor === 'ph' || sensor === 'orp') return sensor;
   if (sensor === 'turb') return 'turbidity';
+  if (sensor === 'temp') return 'temperature';
   return null;
 }
 
