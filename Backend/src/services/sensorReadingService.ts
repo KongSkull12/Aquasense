@@ -3,11 +3,13 @@ import { SensorReading as SensorReadingModel } from '../database/models/SensorRe
 import { Op } from 'sequelize';
 import { getDatabase } from '../database/connection';
 import {ruleEngine} from './ruleEngine.service';
-import { SensorValidator, SENSOR_NAMES, numeric, timestampMs, refreshHealth, ammoniaSpeciation, type HealthSummary, type AmmoniaSpeciation, HEALTH_CONFIG } from './sensorHealth';
+import { SensorValidator, SENSOR_NAMES, numeric, timestampMs, refreshHealth, ammoniaSpeciation, type HealthSummary, type ExtendedHealthSummary, type AmmoniaSpeciation, type UltrasonicReading, HEALTH_CONFIG } from './sensorHealth';
+import { commissionedSensors, type CalibratedSensor } from './deviceCalibration';
 export interface SensorReading {
   id: string; deviceId: string; temperature: number|null; ph: number|null; do: number|null;
   doMeasured: boolean; turbidity: number|null; orp: number|null; ammonia: number|null;
   turbidityUnit: string; sensorHealth: HealthSummary; speciation: AmmoniaSpeciation;
+  tankLevel: UltrasonicReading | null;
   waterQuality: Record<string,string>; status: 'normal'|'warning'|'critical'|'unavailable';
   location: string; timestamp: Date; createdAt: Date; updatedAt: Date;
 }
@@ -36,6 +38,7 @@ class SensorReadingService {
     const bootId=typeof payload.bootId==='string' && payload.bootId.length<=64 ? payload.bootId : null;
     const sequenceId=bootId!==null && Number.isSafeInteger(payload.sequence) && payload.sequence>=0 ? payload.sequence : null;
     const unit=payload.turbidityUnit === 'raw_adc' ? 'raw_adc' : payload.turbidityUnit === 'NTU' ? 'NTU' : 'unknown';
+    const commissioned=await commissionedSensors(deviceId);
     const result=await getDatabase().transaction(async transaction=>{
       await getDatabase().query('SELECT pg_advisory_xact_lock(hashtext(:deviceId))',{replacements:{deviceId},transaction});
       if (bootId!==null && sequenceId!==null) {
@@ -46,7 +49,10 @@ class SensorReadingService {
       if (latest && ((bootId!==null && latest.bootId===bootId && sequenceId!==null && latest.sequenceId!==null && sequenceId<=Number(latest.sequenceId)) || acquired <= new Date(latest.timestamp).getTime())) throw new Error('Obsolete sensor frame');
       const validationNow=Date.now();
       const sensorHealth=Object.fromEntries(SENSOR_NAMES.map(name=>[name,this.validator.validate(deviceId,name,
-        payload[name], payload.sensorTimestamps?.[name] ?? this.sensorTimestamp(payload.sensors?.[name],validationNow,timestamp),payload.sensors?.[name],validationNow,name==='turbidity'?unit:undefined)])) as HealthSummary;
+        payload[name], payload.sensorTimestamps?.[name] ?? this.sensorTimestamp(payload.sensors?.[name],validationNow,timestamp),payload.sensors?.[name],validationNow,name==='turbidity'?unit:undefined,
+        { commissioned: name !== 'temperature' && commissioned.has(name as CalibratedSensor) })])) as unknown as ExtendedHealthSummary;
+      const ultrasonic = this.readUltrasonic(payload, validationNow);
+      if (ultrasonic) sensorHealth.ultrasonic = ultrasonic;
       const speciation=ammoniaSpeciation(sensorHealth,payload.tan,payload.waterType ?? 'freshwater',validationNow);
       const values=Object.fromEntries(SENSOR_NAMES.map(name=>[name,sensorHealth[name].valid ? sensorHealth[name].value : null]));
       const model=await SensorReadingModel.create({...values,deviceId,do:null,doMeasured:false,bootId,sequenceId,
@@ -61,6 +67,30 @@ class SensorReadingService {
     if(diagnostic?.sampleAgeMs===undefined) return fallback;
     const age=numeric(diagnostic.sampleAgeMs);
     return age!==null && age>=0 ? new Date(now-age) : 'invalid';
+  }
+  private readUltrasonic(payload:Record<string,any>,now:number):UltrasonicReading|null {
+    const metadata=payload.sensors?.ultrasonic;
+    if(!metadata || typeof metadata!=='object' || Array.isArray(metadata)) return null;
+    const timestamp=typeof payload.sensorTimestamps?.ultrasonic==='string'?payload.sensorTimestamps.ultrasonic:null;
+    const at=timestampMs(timestamp);
+    const fresh=Number.isFinite(at) && at<=now+2000 && now-at<=HEALTH_CONFIG.staleMs;
+    const connected=metadata.connected===true;
+    const distance=numeric(payload.tankDistanceCm);
+    const depth=numeric(payload.tankDepthCm);
+    const target=numeric(payload.tankTargetDepthCm);
+    const mount=numeric(payload.tankMountHeightCm);
+    const level=numeric(payload.tankLevelPercent);
+    const distanceReported=distance!==null && distance>0 && distance<=800;
+    const depthReported=depth!==null && depth>=0 && depth<=800;
+    const targetReported=target!==null && target>0 && target<=200;
+    const mountReported=mount!==null && mount>=20 && mount<=800;
+    const levelReported=level!==null && level>=0 && level<=100;
+    const valid=connected && metadata.valid===true && fresh && distance!==null && distance>=20 && distance<=800 &&
+      level!==null && level>=0 && level<=100;
+    return {connected,valid,distanceCm:distanceReported?distance:null,depthCm:depthReported?depth:null,
+      targetDepthCm:targetReported?target:null,mountHeightCm:mountReported?mount:null,levelPercent:levelReported?level:null,timestamp,
+      reason:valid?(depthReported?'Reported depth from mount-height calibration':'Reported measurement; capture empty-tub mount height to enable depth'):
+        !connected?'No valid ultrasonic echo':!fresh?'Ultrasonic reading is stale':'Ultrasonic measurement is invalid'};
   }
   async addSensorReading(deviceId:string,temperature:unknown,ph:unknown,do_value:unknown,turbidity:unknown,
     _ammonia:unknown=null,location='Default Location',timestamp=new Date(),doMeasured=true,orp:unknown=null) {
@@ -94,7 +124,7 @@ class SensorReadingService {
   private mapSensorModel(reading:SensorReadingModel,current=false):SensorReading {
     const validator=new SensorValidator();
     const at=new Date(reading.timestamp).getTime();
-    const original=reading.sensorHealth || Object.fromEntries(SENSOR_NAMES.map(name=>[name,validator.validate(reading.deviceId,name,reading[name],reading.timestamp,{},at)])) as HealthSummary;
+    const original=(reading.sensorHealth || Object.fromEntries(SENSOR_NAMES.map(name=>[name,validator.validate(reading.deviceId,name,reading[name],reading.timestamp,{},at)]))) as ExtendedHealthSummary;
     const sensorHealth=current?refreshHealth(original):original;
     if (current) this.logTransitions(reading.deviceId,sensorHealth);
     const speciation=ammoniaSpeciation(sensorHealth,reading.speciation?.tan,reading.speciation?.waterType??'freshwater',current?Date.now():at);
@@ -107,18 +137,24 @@ class SensorReadingService {
       const related=alerts.filter(a=>a.category.startsWith(prefix));
       if (related.some(a=>a.severity==='CRITICAL'||a.severity==='EMERGENCY')) return 'CRITICAL';
       if (related.length) return 'WARNING';
-      return sensorHealth[name].calibration==='CALIBRATED' && sensorHealth[name].stability==='STABLE' ? 'NORMAL' : 'CALIBRATION REQUIRED';
+      if (sensorHealth[name].calibration!=='CALIBRATED') return 'CALIBRATION REQUIRED';
+      return sensorHealth[name].stability==='STABLE' ? 'NORMAL' : 'SETTLING';
     };
     const waterQuality={temperature:condition('temperature','TEMP'),ph:condition('ph','PH'),turbidity:condition('turbidity','TURBIDITY'),orp:'NO WATER-QUALITY POLICY'};
     const qualityStates=Object.values(waterQuality);
     const status=qualityStates.includes('CRITICAL')?'critical':qualityStates.includes('WARNING')?'warning':
-      qualityStates.some(state=>state==='UNAVAILABLE' || state==='CALIBRATION REQUIRED' || state.startsWith('UNKNOWN'))?'unavailable':'normal';
+      qualityStates.some(state=>state==='UNAVAILABLE' || state==='CALIBRATION REQUIRED' || state==='SETTLING' || state.startsWith('UNKNOWN'))?'unavailable':'normal';
+    // Preserve fresh device-reported values for display/diagnostics when stability
+    // or commissioning checks reject them, but never a stale one: a sensor that
+    // stopped reporting shows no value. Decision logic above still uses `valid`.
+    const reported=(name:'ph'|'turbidity'|'orp')=>sensorHealth[name].health==='STALE'?null:sensorHealth[name].value;
     return {id:reading.id,deviceId:reading.deviceId,temperature:sensorHealth.temperature.valid?sensorHealth.temperature.value:null,
-      ph:sensorHealth.ph.valid?sensorHealth.ph.value:null,turbidity:sensorHealth.turbidity.valid?sensorHealth.turbidity.value:null,
-      // Keep the device-reported ORP sample visible for diagnostics and trends;
-      // sensorHealth remains the authority for whether it is calibrated/usable.
-      orp:sensorHealth.orp.value,do:null,
+      ph:reported('ph'),
+      turbidity:reported('turbidity'),
+      // sensorHealth remains the authority for whether ORP is calibrated/usable.
+      orp:reported('orp'),do:null,
       doMeasured:false,ammonia:speciation.nh3N,sensorHealth,speciation,waterQuality,status,turbidityUnit:reading.turbidityUnit||'unknown',
+      tankLevel:sensorHealth.ultrasonic ?? null,
       location:reading.location,timestamp:reading.timestamp,createdAt:reading.createdAt,updatedAt:reading.updatedAt};
   }
 }

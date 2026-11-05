@@ -8,16 +8,15 @@ import { alertService } from '../../../services/alert.service';
 import { smsNotificationService } from '../../../services/smsNotification.service';
 import { buildSmsTemplate } from '../../../services/smsTemplate.service';
 import { config } from '../../../config/config';
+import { alertPhonesForDevice } from '../../../services/smsRecipients';
 import type { AlertStatus } from '../../../services/alert.service';
 import type { AlertSeverity } from '../../../services/ruleEngine.service';
 import type { AuthenticatedRequest } from '../../../middleware/authMiddleware';
-import { deviceService } from '../../../services/device.service';
+import { accessibleDeviceIds } from '../../../services/deviceAccess';
 
 const visibleDeviceIds = async (req: AuthenticatedRequest): Promise<string[] | undefined> => {
-  if (req.userRole === 'admin') return undefined;
   if (!req.userId) return [];
-  const devices = await deviceService.listByUser(req.userId);
-  return devices.filter((device) => device.isActive).map((device) => device.deviceId);
+  return accessibleDeviceIds(req.userId, req.userRole);
 };
 
 const parseLimit = (value: unknown): number => {
@@ -93,9 +92,9 @@ export const resendAlert = async (req: AuthenticatedRequest, res: Response): Pro
       return;
     }
 
-    const recipient = config.farm.recipientPhone;
-    if (!recipient) {
-      sendError(res, 400, 'FARMER_PHONE is not configured');
+    const recipients = await alertPhonesForDevice(alert.deviceId);
+    if (!recipients.length) {
+      sendError(res, 400, 'SMS alerts are off, or this account has no mobile numbers saved');
       return;
     }
 
@@ -111,29 +110,22 @@ export const resendAlert = async (req: AuthenticatedRequest, res: Response): Pro
       action: alert.action,
     });
 
-    const result = await smsNotificationService.send({
+    const results = await smsNotificationService.sendEach({
       deviceId: alert.deviceId, category: 'WATER_QUALITY_ALERT', severity: alert.severity as AlertSeverity,
-      recipient, message: smsMessage, alertIds: [alert.id],
+      recipients, message: smsMessage, alertIds: [alert.id],
     });
-    if (!result) {
+    if (!results) {
       sendError(res, 409, 'A notification is already pending or cooling down');
       return;
     }
-    if (!result.accepted) {
-      let details: Record<string, unknown> = { raw: result.response };
-      try {
-        const parsed: unknown = JSON.parse(result.response);
-        if (parsed && typeof parsed === 'object') details = parsed as Record<string, unknown>;
-      } catch (parseError) {
-        logger.debug('SMS provider returned a non-JSON alert response', { error: String(parseError) });
-      }
-      sendError(res, result.status === 'rejected' ? 422 : 502, 'Alert SMS was not confirmed sent', {
-        status: result.status, details,
-      });
+    const accepted = results.filter((result) => result.accepted);
+    if (!accepted.length) {
+      sendError(res, results.some((result) => result.status === 'rejected') ? 422 : 502, 'Alert SMS was not confirmed sent');
       return;
     }
-    sendSuccess(res, result.success ? 200 : 202, result.success ? 'Provider reports alert SMS sent' : 'Alert SMS accepted; awaiting provider status', {
-      success: result.success, status: result.status, referenceId: result.referenceId,
+    const allSent = accepted.every((result) => result.success);
+    sendSuccess(res, allSent ? 200 : 202, allSent ? `Provider reports alert SMS sent to ${accepted.length} number${accepted.length === 1 ? '' : 's'}` : 'Alert SMS accepted; awaiting provider status', {
+      accepted: accepted.length,
     });
   } catch (error) {
     logger.error('Failed to resend alert SMS', error);

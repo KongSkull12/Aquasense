@@ -1,5 +1,11 @@
 # Build, upload and verify
 
+The active firmware target is now the monitor-only `water-monitor` build with
+`src/main.cpp` as its complete sensor/UI loop. It publishes signed public-dev
+MQTT frames and rejects actuator commands. Earlier target and actuator notes in
+this document describe the previous firmware layout; use `../README.md` for
+the active target and current pin limitations.
+
 ## Integrated water-monitor
 
 Follow [backend/device setup](backend-control.md) first. The configuration still
@@ -24,7 +30,7 @@ upload. Confirm the board matches classic esp32dev with 4 MB flash. Keep relay
 loads unpowered until polarity and reset/OFF state are measured and safe,
 supervised timing limits are commissioned for the tank and pump flow.
 The integrated servo initializes to its configured HOME position on GPIO18;
-the passive buzzer uses GPIO19. The legacy standalone feeder still uses GPIO13.
+the active buzzer uses GPIO19. The legacy standalone feeder still uses GPIO13.
 
 Private credentials belong in include/secrets/Secrets.h, which replaces the whole
 example header. Keep firmware binaries private too: credentials are compiled in.

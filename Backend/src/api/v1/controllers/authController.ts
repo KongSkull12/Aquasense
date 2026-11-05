@@ -52,9 +52,12 @@ const setAuthCookie = (res: Response, token: string): void => {
   });
 };
 
-const establishSession = (res: Response, token: string): void => {
+// Returns the CSRF token in the body too: a frontend on another domain cannot read the cookie.
+const establishSession = (res: Response, token: string): string => {
+  const csrfToken = createCsrfToken();
   setAuthCookie(res, token);
-  setCsrfCookie(res, createCsrfToken());
+  setCsrfCookie(res, csrfToken);
+  return csrfToken;
 };
 
 const clearAuthCookie = (res: Response): void => {
@@ -108,11 +111,12 @@ export const signup = async (req: Request<ParamsDictionary, unknown, SignupReque
       role: user.role,
     });
 
-    establishSession(res, token);
+    const csrfToken = establishSession(res, token);
     const publicUser = userService.getPublicUser(user);
 
     sendSuccess(res, 201, 'User registered successfully', {
       user: publicUser,
+      csrfToken,
     });
 
     logger.info('User signup successful', { email: user.email });
@@ -166,11 +170,12 @@ export const login = async (req: Request<ParamsDictionary, unknown, LoginRequest
       role: user.role,
     });
 
-    establishSession(res, token);
+    const csrfToken = establishSession(res, token);
     const publicUser = userService.getPublicUser(user);
 
     sendSuccess(res, 200, 'Login successful', {
       user: publicUser,
+      csrfToken,
     });
 
     logger.info('User login successful', { email: user.email });
@@ -191,7 +196,7 @@ export const login = async (req: Request<ParamsDictionary, unknown, LoginRequest
  * Verify token
  * GET /api/v1/auth/verify
  */
-export const verifyToken = (req: Request, res: Response): void => {
+export const verifyToken = async (req: Request, res: Response): Promise<void> => {
   try {
     const authHeader = req.headers['authorization'];
     const bearerToken = authHeader && authHeader.split(' ')[1];
@@ -209,14 +214,22 @@ export const verifyToken = (req: Request, res: Response): void => {
       return;
     }
 
-    if (!getCookieValue(req, csrfCookieName)) {
-      setCsrfCookie(res, createCsrfToken());
+    // Prefer the live database role so Settings can show Staff accounts after a promotion.
+    const user = await userService.getUserById(payload.userId);
+    const role = user?.role || payload.role || 'farmer';
+
+    let csrfToken = getCookieValue(req, csrfCookieName);
+    if (!csrfToken) {
+      csrfToken = createCsrfToken();
+      setCsrfCookie(res, csrfToken);
     }
 
     sendSuccess(res, 200, 'Token is valid', {
       userId: payload.userId,
-      email: payload.email,
-      role: payload.role,
+      email: user?.email || payload.email,
+      role,
+      fullName: user?.fullName,
+      csrfToken,
     });
   } catch (error) {
     logger.error('Token verification error', error);

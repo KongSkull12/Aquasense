@@ -1,0 +1,35 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "skipped-heading",
+        "value": "*",
+        "files": [
+          ".impeccable/mocks/decision/assigned.html"
+        ],
+        "createdAt": "2026-10-25T15:04:38.526Z",
+        "reason": "assistant decision: throwaway direction sketch for the decision page, not shipped UI"
+      },
+      {
+        "rule": "skipped-heading",
+        "value": "*",
+        "files": [
+          ".impeccable/mocks/decision/model-pick.html"
+        ],
+        "createdAt": "2026-10-25T15:04:38.776Z",
+        "reason": "assistant decision: throwaway direction sketch for the decision page, not shipped UI"
+      },
+      {
+        "rule": "cramped-padding",
+        "value": "*",
+        "files": [
+          ".impeccable/mocks/decision/challenger-wayfinding.html"
+        ],
+        "createdAt": "2026-10-25T15:04:39.040Z",
+        "reason": "assistant decision: throwaway direction sketch for the decision page, not shipped UI"
+      }
+    ]
+  }
+}

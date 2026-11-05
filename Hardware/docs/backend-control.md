@@ -1,5 +1,11 @@
 # Backend connection and commissioning
 
+**Active firmware note:** the current `src/main.cpp` is a sensor monitor. It
+publishes signed, timestamped telemetry on the public-dev MQTT path and rejects
+actuator commands because it has no actuator implementation. The command and
+HTTP sync details below describe the broader retained Backend protocol, not
+features currently operated by this main firmware.
+
 The integrated `water-monitor` publishes its sensor telemetry on MQTT. Actuator
 commands are sent only after authenticated API authorization, then delivered by
 signed, device-scoped MQTT. The device publishes a signed acknowledgement and
@@ -97,7 +103,7 @@ retained-command misconfiguration should still be prevented.
 | Action | Behavior |
 | --- | --- |
 | FILL, DRAIN | Timed single-pump run; durationMs required and bounded by that pump's configured target and hard maximum |
-| WATER_EXCHANGE | Uses configured drain target, settling interval, then configured fill target; API durationMs remains required for contract compatibility but does not set either phase |
+| WATER_EXCHANGE | Drains, settles, then fills. Each pump phase uses durationMs, capped at 60 s and at EXCHANGE_DRAIN_MS / EXCHANGE_FILL_MS when those are set |
 | WATER_STOP | Stop water, disable its automation, cancel pending hardware work |
 | AERATOR_ON, AERATOR_OFF | Manual relay operation; exits aerator automatic mode |
 | AERATOR_AUTO | Enable commissioned temperature hysteresis |
@@ -109,8 +115,9 @@ retained-command misconfiguration should still be prevented.
 Pump command `durationMs` values are positive integers up to 60,000 ms at the
 API and dashboard boundary. FILL and DRAIN also require commissioned
 per-pump targets and hard limits; a manual request may shorten its target but
-cannot extend it. WATER_EXCHANGE requires `durationMs` for API compatibility,
-but firmware uses its independently commissioned drain and fill targets.
+cannot extend it. WATER_EXCHANGE uses `durationMs` for the drain and again for the fill. A
+non-zero `EXCHANGE_DRAIN_MS` or `EXCHANGE_FILL_MS` can only shorten that phase.
+Automatic exchange still requires both measured targets.
 Firmware rejects any configured hard maximum above 300,000 ms. These are
 software limits, not proof that a runtime is safe for a particular tank.
 Stops bypass a full hardware queue, but remote stops depend on network and MQTT
@@ -197,10 +204,9 @@ WATER_POLICY_CONFIGURED=true, followed by AUTOMATION_ON. It waits for ten sample
 and fresh valid pH/turbidity/ORP, then exchanges on out-of-range data. A valid
 manual run interrupts automatic operation and leaves it disabled.
 
-Aerator automation is optional temperature control, not oxygen inference. Set
-ON above OFF thresholds and AERATOR_POLICY_CONFIGURED=true before AERATOR_AUTO.
-Once enabled it turns on for invalid/stale/unsettled temperature. Manual operation
-does not need that policy, but does require confirmed relay configuration.
+Aerator automation follows temperature only. The sketch accepts AERATOR_AUTO with
+the aerator on at 29.5 °C and off at 28.5 °C. A missing temperature reading
+turns the aerator on. Manual on or off leaves automatic mode.
 
 ## Feeding and time
 

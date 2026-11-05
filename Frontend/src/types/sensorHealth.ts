@@ -10,7 +10,18 @@ export interface SensorHealth {
   adcRange: 'PASS' | 'WARNING' | 'UNKNOWN'; stuckDurationMs: number;
   window: { count: number; min: number | null; max: number | null; average: number | null; range: number | null; standardDeviation: number | null };
 }
-export type HealthSummary = Record<SensorName, SensorHealth>;
+export interface UltrasonicReading {
+  connected: boolean;
+  valid: boolean;
+  distanceCm: number|null;
+  depthCm?: number|null;
+  targetDepthCm?: number|null;
+  mountHeightCm?: number|null;
+  levelPercent: number|null;
+  timestamp: string|null;
+  reason: string;
+}
+export type HealthSummary = Record<SensorName, SensorHealth> & { ultrasonic?: UltrasonicReading };
 
 export interface TanMeasurement { value:number; unit:'mg/L as N'; source:'test_kit'|'laboratory'|'external_sensor'|'manual'; validated:true; timestamp:string|number; validationEvidence?:string; validationStatus?:'USER_ATTESTED'; enteredAt?:string|number; }
 export interface Speciation {status:string; percent:number|null; fraction:number|null; pKa:number|null; nh3N:number|null; tan:TanMeasurement|null; reason:string; waterType:string; }

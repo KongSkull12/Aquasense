@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { isValidSmsRecipient, validateSmsMessage } from './sms.service';
+import { describeSmsFailure, isValidSmsRecipient, smsResult, validateSmsMessage } from './sms.service';
 import { buildCombinedAlertSmsTemplate, buildPredictiveSmsTemplate, buildSmsTemplate, DEFAULT_TEST_SMS } from './smsTemplate.service';
 import { ruleEngine } from './ruleEngine.service';
 
@@ -119,6 +119,12 @@ test('prediction wording preserves uncertainty and does not invent a time', () =
   const timed = buildPredictiveSmsTemplate({ farmName: 'Farm', tankName: 'Tank 1', riskLevel: 'CRITICAL', cause: 'low dissolved oxygen', etaMinutes: 1 });
   assert.match(timed, /may become unsafe in about 1 minute\./);
   assert.ok(timed.endsWith('Please check the tank now.'));
+});
+
+test('a missing UniSMS sender is explained without the raw provider payload', () => {
+  const message = describeSmsFailure([smsResult('rejected', 0, { httpStatus: 422, errors: { sender_id: ['does not exists'] } })]);
+  assert.match(message, /Unisoft/);
+  assert.doesNotMatch(message, /does not exists/);
 });
 
 test('default SMS identifies a test without claiming sensor or delivery success', () => {

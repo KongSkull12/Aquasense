@@ -5,7 +5,7 @@ import { deactivateDevice, listDevices, registerDevice } from '../controllers/de
 
 const router = Router();
 
-router.get('/devices', authenticateToken, requireRole(['admin', 'farmer']), listDevices);
+router.get('/devices', authenticateToken, requireRole(['admin', 'farmer', 'staff']), listDevices);
 router.post('/devices', authenticateToken, requireRole(['admin', 'farmer']), validateBody(registerDeviceSchema), registerDevice);
 router.patch('/devices/:deviceId/deactivate', authenticateToken, requireRole(['admin', 'farmer']), validateParams(deviceIdParamSchema), deactivateDevice);
 

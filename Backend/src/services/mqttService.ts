@@ -79,6 +79,8 @@ export class MQTTService {
   private publicFrameDrainTimer: NodeJS.Timeout | null = null;
   private lastPublicFrameReceivedAt: string | null = null;
   private lastPublicFrameVerifiedAt: string | null = null;
+  // Why the most recent frame was dropped, so /health can tell a key mismatch from a bad frame.
+  private lastPublicFrameRejectedReason: 'no_device_key' | 'bad_signature' | 'invalid_frame' | null = null;
 
   constructor(config?: Partial<MQTTConfig>) {
     this.config = {
@@ -111,7 +113,9 @@ export class MQTTService {
       const options: mqtt.IClientOptions = {
         clientId: this.config.clientId,
         clean: true,
-        reconnectPeriod: 5000,
+        keepalive: 30,
+        connectTimeout: 15_000,
+        reconnectPeriod: 3000,
         username: appConfig.mqtt.publicTelemetryOnly ? undefined : this.config.username,
         password: appConfig.mqtt.publicTelemetryOnly ? undefined : this.config.password,
       };
@@ -268,6 +272,16 @@ export class MQTTService {
     }
   }
 
+  private rejectPublicFrame(reason: 'no_device_key' | 'bad_signature' | 'invalid_frame'): void {
+    if (this.lastPublicFrameRejectedReason !== reason) {
+      logger.warn('Public MQTT telemetry frame rejected', {
+        reason,
+        hint: reason === 'bad_signature' ? 'DEVICE_KEYS does not match the firmware DEVICE_KEY' : undefined,
+      });
+    }
+    this.lastPublicFrameRejectedReason = reason;
+  }
+
   private handlePublicTelemetryMessage(topic: string, payload: Buffer): void {
     const parts = topic.split('/');
     if (parts.length !== 5 || parts[0] !== appConfig.mqtt.topicNamespace || parts[1] !== 'devices' ||
@@ -283,21 +297,27 @@ export class MQTTService {
       let envelope: any;
       try { envelope = JSON.parse(payload.toString('utf8')); } catch { return; }
       const deviceKey = appConfig.device.keys[parts[2]];
-      if (!deviceKey || !envelope || typeof envelope !== 'object' || Array.isArray(envelope) ||
+      if (!deviceKey) { this.rejectPublicFrame('no_device_key'); return; }
+      if (!envelope || typeof envelope !== 'object' || Array.isArray(envelope) ||
           typeof envelope.frame !== 'string' || envelope.frame.length > 2048 ||
-          typeof envelope.signature !== 'string' || !/^[a-f0-9]{64}$/i.test(envelope.signature) ||
-          !verifyCanonical(envelope.frame, envelope.signature, deviceKey)) return;
+          typeof envelope.signature !== 'string' || !/^[a-f0-9]{64}$/i.test(envelope.signature)) {
+        this.rejectPublicFrame('invalid_frame'); return;
+      }
+      if (!verifyCanonical(envelope.frame, envelope.signature, deviceKey)) { this.rejectPublicFrame('bad_signature'); return; }
       let frame: any;
-      try { frame = JSON.parse(envelope.frame); } catch { return; }
+      try { frame = JSON.parse(envelope.frame); } catch { this.rejectPublicFrame('invalid_frame'); return; }
       if (!frame || typeof frame !== 'object' || Array.isArray(frame) || frame.v !== 1 ||
           frame.deviceId !== parts[2] || typeof frame.bootId !== 'string' || frame.bootId.length > 64 ||
           !Number.isSafeInteger(frame.sequence) || frame.sequence < 0 ||
           typeof frame.acquiredAt !== 'string' || !Number.isFinite(Date.parse(frame.acquiredAt)) ||
           !frame.sensorTimestamps || typeof frame.sensorTimestamps !== 'object' ||
-          !frame.sensors || typeof frame.sensors !== 'object' || frame.turbidityUnit !== 'NTU') return;
+          !frame.sensors || typeof frame.sensors !== 'object' || frame.turbidityUnit !== 'NTU') {
+        this.rejectPublicFrame('invalid_frame'); return;
+      }
       const timestampNames = ['temperature', 'ph', 'turbidity', 'orp'];
       if (!timestampNames.every(name => typeof frame.sensorTimestamps[name] === 'string' &&
-          Number.isFinite(Date.parse(frame.sensorTimestamps[name])))) return;
+          Number.isFinite(Date.parse(frame.sensorTimestamps[name])))) { this.rejectPublicFrame('invalid_frame'); return; }
+      this.lastPublicFrameRejectedReason = null;
       this.latestDeviceId = parts[2];
       this.lastPublicFrameVerifiedAt = new Date().toISOString();
       void this.persistPublicMqttFrame(JSON.stringify(frame), frame.bootId, frame.sequence);
@@ -308,7 +328,7 @@ export class MQTTService {
   }
 
   /** Publish one non-retained, signed actuator command. Publishing means queued, never confirmed. */
-  async dispatchHardwareCommand(input: { id: string; deviceId: string; source: 'hardware' | 'feeding'; action: string; durationMs?: number; expiresAt: Date }): Promise<boolean> {
+  async dispatchHardwareCommand(input: { id: string; deviceId: string; source: 'hardware' | 'feeding'; action: string; durationMs?: number; param?: string; expiresAt: Date }): Promise<boolean> {
     if (!appConfig.mqtt.actuatorCommandsEnabled) return false;
     const publisher = appConfig.mqtt.publicTelemetryOnly && !appConfig.mqtt.publicCommandsEnabled
       ? this.controlClient : this.client;
@@ -317,7 +337,8 @@ export class MQTTService {
     const key = appConfig.device.keys[input.deviceId];
     if (!key) return false;
     const unsigned = { v: 1 as const, deviceId: input.deviceId, id: input.id, source: input.source,
-      action: input.action, durationMs: input.durationMs ?? 0, expiresAt: input.expiresAt.getTime() };
+      action: input.action, durationMs: input.durationMs ?? 0, expiresAt: input.expiresAt.getTime(),
+      ...(input.param ? { param: input.param } : {}) };
     const payload = JSON.stringify({ ...unsigned, signature: signCanonical(commandCanonical(unsigned), key) });
     return new Promise((resolve) => publisher.publish(`${appConfig.mqtt.controlTopicNamespace}/${input.deviceId}/command`, payload,
       { qos: 1, retain: false }, error => {
@@ -336,7 +357,7 @@ export class MQTTService {
   }
 
   /** Fresh verified telemetry is the device liveness signal in public-dev mode. */
-  isTelemetryDeviceOnline(deviceId: string, maxAgeMs = 20_000): boolean {
+  isTelemetryDeviceOnline(deviceId: string, maxAgeMs = 45_000): boolean {
     if (!appConfig.mqtt.publicTelemetryOnly || deviceId !== appConfig.mqtt.telemetryDeviceId ||
         !this.lastPublicFrameVerifiedAt) return false;
     const ageMs = Date.now() - Date.parse(this.lastPublicFrameVerifiedAt);
@@ -359,7 +380,7 @@ export class MQTTService {
         if (command.expiresAt.getTime() <= now) continue;
         if (!(await deviceService.verifyOwnership(command.userId, command.deviceId))) continue;
         await this.dispatchHardwareCommand({ id: command.id, deviceId: command.deviceId, source: 'hardware', action: command.action,
-          durationMs: command.durationMs ?? undefined, expiresAt: command.expiresAt });
+          durationMs: command.durationMs ?? undefined, param: command.param ?? undefined, expiresAt: command.expiresAt });
       }
       for (const command of feeding) {
         const expiresAt = command.createdAt.getTime() + 120_000;
@@ -663,6 +684,7 @@ export class MQTTService {
     lastPublicFrameReceivedAt: string | null;
     lastPublicFrameVerifiedAt: string | null;
     lastPublicFramePersistedAt: string | null;
+    lastPublicFrameRejectedReason: string | null;
   } {
     return {
       connected: this.isConnected,
@@ -673,6 +695,7 @@ export class MQTTService {
         : [this.config.topics.readings, this.config.topics.sensorWildcard, this.config.topics.commands],
       lastPublicFrameReceivedAt: this.lastPublicFrameReceivedAt,
       lastPublicFrameVerifiedAt: this.lastPublicFrameVerifiedAt,
+      lastPublicFrameRejectedReason: this.lastPublicFrameRejectedReason,
       lastPublicFramePersistedAt: this.lastPublicFramePersistedAt === null
         ? null
         : new Date(this.lastPublicFramePersistedAt).toISOString(),

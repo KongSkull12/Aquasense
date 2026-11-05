@@ -1,0 +1,61 @@
+<!doctype html><html><head><meta charset="utf-8">
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@75..100,400..700&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0}
+body{width:1440px;height:900px;overflow:hidden;font-family:Archivo,sans-serif;background:#fff;color:#0f2a3d;display:grid;grid-template-columns:232px 1fr;font-variant-numeric:tabular-nums}
+.rail{background:#0f2a3d;color:#cfe0ea;padding:24px 18px;display:flex;flex-direction:column;gap:4px}
+.brand{font-weight:700;font-size:17px;color:#fff;margin-bottom:28px;display:flex;gap:10px;align-items:center}
+.brand i{width:28px;height:28px;border-radius:50%;background:#9cc6dd;display:block}
+.nav{padding:9px 10px;border-radius:6px;font-size:14px}
+.nav.on{background:#1d4058;color:#fff;font-weight:600}
+main{padding:22px 28px;display:grid;grid-template-rows:auto auto 1fr;gap:18px}
+.top{display:flex;justify-content:space-between;align-items:end;border-bottom:1px solid #d5e2ea;padding-bottom:14px}
+h1{font-size:22px;font-weight:700}
+.sub{font-size:13px;color:#4b6475;margin-top:3px}
+.meta{display:flex;gap:28px;font-size:13px;color:#4b6475}.meta b{display:block;color:#0f2a3d;font-size:14px}
+.next{display:flex;gap:14px;align-items:center;font-size:15px;padding:12px 16px;background:#dcebf3;border-radius:6px}
+.next b{font-weight:700}
+.strip{display:grid;grid-template-columns:repeat(5,1fr);border:1px solid #d5e2ea;border-radius:6px}
+.cell{padding:14px 16px;border-right:1px solid #d5e2ea}.cell:last-child{border:0}
+.lbl{font-size:12px;font-weight:600;letter-spacing:.02em;color:#4b6475}
+.val{font-size:34px;font-weight:600;margin:6px 0 4px;letter-spacing:-.01em}.val small{font-size:15px;font-weight:500;color:#4b6475}
+.note{font-size:12px;color:#c2185b;font-style:italic}.ok{color:#2c6e49;font-style:normal}
+.seen{font-size:11px;color:#7a8f9c;margin-top:6px}
+.grid{display:grid;grid-template-columns:1fr 1fr 360px;gap:18px;min-height:0}
+.chart{border:1px solid #d5e2ea;border-radius:6px;padding:14px 16px;position:relative}
+.chart h3{font-size:14px;font-weight:600;display:flex;justify-content:space-between}.chart h3 span{font-weight:400;color:#4b6475;font-size:12px}
+.plot{position:absolute;left:16px;right:16px;top:48px;bottom:30px;background:#fff}
+.band{position:absolute;left:0;right:0;background:#dcebf3;border-top:1px dashed #6fa4c2;border-bottom:1px dashed #6fa4c2}
+.shoal{position:absolute;left:0;right:0;background:#efe6cf}
+svg{position:absolute;inset:0;width:100%;height:100%}
+.side{display:flex;flex-direction:column;gap:18px}
+.panel{border:1px solid #d5e2ea;border-radius:6px;padding:14px 16px;font-size:13px}
+.panel h3{font-size:14px;margin-bottom:10px}
+.row{display:flex;justify-content:space-between;padding:7px 0;border-top:1px solid #edf2f5}
+.row:first-of-type{border:0}
+.mag{color:#c2185b}
+</style></head><body>
+<aside class="rail"><div class="brand"><i></i>AquaSense</div>
+<div class="nav on">Overview</div><div class="nav">Parameters</div><div class="nav">Feeding</div><div class="nav">Water change</div><div class="nav">Aerator</div><div class="nav">Alerts &amp; logs</div><div class="nav">Settings</div></aside>
+<main>
+<div class="top"><div><h1>Main Tank</h1><div class="sub">Redclaw grow-out · live, refreshed every 5 s</div></div>
+<div class="meta"><div>Last reading<b>10:23:46 PM</b></div><div>Connection<b>Online</b></div></div></div>
+<div class="next"><b>Next:</b> Calibrate the pH and temperature probes so NH₃ can be estimated. ORP and level sensors are not reporting.</div>
+<div style="display:grid;grid-template-rows:auto 1fr;gap:18px;min-height:0">
+<div class="strip">
+<div class="cell"><div class="lbl">Temperature</div><div class="val">26.5 <small>°C</small></div><div class="note">Calibration required</div><div class="seen">4 s ago</div></div>
+<div class="cell"><div class="lbl">pH</div><div class="val">7.39</div><div class="note">Calibration required</div><div class="seen">4 s ago</div></div>
+<div class="cell"><div class="lbl">Turbidity</div><div class="val">18.5 <small>NTU</small></div><div class="note">Calibration required</div><div class="seen">4 s ago</div></div>
+<div class="cell"><div class="lbl">ORP</div><div class="val" style="color:#9fb3c0">—</div><div class="note">No samples</div><div class="seen">never</div></div>
+<div class="cell"><div class="lbl">Tank level</div><div class="val" style="color:#9fb3c0">—</div><div class="note">No samples</div><div class="seen">never</div></div>
+</div>
+<div class="grid">
+<div class="chart"><h3>Temperature °C <span>guidance 26–29</span></h3><div class="plot"><div class="shoal" style="top:0;height:20%"></div><div class="band" style="top:20%;height:30%"></div><div class="shoal" style="top:50%;bottom:0"></div>
+<svg viewBox="0 0 100 100" preserveAspectRatio="none"><polyline fill="none" stroke="#0f2a3d" stroke-width="1.2" vector-effect="non-scaling-stroke" points="0,45 10,44 20,46 30,44 40,45 50,43 60,44 70,45 80,44 90,43 100,44"/></svg></div></div>
+<div class="chart"><h3>pH <span>guidance 7.0–8.5</span></h3><div class="plot"><div class="shoal" style="top:0;height:25%"></div><div class="band" style="top:25%;height:40%"></div><div class="shoal" style="top:65%;bottom:0"></div>
+<svg viewBox="0 0 100 100" preserveAspectRatio="none"><polyline fill="none" stroke="#0f2a3d" stroke-width="1.2" vector-effect="non-scaling-stroke" points="0,52 10,51 20,52 30,50 40,51 50,52 60,51 70,52 80,51 90,52 100,51"/></svg></div></div>
+<div class="side">
+<div class="panel"><h3>Risk assessment</h3><div class="row"><span>Model</span><span class="mag">Not commissioned</span></div><div class="row"><span>Sensors reporting</span><span>3 of 5</span></div><div class="row"><span>Calibrated</span><span>0 of 3</span></div><div class="row"><span>TAN</span><span>Needs a measurement</span></div></div>
+<div class="panel"><h3>Feeding</h3><div class="row"><span>Next feed</span><span>6:00 AM · 40 g</span></div><div class="row"><span>Feeder</span><span>Idle</span></div></div>
+</div></div></div>
+</main></body></html>

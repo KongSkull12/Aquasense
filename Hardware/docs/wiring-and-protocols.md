@@ -1,5 +1,11 @@
 # Wiring and existing contracts
 
+The active `src/main.cpp` build is monitor-only: it samples pH, temperature,
+turbidity and ORP and sends signed public-dev telemetry through `MqttManager`.
+It does not drive relays, pumps, a feeder or a buzzer; signed actuator commands
+are explicitly rejected. Its ultrasonic code is disabled because the pasted
+GPIO25/GPIO26 assignments conflict with the documented aerator/refill relays.
+
 ## Modular water-monitor target
 
 The integrated target uses pH GPIO35, turbidity GPIO34, ORP GPIO32, DS18B20
@@ -8,7 +14,7 @@ for a 20x4 LCD at address 0x27, as in the attached code. The earlier wiring
 diagram labels a 16x2 LCD; verify the physical panel before deployment. Both use
 the same I2C wiring, but only four-row hardware can show the full sensor page.
 The user-confirmed installed wiring sets the integrated servo to GPIO18 and
-passive buzzer to GPIO19. The legacy standalone feeder uses GPIO13.
+active buzzer to GPIO19, plus on the pin and minus on GND. The legacy standalone feeder uses GPIO13.
 
 The user reports relay K3 refill on GPIO26, K4 drain on GPIO27, and K2 aerator
 on GPIO25; GPIO33 is unused. This is a reported wiring mapping, not an independent

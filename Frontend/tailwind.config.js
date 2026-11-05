@@ -6,44 +6,68 @@ export default {
   theme: {
     extend: {
       colors: {
-        // Primary Theme
-        primary: '#1E3A8A', // Dark blue
-        accent: '#06B6D4', // Aqua/cyan
-        background: '#FFFFFF', // White
-        surface: '#F8FAFC', // Light gray
-        
-        // Status Colors
-        success: '#10B981', // Green
-        warning: '#F59E0B', // Yellow
-        danger: '#EF4444', // Red
-        
-        // Semantic colors
-        text: {
-          primary: '#1F2937', // Dark gray/black
-          secondary: '#6B7280', // Medium gray
-          light: '#9CA3AF', // Light gray
+        // Hydrographic chart palette: ink, deep water, depth bands, shoal, chart notes
+        ink: {
+          DEFAULT: '#0f2a3d',
+          2: '#3d566a',
+          3: '#5b7083',
+          soft: '#173a52',
         },
-        
-        // Legacy support
-        secondary: '#10B981',
-        light: '#F8FAFC',
-        dark: '#1F2937',
+        line: {
+          DEFAULT: '#d6e2ea',
+          soft: '#e8eff4',
+        },
+        water: '#f4f8fb',
+        band: '#e1eef6',
+        contour: '#7aaecb',
+        sounding: {
+          DEFAULT: '#1d5d86',
+          dark: '#164a6c',
+        },
+        shoal: '#f1e9d2',
+        note: '#a3124b',
+        ok: '#1d6b47',
+        warn: {
+          DEFAULT: '#a14e06',
+          bg: '#fcf1e1',
+        },
+        alarm: {
+          DEFAULT: '#b42318',
+          bg: '#fdecea',
+        },
+        rail: {
+          DEFAULT: '#0f2a3d',
+          hover: '#173a52',
+          text: '#b6ccda',
+        },
+
+        // Legacy keys kept for components not part of the redesign
+        primary: '#0f2a3d',
+        accent: '#1d5d86',
+        background: '#FFFFFF',
+        surface: '#f4f8fb',
+        success: '#1d6b47',
+        warning: '#a14e06',
+        danger: '#b42318',
+        secondary: '#1d6b47',
+        light: '#f4f8fb',
+        dark: '#0f2a3d',
       },
       fontFamily: {
-        sans: ['Poppins', 'Inter', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'system-ui', 'sans-serif'],
+        sans: ['Archivo', 'system-ui', '-apple-system', 'Segoe UI', 'sans-serif'],
       },
-      boxShadow: {
-        'sm': '0 1px 2px 0 rgba(0, 0, 0, 0.05)',
-        'md': '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
-        'lg': '0 10px 15px -3px rgba(0, 0, 0, 0.1)',
-        'xl': '0 20px 25px -5px rgba(0, 0, 0, 0.1)',
-        'hover': '0 10px 25px -5px rgba(30, 58, 138, 0.15)',
+      fontSize: {
+        '2xs': ['0.6875rem', { lineHeight: '1rem' }],
       },
       borderRadius: {
-        'sm': '0.375rem',
-        'md': '0.5rem',
-        'lg': '0.75rem',
-        'xl': '1rem',
+        sm: '0.25rem',
+        DEFAULT: '0.375rem',
+        md: '0.375rem',
+        lg: '0.5rem',
+        xl: '0.75rem',
+      },
+      boxShadow: {
+        overlay: '0 8px 24px -6px rgba(15, 42, 61, 0.18), 0 2px 6px -2px rgba(15, 42, 61, 0.12)',
       },
     },
   },

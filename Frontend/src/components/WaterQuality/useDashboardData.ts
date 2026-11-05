@@ -2,7 +2,8 @@ import { refreshDisplayReading } from './sensorDisplay';
 import { useEffect, useRef, useState } from 'react';
 import { useWaterQualityWebSocket } from '../../hooks/useWaterQualityWebSocket';
 import { apiClient, getApiErrorMessage } from '../../services/apiClient';
-import type { WaterQualityReading, HealthAlert, PredictiveAnalyticsResult, PredictionLog, TanMeasurementRecord } from '../../types/water';
+import type { WaterQualityReading, HealthAlert, PredictiveAnalyticsResult, PredictionLog, TanMeasurementRecord, RiskAssessment } from '../../types/water';
+import { DEFAULT_THRESHOLD_BANDS, type ThresholdBands } from './thresholdBands';
 import type { SmsLogEntry } from '../../types/sms';
 
 interface ChartDataPoint {
@@ -14,6 +15,7 @@ interface ChartDataPoint {
   turbidity?: number|null;
   turbidityUnit?: string;
   turbidityRawAdc?: number|null;
+  tankLevelPercent?: number|null;
   tan?: number|null;
   nh3N?: number|null;
   nh3FractionPercent?: number|null;
@@ -31,6 +33,8 @@ interface FeedingSchedule {
   enabled: boolean;
   label: string | null;
 }
+
+const getTankLevel = (reading: WaterQualityReading) => reading.tankLevel ?? reading.sensorHealth?.ultrasonic ?? null;
 
 export const useDashboardData = () => {
   const ws = useWaterQualityWebSocket();
@@ -51,6 +55,8 @@ export const useDashboardData = () => {
   const [feedingSchedules, setFeedingSchedules] = useState<FeedingSchedule[]>([]);
   const [feedingLoading, setFeedingLoading] = useState(false);
   const [predictiveWarning, setPredictiveWarning] = useState<PredictiveAnalyticsResult | null>(null);
+  const [riskAssessment, setRiskAssessment] = useState<RiskAssessment | null>(null);
+  const [thresholdBands, setThresholdBands] = useState<ThresholdBands>(DEFAULT_THRESHOLD_BANDS);
   const [smsLogs, setSmsLogs] = useState<SmsLogEntry[]>([]);
   const [activeAlerts, setActiveAlerts] = useState<HealthAlert[]>([]);
   const [recentAlerts, setRecentAlerts] = useState<HealthAlert[]>([]);
@@ -77,11 +83,12 @@ export const useDashboardData = () => {
         timestamp: new Date(reading.timestamp).toISOString(),
         time: new Date(reading.timestamp).toLocaleTimeString(),
         temperature: reading.temperature,
-        ph: reading.ph,
+        ph: reading.ph ?? reading.sensorHealth?.ph.value ?? null,
         orp: reading.orp,
-        turbidity: reading.turbidity,
+        turbidity: reading.turbidity ?? (reading.turbidityUnit === 'NTU' ? reading.sensorHealth?.turbidity.value ?? null : null),
         turbidityUnit: reading.turbidityUnit,
         turbidityRawAdc: reading.sensorHealth?.turbidity.rawAdc ?? null,
+        tankLevelPercent: getTankLevel(reading)?.levelPercent ?? null,
         tan: reading.speciation?.tan?.value ?? null,
         nh3N: reading.speciation?.nh3N ?? null,
         nh3FractionPercent: reading.speciation?.status === 'AVAILABLE' ? reading.speciation.percent : null,
@@ -100,11 +107,12 @@ export const useDashboardData = () => {
         timestamp,
         time,
         temperature: reading.temperature,
-        ph: reading.ph,
+        ph: reading.ph ?? reading.sensorHealth?.ph.value ?? null,
         orp: reading.orp,
-        turbidity: reading.turbidity,
+        turbidity: reading.turbidity ?? (reading.turbidityUnit === 'NTU' ? reading.sensorHealth?.turbidity.value ?? null : null),
         turbidityUnit: reading.turbidityUnit,
         turbidityRawAdc: reading.sensorHealth?.turbidity.rawAdc ?? null,
+        tankLevelPercent: getTankLevel(reading)?.levelPercent ?? null,
         tan: reading.speciation?.tan?.value ?? null,
         nh3N: reading.speciation?.nh3N ?? null,
         nh3FractionPercent: reading.speciation?.status === 'AVAILABLE' ? reading.speciation.percent : null,
@@ -150,7 +158,7 @@ export const useDashboardData = () => {
     const loadPredictiveBundle = async () => {
       const requestSequence=++dashboardRequestSequence.current;
       try {
-        const response = await apiClient.get<{ latest:WaterQualityReading|null; predictiveWarning: PredictiveAnalyticsResult; predictionHistory: PredictionLog[]; smsLogs: SmsLogEntry[] }>('/water/dashboard');
+        const response = await apiClient.get<{ latest:WaterQualityReading|null; predictiveWarning: PredictiveAnalyticsResult; riskAssessment?: RiskAssessment | null; thresholdBands?: ThresholdBands; predictionHistory: PredictionLog[]; smsLogs: SmsLogEntry[] }>('/water/dashboard');
         if (requestSequence!==dashboardRequestSequence.current) return;
         const incoming=response.data.latest;
         const incomingAt=incoming ? new Date(incoming.timestamp).getTime() : NaN;
@@ -166,6 +174,11 @@ export const useDashboardData = () => {
           return {...incoming,connectionState:'LIVE'};
         });
         setPredictiveWarning(response.data.predictiveWarning);
+        setRiskAssessment(response.data.riskAssessment ?? null);
+        if (response.data.thresholdBands) {
+          setThresholdBands({ ...DEFAULT_THRESHOLD_BANDS, ...response.data.thresholdBands,
+            waterDepth: response.data.thresholdBands.waterDepth ?? DEFAULT_THRESHOLD_BANDS.waterDepth });
+        }
         setSmsLogs(response.data.smsLogs || []);
         setRestError(null);
       } catch {
@@ -246,6 +259,8 @@ export const useDashboardData = () => {
     feedingSchedules,
     feedingLoading,
     predictiveWarning,
+    riskAssessment,
+    thresholdBands,
     smsLogs,
     triggerManual,
     addSchedule,

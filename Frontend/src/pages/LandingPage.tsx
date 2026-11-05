@@ -1,12 +1,14 @@
 import React, { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import Navigation from '../components/Navigation';
 import Footer from '../components/Footer';
 import ContactSection from '../components/ContactSection';
 import FaqSection from '../components/FaqSection';
-import NewsBlogsSection from '../components/NewsBlogsSection';
-import TestimonySection from '../components/TestimonySection';
+import SampleBandChart from '../components/SampleBandChart';
+import { StateMark, type MarkState } from '../components/WaterQuality/Console';
 import { API_BASE_URL } from '../config/runtime';
+import heroImage from '../assets/images/Hero_image.jpg';
+import crayfishImage from '../assets/images/about/about_cray.jpg';
 
 interface HealthResponse {
   success: boolean;
@@ -17,9 +19,32 @@ interface HealthResponse {
   };
 }
 
+const capabilities = [
+  {
+    title: 'Monitor',
+    text: 'Temperature, pH, turbidity, ORP and tank level stream to the dashboard every few seconds, each with its sensor health shown beside the value.',
+  },
+  {
+    title: 'Alert',
+    text: 'Readings that cross a configured threshold raise an alert and an SMS, and every attempt is logged with its delivery status.',
+  },
+  {
+    title: 'Feed',
+    text: 'Run the ESP32 feeder on a daily or dated schedule, or send a feed command from your phone at the tank.',
+  },
+];
+
+const trustStates: Array<{ state: MarkState; label: string; text: string }> = [
+  { state: 'ok', label: 'Within guidance', text: 'Calibrated, stable sensor, and the value sits inside the guidance range.' },
+  { state: 'trust', label: 'Calibration required', text: 'The value is reported, but the sensor is not calibrated, so it is not classified.' },
+  { state: 'warn', label: 'Stale or outside range', text: 'No fresh sample arrived, or a qualified value has left the range.' },
+  { state: 'off', label: 'Unavailable', text: 'The sensor is not reporting. AquaSense shows a dash, never a guess.' },
+];
+
 const LandingPage: React.FC = () => {
   const [isConnected, setIsConnected] = useState(false);
   const [loading, setLoading] = useState(true);
+  const location = useLocation();
 
   useEffect(() => {
     const healthUrl = `${API_BASE_URL}/health`;
@@ -60,584 +85,141 @@ const LandingPage: React.FC = () => {
     return () => clearInterval(healthCheckInterval);
   }, []);
 
+  // /contact shares this page; bring the form into view.
+  useEffect(() => {
+    if (location.pathname !== '/contact') return;
+    const timer = window.setTimeout(() => document.getElementById('contact')?.scrollIntoView({ behavior: 'smooth' }), 50);
+    return () => window.clearTimeout(timer);
+  }, [location.pathname]);
 
   return (
     <div className="min-h-screen bg-white">
-      {/* Navigation */}
       <Navigation />
 
-      {/* Hero Section */}
-      <section className="relative px-4 py-16 overflow-hidden bg-gradient-to-br from-cyan-50 via-cyan-100 to-sky-100 sm:px-6 sm:py-20">
-        <div className="relative mx-auto text-center max-w-7xl">
-          <h1 className="mb-6 text-3xl font-bold leading-tight text-cyan-500 sm:text-5xl md:text-6xl">
-            Smart Water Quality Monitoring
-            <span className="block mt-2 text-primary">for Crayfish Farming</span>
-          </h1>
-          <p className="max-w-3xl mx-auto mb-10 text-base leading-relaxed text-slate-700 sm:text-lg md:text-xl">
-            AquaSense reads temperature, pH, turbidity, and ORP inputs. It has no physical dissolved-oxygen probe; ORP is a separate redox measurement and is not converted to DO. Sensor engineering calibration and aerator automation remain uncommissioned.
-          </p>
-
-          <div className="flex flex-wrap justify-center gap-4 mb-12">
-            <Link
-              to="/dashboard"
-              className="btn btn-primary btn-lg"
-            >
-              View Dashboard →
-            </Link>
-            <Link
-              to="/features"
-              className="btn btn-outline btn-lg"
-            >
-              Learn More
-            </Link>
-          </div>
-
-          {/* Status */}
-          <div className="flex justify-center">
-            {loading ? (
-              <div className="flex items-center gap-2 text-blue-200 bg-slate-800/50 badge">
-                <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse"></span>
-                <span>Checking system status...</span>
-              </div>
-            ) : isConnected ? (
-              <div className="flex items-center gap-2 text-green-200 bg-green-900/50 badge">
-                <span className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></span>
-                <span className="font-semibold">System Ready</span>
-              </div>
-            ) : (
-              <div className="flex items-center gap-2 text-red-200 bg-red-900/50 badge">
-                <span className="w-2 h-2 bg-red-400 rounded-full animate-pulse"></span>
-                <span className="font-semibold">System Offline</span>
-              </div>
-            )}
-          </div>
-        </div>
-      </section>
-
-      {/* Problems Section - The Farmer's Pain Points */}
-      <section className="px-4 py-16 bg-gray-100 sm:px-6 sm:py-20">
-        <div className="mx-auto max-w-7xl">
-          <div className="mb-16 text-center">
-            <h2 className="mb-4 text-2xl font-bold text-blue-900 md:text-4xl">Farming Shouldn't be a Guessing Game</h2>
-            <p className="text-lg text-gray-600">Most farmers face the same challenges. We solve them all.</p>
-          </div>
-
-          <div className="grid grid-cols-1 gap-8 md:grid-cols-3">
-            {/* Problem 1 */}
-            <div className="p-8 transition bg-white rounded-lg shadow-md hover:shadow-lg">
-              <div className="mb-4 text-5xl">⚠️</div>
-              <h3 className="mb-3 text-xl font-bold text-gray-900">Dissolved Oxygen Not Measured</h3>
-              <p className="font-semibold text-gray-700">↓ sudden losses</p>
-              <p className="mt-3 text-sm text-gray-600">
-                AquaSense has no physical DO probe and cannot detect a dissolved-oxygen drop. Use an independently calibrated DO instrument when DO measurement is needed.
-              </p>
-            </div>
-
-            {/* Problem 2 */}
-            <div className="p-8 transition bg-white rounded-lg shadow-md hover:shadow-lg">
-              <div className="mb-4 text-5xl">👤</div>
-              <h3 className="mb-3 text-xl font-bold text-gray-900">Manual Monitoring</h3>
-              <p className="font-semibold text-gray-700">↓ time-consuming</p>
-              <p className="mt-3 text-sm text-gray-600">
-                Checking water conditions manually takes hours away from other critical farm tasks. It's exhausting and unreliable.
-              </p>
-            </div>
-
-            {/* Problem 3 */}
-            <div className="p-8 transition bg-white rounded-lg shadow-md hover:shadow-lg">
-              <div className="mb-4 text-5xl">⚡</div>
-              <h3 className="mb-3 text-xl font-bold text-gray-900">Unpredictable Conditions</h3>
-              <p className="font-semibold text-gray-700">↓ risky</p>
-              <p className="mt-3 text-sm text-gray-600">
-                Without historical data and trends, you're flying blind. One bad day can destroy months of work and profit.
-              </p>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* Solution Section */}
-      <section className="px-4 py-16 bg-white sm:px-6 sm:py-20">
-        <div className="mx-auto max-w-7xl">
-          <div className="grid items-center grid-cols-1 gap-12 md:grid-cols-2">
-            
-            {/* Left Side - Dashboard Illustration */}
-            <div className="relative items-center justify-center hidden md:flex">
-              <div className="relative w-full overflow-hidden shadow-2xl h-96 bg-gradient-to-br from-primary to-blue-700 rounded-2xl">
-                <div className="absolute inset-0 bg-opacity-10 bg-pattern"></div>
-                
-                {/* Mockup Dashboard */}
-                <div className="absolute inset-0 flex flex-col p-6">
-                  <div className="flex gap-2 mb-4">
-                    <div className="w-3 h-3 bg-green-400 rounded-full"></div>
-                    <div className="w-3 h-3 rounded-full bg-accent"></div>
-                    <div className="w-3 h-3 bg-yellow-400 rounded-full"></div>
-                  </div>
-                  
-                  <div className="flex-1 space-y-3 text-white text-opacity-80">
-                    <div className="flex items-center h-12 px-3 bg-white rounded-lg bg-opacity-20">
-                      <span className="text-2xl">🌡️</span>
-                      <div className="flex-1 ml-3">
-                        <div className="text-xs text-opacity-60">Temperature</div>
-                        <div className="text-lg font-bold">28.5°C</div>
-                      </div>
-                    </div>
-                    
-                    <div className="flex items-center h-12 px-3 bg-white rounded-lg bg-opacity-20">
-                      <span className="text-2xl">🔍</span>
-                      <div className="flex-1 ml-3">
-                        <div className="text-xs text-opacity-60">pH Level</div>
-                        <div className="text-lg font-bold">7.2</div>
-                      </div>
-                    </div>
-                    
-                    <div className="flex items-center h-12 px-3 bg-white rounded-lg bg-opacity-20">
-                      <span className="text-2xl">💨</span>
-                      <div className="flex-1 ml-3">
-                        <div className="text-xs text-opacity-60">ORP / Redox (not DO)</div>
-                        <div className="text-lg font-bold">Unavailable</div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Right Side - Text Content */}
+      <main>
+        {/* Hero */}
+        <section className="border-b border-line">
+          <div className="mx-auto grid max-w-6xl items-center gap-10 px-4 py-12 sm:px-6 sm:py-16 lg:grid-cols-[1.05fr_1fr] lg:gap-14 lg:py-20">
             <div>
-              <h2 className="mb-5 text-3xl font-bold text-cyan-500 md:text-5xl">A Smarter Way to  <br /> Manage Your Pond</h2>
-              <p className="mb-8 text-lg leading-relaxed text-gray-600">
-                AquaSense transforms how you care for your crayfish. Stop guessing. Start knowing. AquaSense provides sensor reporting and scheduled feeding features. Aerator policy remains uncommissioned, and water exchange is time-based after pump-flow calibration.
+              <h1 className="text-[2.5rem] font-semibold leading-[1.05] tracking-[-0.025em] sm:text-5xl lg:text-[3.5rem]">
+                Know when your tank water can be trusted.
+              </h1>
+              <p className="mt-5 max-w-xl text-lg leading-relaxed text-ink-2">
+                AquaSense reads the water in your redclaw crayfish tanks, shows each value with the health of the sensor behind it, sends SMS alerts, and runs your feeder on schedule.
               </p>
-
-              <ul className="space-y-4">
-                <li className="flex items-start gap-4">
-                  <div className="flex items-center justify-center flex-shrink-0 w-8 h-8 mt-1 rounded-full bg-accent bg-opacity-20">
-                    <span className="font-bold text-accent">✓</span>
-                  </div>
-                  <div>
-                    <h4 className="font-bold text-gray-900">Real-time Monitoring</h4>
-                    <p className="mt-1 text-sm text-gray-600">Sensor reporting is shown with calibration and data-quality limitations.</p>
-                  </div>
-                </li>
-
-                <li className="flex items-start gap-4">
-                  <div className="flex items-center justify-center flex-shrink-0 w-8 h-8 mt-1 rounded-full bg-accent bg-opacity-20">
-                    <span className="font-bold text-accent">✓</span>
-                  </div>
-                  <div>
-                    <h4 className="font-bold text-gray-900">Aerator Policy (Not Commissioned)</h4>
-                    <p className="mt-1 text-sm text-gray-600">AquaSense has no physical DO probe. ORP is not converted to DO, and the aerator policy is not commissioned.</p>
-                  </div>
-                </li>
-
-                <li className="flex items-start gap-4">
-                  <div className="flex items-center justify-center flex-shrink-0 w-8 h-8 mt-1 rounded-full bg-accent bg-opacity-20">
-                    <span className="font-bold text-accent">✓</span>
-                  </div>
-                  <div>
-                    <h4 className="font-bold text-gray-900">Smart Feeding System</h4>
-                    <p className="mt-1 text-sm text-gray-600">Optimize feeding schedules based on water quality and conditions.</p>
-                  </div>
-                </li>
-
-                <li className="flex items-start gap-4">
-                  <div className="flex items-center justify-center flex-shrink-0 w-8 h-8 mt-1 rounded-full bg-accent bg-opacity-20">
-                    <span className="font-bold text-accent">✓</span>
-                  </div>
-                  <div>
-                    <h4 className="font-bold text-gray-900">Instant Alerts</h4>
-                    <p className="mt-1 text-sm text-gray-600">Get notified immediately if anything goes wrong. Respond before it becomes a crisis.</p>
-                  </div>
-                </li>
-              </ul>
-
-              <Link
-                to="/dashboard"
-                className="inline-block mt-8 btn btn-primary"
-              >
-                See It in Action →
-              </Link>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* Benefits Section - High Impact */}
-      <section className="px-4 py-16 bg-gray-100 sm:px-6 sm:py-20">
-        <div className="mx-auto max-w-7xl">
-          <div className="mb-16 text-center">
-            <h2 className="mb-4 text-3xl font-bold text-cyan-500 md:text-4xl">Why Farmers Choose <span className="text-blue-800">AquaSense</span></h2>
-            <p className="text-lg text-gray-600">Real benefits that make a real difference</p>
-          </div>
-
-          <div className="grid grid-cols-1 gap-8 md:grid-cols-2 lg:grid-cols-3">
-            {/* Reduce Losses */}
-            <div className="bg-white card">
-              <div className="mb-4 text-5xl">🛡️</div>
-              <h3 className="mb-3 text-lg font-bold text-gray-900">Reduce Losses</h3>
-              <p className="text-sm text-gray-600">
-                Review validated water-quality data and use an independent DO instrument when dissolved-oxygen measurement is needed.
-              </p>
-            </div>
-
-            {/* Save Time */}
-            <div className="bg-white card">
-              <div className="mb-4 text-5xl">⏱️</div>
-              <h3 className="mb-3 text-lg font-bold text-gray-900">Save Time</h3>
-              <p className="text-sm text-gray-600">
-                Eliminate manual monitoring. Let automation handle the work while you focus on growth.
-              </p>
-            </div>
-
-            {/* Improve Growth */}
-            <div className="bg-white card">
-              <div className="mb-4 text-5xl">📈</div>
-              <h3 className="mb-3 text-lg font-bold text-gray-900">Improve Growth</h3>
-              <p className="text-sm text-gray-600">
-                Optimize conditions 24/7. Healthier conditions mean faster, stronger crayfish.
-              </p>
-            </div>
-
-            {/* Sustainable */}
-            <div className="bg-white card">
-              <div className="mb-4 text-5xl">♻️</div>
-              <h3 className="mb-3 text-lg font-bold text-gray-900">Sustainable</h3>
-              <p className="text-sm text-gray-600">
-                Solar-powered sensors and smart controls reduce your carbon footprint and operating costs.
-              </p>
-            </div>
-
-            {/* Easy to Use */}
-            <div className="bg-white card">
-              <div className="mb-4 text-5xl">👨‍🌾</div>
-              <h3 className="mb-3 text-lg font-bold text-gray-900">Easy to Use</h3>
-              <p className="text-sm text-gray-600">
-                No tech background needed. Simple dashboard designed specifically for farmers.
-              </p>
-            </div>
-
-            {/* Reliable */}
-            <div className="bg-white card">
-              <div className="mb-4 text-5xl">✅</div>
-              <h3 className="mb-3 text-lg font-bold text-gray-900">Reliable System</h3>
-              <p className="text-sm text-gray-600">
-                Enterprise-grade infrastructure with 99.9% uptime. Your farm never stops working.
-              </p>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* Dashboard Preview Section */}
-      <section className="px-4 py-16 bg-surface sm:px-6 sm:py-20">
-        <div className="mx-auto max-w-7xl">
-          <div className="mb-16 text-center">
-            <h2 className="mb-4 text-3xl font-bold text-blue-800 md:text-5xl">Everything You Need in One Dashboard</h2>
-            <p className="text-gray-600 text-medium">Monitor, control, and track your farm in real-time with a simple and intuitive interface.</p>
-          </div>
-
-          {/* Large Dashboard Mockup */}
-          <div className="relative">
-            <div className="overflow-hidden shadow-2xl bg-gradient-to-br from-slate-900 to-slate-800 rounded-2xl">
-              {/* Dashboard Background Glow */}
-              <div className="absolute inset-0 opacity-30 bg-gradient-to-br from-blue-500 via-transparent to-cyan-500 blur-3xl"></div>
-              
-              {/* Dashboard Content */}
-              <div className="relative p-8 md:p-12">
-                {/* Dashboard Header */}
-                <div className="pb-6 mb-8 border-b border-slate-700">
-                  <h3 className="text-2xl font-bold text-white">Farm Monitor Dashboard (Illustrative)</h3>
-                  <p className="mt-2 text-sm text-slate-400">Static mockup with sample values; not live device data</p>
-                </div>
-
-                {/* Main Content Grid - Sensor Cards */}
-                <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-4">
-                  {/* Sensor Card 1 - Temperature */}
-                  <div className="p-6 transition-all duration-300 border shadow-lg bg-gradient-to-br from-orange-500/10 to-orange-600/10 border-orange-500/20 rounded-xl hover:border-orange-500/50 hover:shadow-orange-500/20">
-                    <div className="flex items-center justify-between mb-4">
-                      <span className="text-3xl">🌡️</span>
-                      <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse"></div>
-                    </div>
-                    <p className="text-sm text-slate-400">Temperature</p>
-                    <div className="mt-2 text-3xl font-bold text-white">28.5°C</div>
-                    <p className="mt-2 text-xs text-slate-500">↑ +0.5°C from last hour</p>
-                  </div>
-
-                  {/* Sensor Card 2 - pH Level */}
-                  <div className="p-6 transition-all duration-300 border shadow-lg bg-gradient-to-br from-blue-500/10 to-blue-600/10 border-blue-500/20 rounded-xl hover:border-blue-500/50 hover:shadow-blue-500/20">
-                    <div className="flex items-center justify-between mb-4">
-                      <span className="text-3xl">🔍</span>
-                      <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse"></div>
-                    </div>
-                    <p className="text-sm text-slate-400">pH Level</p>
-                    <div className="mt-2 text-3xl font-bold text-white">7.2</div>
-                    <p className="mt-2 text-xs text-slate-500">Optimal range</p>
-                  </div>
-
-                                    {/* ORP / Redox: not a dissolved-oxygen measurement */}
-                  <div className="p-6 transition-all duration-300 border shadow-lg bg-gradient-to-br from-green-500/10 to-green-600/10 border-green-500/20 rounded-xl">
-                    <div className="flex items-center justify-between mb-4">
-                      <span className="text-3xl">ORP</span>
-                      <div className="w-3 h-3 bg-amber-400 rounded-full"></div>
-                    </div>
-                    <p className="text-sm text-slate-400">ORP / Redox</p>
-                    <div className="mt-2 text-xl font-bold text-white">Unavailable</div>
-                    <p className="mt-2 text-xs text-slate-500">Calibration required; not DO</p>
-                  </div>
-
-                  {/* Sensor Card 4 - Turbidity */}
-                  <div className="p-6 transition-all duration-300 border shadow-lg bg-gradient-to-br from-cyan-500/10 to-cyan-600/10 border-cyan-500/20 rounded-xl hover:border-cyan-500/50 hover:shadow-cyan-500/20">
-                    <div className="flex items-center justify-between mb-4">
-                      <span className="text-3xl">🌊</span>
-                      <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse"></div>
-                    </div>
-                    <p className="text-sm text-slate-400">Turbidity</p>
-                    <div className="mt-2 text-3xl font-bold text-white">2.3 NTU</div>
-                    <p className="mt-2 text-xs text-slate-500">Clear water</p>
-                  </div>
-                </div>
-
-                {/* Alerts and Automation Section */}
-                <div className="grid grid-cols-1 gap-6 mt-8 md:grid-cols-2">
-                  {/* Alerts */}
-                  <div className="p-6 border bg-slate-800/50 border-slate-700 rounded-xl">
-                    <h4 className="flex items-center gap-2 font-bold text-white">
-                      <span className="text-xl">🚨</span>
-                      Alerts & Notifications
-                    </h4>
-                    <div className="mt-4 space-y-3">
-                      <div className="flex items-start gap-3 p-3 border rounded-lg bg-green-500/10 border-green-500/30">
-                        <span className="text-green-400 mt-0.5">✓</span>
-                        <div>
-                          <p className="text-sm font-medium text-green-200">All systems optimal</p>
-                          <p className="text-xs text-slate-400">Last checked 2 minutes ago</p>
-                        </div>
-                      </div>
-                      <div className="flex items-start gap-3 p-3 border rounded-lg bg-yellow-500/10 border-yellow-500/30">
-                        <span className="text-yellow-400 mt-0.5">⚠</span>
-                        <div>
-                          <p className="text-sm font-medium text-yellow-200">pH trending low</p>
-                          <p className="text-xs text-slate-400">Monitor in next hour</p>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Automation Status */}
-                  <div className="p-6 border bg-slate-800/50 border-slate-700 rounded-xl">
-                    <h4 className="flex items-center gap-2 font-bold text-white">
-                      <span className="text-xl">⚙️</span>
-                      Automation Status
-                    </h4>
-                    <div className="mt-4 space-y-3">
-                      <div className="flex items-center justify-between p-3 rounded-lg bg-slate-700/50">
-                        <span className="text-sm text-white">Aerator Policy</span>
-                        <span className="text-xs text-amber-300">Not commissioned</span>
-                      </div>
-                      <div className="flex items-center justify-between p-3 rounded-lg bg-slate-700/50">
-                        <span className="text-sm text-white">Feeding Timer</span>
-                        <div className="w-10 h-6 bg-green-500 rounded-full"></div>
-                      </div>
-                      <div className="flex items-center justify-between p-3 rounded-lg bg-slate-700/50">
-                        <span className="text-sm text-white">Alert System</span>
-                        <div className="w-10 h-6 bg-green-500 rounded-full"></div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Dashboard Image Placeholder */}
-                <div className="mt-8">
-                  <div className="flex items-center justify-center w-full h-64 border-2 border-dashed shadow-xl bg-gradient-to-br from-slate-700 to-slate-900 border-slate-600 rounded-xl">
-                    <div className="text-center">
-                      <p className="text-lg font-semibold text-slate-300">📊 Dashboard Preview</p>
-                      <p className="mt-2 text-sm text-slate-500">(Actual dashboard screenshot will be added here)</p>
-                    </div>
-                  </div>
-                </div>
+              <div className="mt-8 flex flex-wrap gap-3">
+                <Link to="/dashboard" className="btn-primary btn-lg">Open the dashboard</Link>
+                <Link to="/how-it-works" className="btn-secondary btn-lg">How it works</Link>
               </div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* How It Works Section */}
-      <section className="px-4 py-16 bg-white sm:px-6 sm:py-20">
-        <div className="mx-auto max-w-7xl">
-          <div className="mb-16 text-center">
-            <h2 className="mb-4 text-3xl font-bold text-cyan-500 md:text-4xl">How It Works</h2>
-            <p className="text-lg text-gray-600">Three simple steps to protect your farm</p>
-          </div>
-
-          {/* Steps Container */}
-          <div className="grid grid-cols-1 gap-8 md:grid-cols-3">
-            {/* Step 1 */}
-            <div className="relative">
-              <div className="flex flex-col items-center text-center">
-                <div className="flex items-center justify-center w-20 h-20 mb-6 text-5xl duration-300 transform bg-blue-100 rounded-full hover:scale-110 hover:shadow-lg">
-                  📡
-                </div>
-                <h3 className="mb-3 text-2xl font-bold text-gray-900">Sensors Collect Data</h3>
-                <p className="text-gray-600">
-                  AquaSense hardware has temperature, pH, turbidity, and ORP inputs. It does not measure dissolved oxygen; engineering calibration is not yet commissioned.
-                </p>
-              </div>
-              {/* Arrow for larger screens */}
-              <div className="absolute hidden md:block top-1/3 -right-8">
-                <svg className="w-8 h-8 text-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                </svg>
+              <div className="mt-6" aria-live="polite">
+                {loading ? (
+                  <StateMark state="off">Checking the AquaSense server…</StateMark>
+                ) : isConnected ? (
+                  <StateMark state="ok">Server online</StateMark>
+                ) : (
+                  <StateMark state="alarm">Server offline</StateMark>
+                )}
               </div>
             </div>
 
-            {/* Step 2 */}
-            <div className="relative">
-              <div className="flex flex-col items-center text-center">
-                <div className="flex items-center justify-center w-20 h-20 mb-6 text-5xl duration-300 transform rounded-full bg-cyan-100 hover:scale-110 hover:shadow-lg">
-                  🧠
+            <figure className="relative">
+              <img src={heroImage} alt="Concrete grow-out tank divided into glass compartments for individual crayfish, with a red inflow pipe" className="aspect-[4/3] w-full rounded-lg object-cover" />
+              <div className="absolute -bottom-6 left-4 right-4 rounded-lg border border-line bg-white p-4 shadow-overlay sm:left-auto sm:right-6 sm:w-[300px]">
+                <div className="flex items-baseline justify-between gap-3">
+                  <p className="text-[13px] font-semibold">Temperature</p>
+                  <p className="text-xs text-ink-3">Sample data</p>
                 </div>
-                <h3 className="mb-3 text-2xl font-bold text-gray-900">System Analyzes</h3>
-                <p className="text-gray-600">
-                  Our intelligent system instantly analyzes the data and compares it against healthy fish farming conditions.
-                </p>
+                <p className="num mt-1 text-2xl font-semibold leading-none">27.4 <span className="text-sm font-medium text-ink-3">°C</span></p>
+                <SampleBandChart className="mt-3 h-[72px] w-full" />
+                <p className="mt-2 text-xs text-ink-3">Shaded band: 26–29 °C growth guidance</p>
               </div>
-              {/* Arrow for larger screens */}
-              <div className="absolute hidden md:block top-1/3 -right-8">
-                <svg className="w-8 h-8 text-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                </svg>
-              </div>
-            </div>
+            </figure>
+          </div>
+        </section>
 
-            {/* Step 3 */}
+        {/* What it does */}
+        <section className="py-16 sm:py-24" aria-labelledby="capabilities-heading">
+          <div className="mx-auto max-w-6xl px-4 sm:px-6">
+            <h2 id="capabilities-heading" className="max-w-2xl text-3xl font-semibold leading-tight sm:text-4xl">One console for the tank, the sensors and the feeder</h2>
+            <div className="mt-10 grid gap-px overflow-hidden rounded-lg border border-line bg-line md:grid-cols-3">
+              {capabilities.map((item) => (
+                <div key={item.title} className="bg-white p-6 sm:p-7">
+                  <h3 className="text-lg font-semibold">{item.title}</h3>
+                  <p className="mt-2 text-[15px] leading-relaxed text-ink-2">{item.text}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        {/* Trust states: the product's distinctive behaviour */}
+        <section className="border-y border-line bg-water py-16 sm:py-24" aria-labelledby="trust-heading">
+          <div className="mx-auto grid max-w-6xl gap-12 px-4 sm:px-6 lg:grid-cols-2 lg:items-center">
             <div>
-              <div className="flex flex-col items-center text-center">
-                <div className="flex items-center justify-center w-20 h-20 mb-6 text-5xl duration-300 transform bg-green-100 rounded-full hover:scale-110 hover:shadow-lg">
-                  ⚡
-                </div>
-                <h3 className="mb-3 text-2xl font-bold text-gray-900">Action & Alerts</h3>
-                <p className="text-gray-600">
-                  Available alerts depend on validated inputs and configured policies; the aerator policy is not commissioned.
-                </p>
-              </div>
+              <h2 id="trust-heading" className="text-3xl font-semibold leading-tight sm:text-4xl">A number is only useful if you can trust it</h2>
+              <p className="mt-4 max-w-lg text-lg leading-relaxed text-ink-2">
+                Cheap probes drift and connections drop. Every reading on the dashboard carries one of four marks, so you never mistake an uncalibrated or stale value for a safe one.
+              </p>
             </div>
+            <ul className="panel divide-y divide-line-soft">
+              {trustStates.map((item) => (
+                <li key={item.label} className="grid gap-1 px-5 py-4 sm:grid-cols-[190px_1fr] sm:gap-4">
+                  <StateMark state={item.state} className="!text-sm !font-semibold">{item.label}</StateMark>
+                  <p className="text-sm leading-relaxed text-ink-2">{item.text}</p>
+                </li>
+              ))}
+            </ul>
           </div>
+        </section>
 
-          {/* Bottom CTA */}
-          <div className="mt-16 text-center">
-            <p className="mb-6 text-gray-600">
-              It's that simple. Your farm takes care of itself while you focus on growth.
-            </p>
-            <Link
-              to="/dashboard"
-              className="btn btn-primary btn-lg"
-            >
-              See It in Action →
-            </Link>
-          </div>
-        </div>
-      </section>
-
-      {/* Trust & Reliability Section */}
-      <section className="relative px-4 py-16 overflow-hidden bg-gradient-to-br from-cyan-50 via-cyan-100 to-sky-100 sm:px-6 sm:py-20">
-        <div className="mx-auto max-w-7xl">
-          <div className="grid items-center grid-cols-1 gap-12 md:grid-cols-2">
-            {/* Left Side - Text */}
+        {/* Species */}
+        <section className="py-16 sm:py-24" aria-labelledby="species-heading">
+          <div className="mx-auto grid max-w-6xl items-center gap-10 px-4 sm:px-6 md:grid-cols-[0.8fr_1fr] lg:gap-16">
+            <img src={crayfishImage} alt="A redclaw crayfish held in a yellow hand net above the tank" className="aspect-[4/5] w-full rounded-lg object-cover" loading="lazy" />
             <div>
-              <h2 className="mb-6 text-3xl font-bold text-blue-900 md:text-4xl">Built for Real Farming</h2>
-              <p className="mb-6 text-lg leading-relaxed text-gray-700">
-                Built for real farming environments with reliable hardware and consistent performance. Stay informed and in control at all times.
+              <h2 id="species-heading" className="text-3xl font-semibold leading-tight sm:text-4xl">Set up for redclaw crayfish</h2>
+              <p className="mt-4 max-w-lg text-lg leading-relaxed text-ink-2">
+                Guidance ranges are tuned for <i>Cherax quadricarinatus</i> culture. They are advisory, and shown as shaded bands on every chart.
               </p>
-              <p className="text-gray-600">
-                We understand the harsh realities of farm life. Our system is designed to withstand tough conditions, deliver accurate data when you need it most, and keep you connected no matter what.
+              <dl className="mt-8 divide-y divide-line border-y border-line">
+                <div className="flex items-baseline justify-between gap-4 py-4">
+                  <dt className="text-ink-2">Temperature, growth guidance</dt>
+                  <dd className="num text-lg font-semibold">26–29 °C</dd>
+                </div>
+                <div className="flex items-baseline justify-between gap-4 py-4">
+                  <dt className="text-ink-2">pH, culture guidance</dt>
+                  <dd className="num text-lg font-semibold">7.0–8.5</dd>
+                </div>
+                <div className="flex items-baseline justify-between gap-4 py-4">
+                  <dt className="text-ink-2">Turbidity and ORP</dt>
+                  <dd className="text-right text-[15px] font-medium text-ink-2">Reported, no validated limit</dd>
+                </div>
+              </dl>
+              <p className="mt-5 text-sm leading-relaxed text-ink-3">
+                AquaSense has no dissolved-oxygen probe. ORP is a separate redox reading and is never converted to dissolved oxygen.
               </p>
             </div>
+          </div>
+        </section>
 
-            {/* Right Side - Trust Indicators */}
-            <div className="space-y-4">
-              {/* Reliability */}
-              <div className="flex items-center gap-4 p-4 transition bg-white rounded-lg shadow-sm hover:shadow-md">
-                <div className="flex items-center justify-center flex-shrink-0 w-12 h-12 text-2xl bg-green-100 rounded-full">
-                  ✅
-                </div>
-                <div>
-                  <h4 className="font-bold text-gray-900">99.9% Uptime</h4>
-                  <p className="text-sm text-gray-600">Enterprise-grade reliability you can trust</p>
-                </div>
-              </div>
+        <FaqSection />
+        <ContactSection />
 
-              {/* Durability */}
-              <div className="flex items-center gap-4 p-4 transition bg-white rounded-lg shadow-sm hover:shadow-md">
-                <div className="flex items-center justify-center flex-shrink-0 w-12 h-12 text-2xl bg-blue-100 rounded-full">
-                  🛡️
-                </div>
-                <div>
-                  <h4 className="font-bold text-gray-900">Built to Last</h4>
-                  <p className="text-sm text-gray-600">Waterproof sensors designed for harsh pond environments</p>
-                </div>
-              </div>
-
-              {/* Always Connected */}
-              <div className="flex items-center gap-4 p-4 transition bg-white rounded-lg shadow-sm hover:shadow-md">
-                <div className="flex items-center justify-center flex-shrink-0 w-12 h-12 text-2xl rounded-full bg-cyan-100">
-                  📱
-                </div>
-                <div>
-                  <h4 className="font-bold text-gray-900">Always Connected</h4>
-                  <p className="text-sm text-gray-600">Real-time alerts on your phone, anytime, anywhere</p>
-                </div>
-              </div>
-
-              {/* Accurate Data */}
-              <div className="flex items-center gap-4 p-4 transition bg-white rounded-lg shadow-sm hover:shadow-md">
-                <div className="flex items-center justify-center flex-shrink-0 w-12 h-12 text-2xl rounded-full bg-amber-100">
-                  🎯
-                </div>
-                <div>
-                  <h4 className="font-bold text-gray-900">Precision Tracking</h4>
-                  <p className="text-sm text-gray-600">Lab-grade sensor accuracy for critical decisions</p>
-                </div>
-              </div>
+        {/* Closing */}
+        <section className="bg-ink py-16 sm:py-20">
+          <div className="mx-auto flex max-w-6xl flex-col items-start justify-between gap-6 px-4 sm:px-6 md:flex-row md:items-center">
+            <div>
+              <h2 className="text-3xl font-semibold leading-tight text-white sm:text-4xl">Connect your first tank</h2>
+              <p className="mt-2 max-w-lg text-base leading-relaxed text-rail-text">Create an account, register your device ID, and readings start arriving on the dashboard.</p>
+            </div>
+            <div className="flex flex-wrap gap-3">
+              <Link to="/signup" className="btn btn-lg bg-white text-ink hover:bg-band">Create account</Link>
+              <Link to="/login" className="btn btn-lg border border-white/25 text-white hover:bg-white/10">Sign in</Link>
             </div>
           </div>
-        </div>
-      </section>
+        </section>
+      </main>
 
-      <ContactSection />
-
-      <TestimonySection />
-
-      <NewsBlogsSection />
-
-      <FaqSection />
-
-      {/* Contact CTA Section (Moved from Contact Page) */}
-      <section
-        className="px-4 py-12 bg-center bg-cover sm:px-6"
-        style={{
-          backgroundImage: `linear-gradient(135deg, rgba(15, 23, 42, 0.74) 0%, rgba(5, 5, 5, 0.72) 100%), url('/src/assets/images/Hero_image.jpg')`,
-          backgroundSize: 'cover',
-          backgroundPosition: 'center'
-        }}
-      >
-        <div className="mx-auto max-w-7xl">
-          <div className="p-6 mt-10 text-center sm:p-10 sm:mt-16 lg:p-12 lg:mt-24">
-            <h2 className="mb-4 text-3xl font-bold text-white">Ready to Transform Your <span className="text-cyan-400">Aquaculture?</span></h2>
-            <p className="max-w-2xl mx-auto mb-8 text-blue-200">
-              Join other aquaculture operators using AquaSense for better yields, lower costs, and sustainable operations.
-             </p>
-           <Link
-         to="/signup"
-         className="inline-flex items-center justify-center w-full px-8 py-4 text-lg font-bold transition border rounded-lg border-cyan-500 text-cyan-500 hover:bg-cyan-500 hover:text-white sm:w-auto"
-         >
-       Get Started Today
-    </Link>
-          </div>
-        </div>
-      </section>
-
-      {/* Footer */}
       <Footer />
     </div>
   );

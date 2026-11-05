@@ -4,6 +4,7 @@ import { predictiveAnalyticsService } from './predictiveAnalytics.service';
 import { ruleEngine, type AlertSeverity, type RuleAlertResult } from './ruleEngine.service';
 import { smsNotificationService } from './smsNotification.service';
 import { buildCombinedAlertSmsTemplate, buildPredictiveSmsTemplate } from './smsTemplate.service';
+import { alertPhonesForDevice } from './smsRecipients';
 import { config } from '../config/config';
 import { logger } from '../utils/logger';
 
@@ -131,9 +132,9 @@ class WaterAlertNotificationService {
     deviceId: string,
     alertsToNotify: Array<{ alertId: string; alert: RuleAlertResult }>
   ): Promise<boolean> {
-    const recipient = config.farm.recipientPhone;
-    if (!recipient) {
-      logger.warn('SMS skipped: FARMER_PHONE not configured', { deviceId });
+    const recipients = await alertPhonesForDevice(deviceId);
+    if (!recipients.length) {
+      logger.warn('SMS skipped: no alert recipients are turned on for this device', { deviceId });
       return false;
     }
 
@@ -153,11 +154,11 @@ class WaterAlertNotificationService {
       action: selectPrimaryAction(alerts),
     });
 
-    const result = await smsNotificationService.send({
-      deviceId, category, severity, recipient, message: smsMessage,
+    const results = await smsNotificationService.sendEach({
+      deviceId, category, severity, recipients, message: smsMessage,
       alertIds: alertsToNotify.map((entry) => entry.alertId),
     });
-    return result?.success ?? false;
+    return results?.some((result) => result.accepted) ?? false;
   }
 
   private async sendPredictiveSms(
@@ -168,9 +169,9 @@ class WaterAlertNotificationService {
       estimatedUnsafeInMinutes: number | null;
     }
   ): Promise<boolean> {
-    const recipient = config.farm.recipientPhone;
-    if (!recipient) {
-      logger.warn('Predictive SMS skipped: FARMER_PHONE not configured', { deviceId });
+    const recipients = await alertPhonesForDevice(deviceId);
+    if (!recipients.length) {
+      logger.warn('Predictive SMS skipped: no alert recipients are turned on for this device', { deviceId });
       return false;
     }
 
@@ -184,10 +185,10 @@ class WaterAlertNotificationService {
       etaMinutes: warningCard.estimatedUnsafeInMinutes,
     });
 
-    const result = await smsNotificationService.send({
-      deviceId, category, severity, recipient, message: smsMessage,
+    const results = await smsNotificationService.sendEach({
+      deviceId, category, severity, recipients, message: smsMessage,
     });
-    return result?.success ?? false;
+    return results?.some((result) => result.accepted) ?? false;
   }
 }
 

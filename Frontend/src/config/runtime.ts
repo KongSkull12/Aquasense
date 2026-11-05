@@ -1,5 +1,5 @@
 // The default Vite development mode uses the same public telemetry backend as
-// public-dev. Use `--mode local` when connecting to the private port-5001 API.
+// public-dev. Use `npm run dev:local` (mode private-api) when connecting to the private port-5001 API.
 const PUBLIC_DEV_MODE = import.meta.env.MODE === 'public-dev' || import.meta.env.MODE === 'development';
 const LOCAL_BACKEND_URL = PUBLIC_DEV_MODE ? 'http://localhost:5002' : 'http://localhost:5001';
 

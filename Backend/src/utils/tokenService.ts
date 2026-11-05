@@ -4,11 +4,12 @@
 import jwt from 'jsonwebtoken';
 import { logger } from '../utils/logger';
 import { config } from '../config/config';
+import type { UserRole } from '../services/userRoles';
 
 export interface TokenPayload {
   userId: string;
   email: string;
-  role?: 'admin' | 'farmer' | 'guest';
+  role?: UserRole;
 }
 
 class TokenService {

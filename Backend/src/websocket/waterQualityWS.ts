@@ -8,6 +8,7 @@ import { logger } from '../utils/logger';
 import { sensorReadingService } from '../services/sensorReadingService';
 import { alertService } from '../services/alert.service';
 import { deviceService } from '../services/device.service';
+import { listAccessibleDevices } from '../services/deviceAccess';
 import { tokenService } from '../utils/tokenService';
 import type { TokenPayload } from '../utils/tokenService';
 import type { WaterQualityReading, WaterQualityStats } from '../iot/water/types';
@@ -16,7 +17,7 @@ import { config } from '../config/config';
 interface SocketSession {
   token: string;
   userId: string;
-  role: 'admin' | 'farmer' | 'guest';
+  role: 'admin' | 'farmer' | 'staff' | 'guest';
 }
 
 export const getSessionTokenFromCookieHeader = (header: string | undefined, cookieName: string): string | null => {
@@ -44,6 +45,9 @@ export const resolveSocketDeviceScope = async (
   listDevices: (userId: string) => Promise<Array<{ deviceId: string; isActive: boolean }>>,
 ): Promise<string[] | undefined> => {
   if (session.role === 'admin') return undefined;
+  if (session.role === 'staff') {
+    return (await listAccessibleDevices(session.userId, 'staff')).map(device => device.deviceId);
+  }
   return (await listDevices(session.userId)).filter(device => device.isActive).map(device => device.deviceId);
 };
 
@@ -164,7 +168,14 @@ class WaterQualityWebSocketServer {
     };
   }
 
-  /** Send live records only to administrators and the active owner of the record's device. */
+  private async sessionCanSeeDevice(session: SocketSession, deviceUserId: string, deviceId: string): Promise<boolean> {
+    if (session.role === 'admin' || session.userId === deviceUserId) return true;
+    if (session.role !== 'staff') return false;
+    const allowed = await listAccessibleDevices(session.userId, 'staff');
+    return allowed.some((item) => item.deviceId === deviceId);
+  }
+
+  /** Send live records to admins, the device owner, and staff linked to that employer. */
   broadcastReading(reading: WaterQualityReading): void {
     const deviceId = (reading as unknown as { deviceId?: string }).deviceId;
     if (!deviceId) return;
@@ -174,7 +185,9 @@ class WaterQualityWebSocketServer {
       for (const socket of this.io.sockets.sockets.values()) {
         const session = this.session(socket);
         if (!session) { socket.disconnect(true); continue; }
-        if (session.role === 'admin' || session.userId === device.userId) socket.emit('water:new-reading', reading);
+        if (await this.sessionCanSeeDevice(session, device.userId, device.deviceId)) {
+          socket.emit('water:new-reading', reading);
+        }
       }
     })().catch(error => logger.warn('Failed to scope live reading broadcast', error));
   }
@@ -185,7 +198,13 @@ class WaterQualityWebSocketServer {
       for (const socket of this.io.sockets.sockets.values()) {
         const session = this.session(socket);
         if (!session) { socket.disconnect(true); continue; }
-        if (session.role === 'admin' || (device && session.userId === device.userId)) socket.emit('water:alert', alert);
+        if (!device) {
+          if (session.role === 'admin') socket.emit('water:alert', alert);
+          continue;
+        }
+        if (await this.sessionCanSeeDevice(session, device.userId, device.deviceId)) {
+          socket.emit('water:alert', alert);
+        }
       }
     })().catch(error => logger.warn('Failed to scope alert broadcast', error));
   }

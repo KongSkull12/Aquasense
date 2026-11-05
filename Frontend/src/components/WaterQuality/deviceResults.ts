@@ -1,0 +1,33 @@
+// Plain-language explanations for the result codes the ESP32 firmware returns
+// when it acknowledges a command. Unknown codes are shown as-is.
+const deviceResultText: Record<string, string> = {
+  accepted: 'Accepted by the device',
+  rejected_relays_not_commissioned: 'Relays are disabled on the device. In the ESP32 Serial Monitor, check them with "relay test", then type "relay enable".',
+  rejected_exchange_not_commissioned: 'Water exchange runtimes are not set in the firmware yet (EXCHANGE_DRAIN_MS and EXCHANGE_FILL_MS).',
+  rejected_water_policy_not_configured: 'Automatic water exchange is not configured in the firmware (WATER_POLICY_CONFIGURED).',
+  rejected_aerator_policy_not_configured: 'Automatic aerator mode is not configured in the firmware (AERATOR_POLICY_CONFIGURED).',
+  rejected_water_busy: 'A pump run or cooldown is already in progress. Wait for the water phase to return to Idle.',
+  rejected_fault_latched: 'A water fault is latched on the device. Clear the fault before running the pumps.',
+  rejected_no_fault: 'There is no fault to clear.',
+  rejected_duration_out_of_range: 'Pump duration must be between 1 and 600 seconds (10 minutes).',
+  rejected_tank_not_calibrated: 'Capture the empty tub (mount height) and set a target depth on Calibration before Fill to target.',
+  rejected_no_ultrasonic: 'No valid ultrasonic echo. Check the sensor wiring and that the surface is in range.',
+  rejected_already_at_target: 'Water is already at or above the calibrated target depth.',
+  rejected_feeder_busy: 'The feeder is already running a cycle.',
+  rejected_servo_pwm: 'The ESP32 could not start the servo signal on GPIO 18. Check the servo 5 V supply and that its ground joins the ESP32 ground, then flash the latest sketch.',
+  rejected_unsupported_action: 'This firmware does not support that action.',
+  queue_full: 'The device was busy; the command will be redelivered.',
+  rejected_busy: 'The feeder or pumps are running. Wait until they are idle, then capture again.',
+  rejected_not_steady: 'The reading was still changing. Wait until it shows Steady, then capture again.',
+  rejected_out_of_range: 'That reference value is outside the allowed range for this sensor.',
+  rejected_same_input: 'The references gave almost the same input. Check the probe and the solutions.',
+  rejected_implausible_slope: 'The fitted line is not plausible for this sensor. Check the solutions and wiring, then clear the points and try again.',
+  rejected_turb_voltage_low: 'Turbidity voltage is too low. Power the module from 5 V, set its switch to Analog (A), and check the wire to GPIO34.',
+  rejected_turb_curve: 'Turbidity voltage could not be converted. Check the sensor power and wiring, then try again.',
+  rejected_bad_param: 'The device did not understand the calibration request.',
+};
+
+export const describeDeviceResult = (result?: string | null): string =>
+  result ? deviceResultText[result] ?? result.replace(/_/g, ' ') : 'No result reported';
+
+export const isAcceptedResult = (result?: string | null): boolean => result === 'accepted';

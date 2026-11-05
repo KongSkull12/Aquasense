@@ -5,6 +5,7 @@ import morgan from 'morgan';
 import rateLimit from 'express-rate-limit';
 import { createServer as createHTTPServer } from 'http';
 import { config } from './config/config';
+import { buildInfo } from './config/buildInfo';
 import { logger } from './utils/logger';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler';
 import { requireHttps } from './middleware/requireHttps';
@@ -47,9 +48,10 @@ const createApp = (): Express => {
     })
   );
 
+  // The dashboard polls every 2-5 s per page, roughly 500-700 requests per 15 min for one open tab.
   const apiLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
-    max: 500,
+    max: parseInt(process.env.API_RATE_LIMIT_MAX || '3000', 10),
     standardHeaders: true,
     legacyHeaders: false,
   });
@@ -65,11 +67,13 @@ const createApp = (): Express => {
       data: {
         timestamp: new Date().toISOString(),
         uptime: process.uptime(),
+        release: buildInfo,
         mqtt: {
           connected: mqttStatus.connected,
           lastPublicFrameReceivedAt: mqttStatus.lastPublicFrameReceivedAt,
           lastPublicFrameVerifiedAt: mqttStatus.lastPublicFrameVerifiedAt,
           lastPublicFramePersistedAt: mqttStatus.lastPublicFramePersistedAt,
+          lastPublicFrameRejectedReason: mqttStatus.lastPublicFrameRejectedReason,
         },
       },
     };

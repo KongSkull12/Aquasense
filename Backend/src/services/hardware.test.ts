@@ -22,6 +22,7 @@ import { MQTTService } from './mqttService';
 import { sensorReadingService } from './sensorReadingService';
 import { waterAlertNotificationService } from './waterAlertNotification.service';
 import { csrfProtection } from '../middleware/csrfProtection';
+import { mockDeviceAccess, type TestDevice } from './deviceAccessTestDoubles';
 
 const originalKeys = config.device.keys;
 afterEach(() => { mock.restoreAll(); config.device.keys = originalKeys; });
@@ -44,9 +45,10 @@ const state: HardwareState = { fillPump: false, drainPump: false, aerator: false
   wifiConnected: true, mqttConnected: true, uptimeMs: 123 };
 
 test('pump commands require bounded integer timing; non-pump commands reject timing and extra fields', () => {
-  for (const durationMs of [undefined, 0, -1, 1.5, 300001, '1000']) {
+  for (const durationMs of [undefined, 0, -1, 1.5, 600001, '1000']) {
     assert.equal(hardwareCommandSchema.safeParse({ deviceId: 'board', action: 'FILL', durationMs }).success, false);
   }
+  assert.equal(hardwareCommandSchema.safeParse({ deviceId: 'board', action: 'FILL', durationMs: 120000 }).success, true);
   assert.equal(hardwareCommandSchema.safeParse({ deviceId: 'board', action: 'WATER_EXCHANGE', durationMs: 1000 }).success, true);
   assert.equal(hardwareCommandSchema.safeParse({ deviceId: 'board', action: 'ALL_OFF', durationMs: 1000 }).success, false);
   assert.equal(hardwareCommandSchema.safeParse({ deviceId: 'board', action: 'RAW_GPIO', pin: 25 }).success, false);
@@ -228,6 +230,8 @@ test('signed actuator command and state ACK canonical strings verify HMAC-SHA256
   const ack = { v: 1 as const, deviceId: 'board', id, source: 'hardware' as const, action: 'DRAIN', result: 'accepted', reportedAt: 123456,
     state, signature: '' };
   assert.equal(ackCanonical(ack), `v1|board|${id}|hardware|DRAIN|accepted|123456|0|0|0|0|0|0|IDLE||0|0|1|1|123`);
+  assert.equal(ackCanonical({ ...ack, state: { ...state, aeratorAuto: true } }), `v1|board|${id}|hardware|DRAIN|accepted|123456|0|0|0|0|0|0|IDLE||0|0|1|1|123|1`);
+  assert.equal(hardwareStateSchema.safeParse({ ...state, aeratorAuto: false }).success, true);
   const ackSignature = signCanonical(ackCanonical(ack), key);
   assert.equal(verifyCanonical(ackCanonical(ack), ackSignature, key), true);
   assert.equal(verifyCanonical(ackCanonical({ ...ack, state: { ...state, drainPump: true } }), ackSignature, key), false);
@@ -243,10 +247,14 @@ test('MQTT ACK persists its nested state and acknowledges only the matching scop
   const upsert = mock.method(HardwareDeviceState, 'upsert', async () => [state, true]);
   const ack = { v: 1 as const, deviceId: 'board', id, source: 'hardware' as const, action: 'DRAIN', result: 'accepted',
     reportedAt: 123456, state, signature: 'verified-by-mqtt-listener' };
+  const before = Date.now();
   assert.equal(await hardwareService.acceptMqttAck('owner', ack), true);
   assert.equal(status, 'ACKED');
   assert.deepEqual(find.mock.calls[0].arguments[0]?.where, { id, userId: 'owner', deviceId: 'board' });
-  assert.deepEqual(upsert.mock.calls[0].arguments[0], { deviceId: 'board', state, receivedAt: new Date(123456) });
+  const written = upsert.mock.calls[0].arguments[0] as { deviceId: string; state: typeof state; receivedAt: Date };
+  assert.equal(written.deviceId, 'board');
+  assert.equal(written.state, state);
+  assert.ok(written.receivedAt.getTime() >= before && written.receivedAt.getTime() <= Date.now());
 });
 
 test('MQTT actuator publish signs command and explicitly disables retention', async () => {
@@ -359,12 +367,14 @@ test('HTTP sync requires a configured matching key and active device even in dev
     assert.equal((await post('/hardware/device/sync', { deviceId: 'board', state }, { 'x-device-key': 'test-key' })).status, 403);
     assert.equal((await post('/hardware/commands', { deviceId: 'board', action: 'ALL_OFF' })).status, 401);
     mock.method(tokenService, 'verifyToken', () => ({ userId: 'owner', email: 'test@example.test', role: 'farmer' }));
-    mock.method(deviceService, 'verifyOwnership', async () => false);
+    // The caller owns no device yet, so the command is refused.
+    const ownedDevices: TestDevice[] = [];
+    mockDeviceAccess([{ id: 'owner', role: 'farmer' }], ownedDevices);
     const expiry = new Date(Date.now() + 120_000);
     const queued = mock.method(hardwareService, 'queue', async () => ({ id, action: 'ALL_OFF', status: 'PENDING', result: null, expiresAt: expiry }));
     assert.equal((await post('/hardware/commands', { deviceId: 'board', action: 'ALL_OFF' }, { Authorization: 'Bearer test' })).status, 403);
     assert.equal(queued.mock.callCount(), 0);
-    mock.method(deviceService, 'verifyOwnership', async () => true);
+    ownedDevices.push({ deviceId: 'board', userId: 'owner', isActive: true });
     const queueResponse = await post('/hardware/commands', { deviceId: 'board', action: 'ALL_OFF' }, { Authorization: 'Bearer test' });
     assert.equal(queueResponse.status, 202);
     const body = await queueResponse.json() as { data: { id: string; commandId: string; action: string; status: string; result: string | null; expiresAt: string; published: boolean } };
@@ -405,7 +415,7 @@ test('manual feeding fails fast without creating a pending command when private 
   config.mqtt.publicTelemetryOnly = true;
   config.mqtt.actuatorCommandsEnabled = true;
   mock.method(tokenService, 'verifyToken', () => ({ userId: 'owner', email: 'test@example.test', role: 'farmer' }));
-  mock.method(deviceService, 'verifyOwnership', async () => true);
+  mockDeviceAccess([{ id: 'owner', role: 'farmer' }], [{ deviceId: 'esp32-feeder-1', userId: 'owner', isActive: true }]);
   mock.method(MQTTService.prototype, 'isActuatorCommandChannelConnected', () => false);
   const feedingQueue = mock.method(feedingService, 'queueManualCommand', async () => { throw new Error('must not queue'); });
   const app = express(); app.use(express.json(), csrfProtection, feedingRoutes);
@@ -431,7 +441,7 @@ test('manual feeding accepts fresh verified HiveMQ telemetry as the device liven
   config.mqtt.publicTelemetryOnly = true;
   config.mqtt.actuatorCommandsEnabled = true;
   mock.method(tokenService, 'verifyToken', () => ({ userId: 'owner', email: 'test@example.test', role: 'farmer' }));
-  mock.method(deviceService, 'verifyOwnership', async () => true);
+  mockDeviceAccess([{ id: 'owner', role: 'farmer' }], [{ deviceId: 'esp32-feeder-1', userId: 'owner', isActive: true }]);
   mock.method(MQTTService.prototype, 'isActuatorCommandChannelConnected', () => true);
   mock.method(MQTTService.prototype, 'isTelemetryDeviceOnline', () => true);
   mock.method(hardwareService, 'getState', async () => ({ deviceId: 'esp32-feeder-1', online: false, receivedAt: null, state: null, commands: [] }));
@@ -461,7 +471,7 @@ test('manual feeding removes the pending row when MQTT rejects a publish after t
   config.mqtt.publicTelemetryOnly = true;
   config.mqtt.actuatorCommandsEnabled = true;
   mock.method(tokenService, 'verifyToken', () => ({ userId: 'owner', email: 'test@example.test', role: 'farmer' }));
-  mock.method(deviceService, 'verifyOwnership', async () => true);
+  mockDeviceAccess([{ id: 'owner', role: 'farmer' }], [{ deviceId: 'esp32-feeder-1', userId: 'owner', isActive: true }]);
   mock.method(MQTTService.prototype, 'isActuatorCommandChannelConnected', () => true);
   mock.method(MQTTService.prototype, 'dispatchHardwareCommand', async () => false);
   mock.method(hardwareService, 'getState', async () => ({ deviceId: 'esp32-feeder-1', online: true, receivedAt: new Date(), state }));

@@ -9,6 +9,7 @@ import deviceRoutes from '../api/v1/routes/devices';
 import { tokenService } from '../utils/tokenService';
 import { auditLogService } from './auditLog.service';
 import { csrfProtection } from '../middleware/csrfProtection';
+import { mockDeviceAccess } from './deviceAccessTestDoubles';
 
 afterEach(() => mock.restoreAll());
 
@@ -82,7 +83,7 @@ test('authenticated device API registers and retrieves only the caller-owned dev
     records.push(created);
     return created as any;
   });
-  mock.method(deviceService, 'listByUser', async (userId: string) => records.filter((item) => item.userId === userId) as any);
+  mockDeviceAccess([{ id: 'owner-a', role: 'farmer' }, { id: 'owner-b', role: 'farmer' }], records);
   mock.method(auditLogService, 'createLog', async () => null);
 
   const app = express();

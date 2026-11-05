@@ -32,6 +32,31 @@ const maskSensitive = (value: unknown): unknown => {
   return JSON.parse(serialized.replace(/\+?63\d{10}/g, '[phone redacted]')) as unknown;
 };
 
+/** Plain-language reason from a stored provider response, safe to show in the dashboard. */
+export const describeSmsFailure = (results: SmsSendResult[]): string => {
+  const details = results.map((result) => {
+    try {
+      const parsed = JSON.parse(result.response) as { errors?: Record<string, unknown>; reason?: string };
+      const errors = parsed.errors && typeof parsed.errors === 'object'
+        ? Object.entries(parsed.errors).flatMap(([key, value]) => {
+          const text = Array.isArray(value)
+            ? value.filter((item): item is string => typeof item === 'string').join(', ')
+            : typeof value === 'string' ? value : '';
+          return text ? [`${key}: ${text}`] : [];
+        })
+        : [];
+      if (errors.some((line) => /sender_id/i.test(line) && /does not exist/i.test(line))) {
+        return 'UniSMS does not have that sender name. This account uses Unisoft.';
+      }
+      if (errors.length) return `UniSMS rejected the message (${errors.join('; ')}).`;
+      return parsed.reason ? `UniSMS: ${parsed.reason}` : '';
+    } catch {
+      return '';
+    }
+  }).filter((detail) => detail.length > 0);
+  return [...new Set(details)].join(' ');
+};
+
 export const smsResult = (
   status: SmsStatus, retryCount = 0,
   details: { referenceId?: string; httpStatus?: number; reason?: string; errors?: unknown } = {}

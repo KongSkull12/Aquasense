@@ -5,7 +5,7 @@ import { DeviceStopPendingError } from '../../../services/hardwareControlLock';
 import { logger } from '../../../utils/logger';
 import type { FeedingCommandAction } from '../../../database/models/FeedingCommand';
 import type { AuthenticatedRequest } from '../../../middleware/authMiddleware';
-import { deviceService } from '../../../services/device.service';
+import { resolveCommandOwnerUserId } from '../../../services/deviceAccess';
 import type { DeviceAuthenticatedRequest } from '../../../middleware/deviceAuthMiddleware';
 import { auditLogService } from '../../../services/auditLog.service';
 import { mqttService } from '../../../services/mqttService';
@@ -106,8 +106,8 @@ export const triggerManualCommand = async (req: AuthenticatedRequest, res: Respo
       sendError(res, 400, 'action is required and must be ON, OFF, or TRIGGER');
       return;
     }
-    const ownsDevice = await deviceService.verifyOwnership(req.userId, deviceId);
-    if (!ownsDevice) {
+    const ownerUserId = await resolveCommandOwnerUserId(req.userId, deviceId, req.userRole);
+    if (!ownerUserId) {
       sendError(res, 403, 'Device does not belong to authenticated user');
       return;
     }
@@ -115,20 +115,21 @@ export const triggerManualCommand = async (req: AuthenticatedRequest, res: Respo
       sendError(res, 503, 'Feeder command was not sent because the MQTT control channel is unavailable');
       return;
     }
-    const hardwareState = await hardwareService.getState(req.userId, deviceId);
+    const hardwareState = await hardwareService.getState(ownerUserId, deviceId);
     const telemetryOnline = mqttService.isTelemetryDeviceOnline(deviceId);
     if (!hardwareState.online && !telemetryOnline) {
       sendError(res, 503, 'Feeder command was not sent because the device has not reported online recently');
       return;
     }
-    const command = await feedingService.queueManualCommand(req.userId, deviceId, action, {
-      requestedBy: 'dashboard',
+    const command = await feedingService.queueManualCommand(ownerUserId, deviceId, action, {
+      requestedBy: req.userRole === 'staff' ? 'staff' : 'dashboard',
       requestedAt: new Date().toISOString(),
+      ...(req.userRole === 'staff' ? { staffUserId: req.userId } : {}),
     });
     const published = await mqttService.dispatchHardwareCommand({ id: command.id, deviceId, source: 'feeding', action,
       expiresAt: new Date(command.createdAt.getTime() + 120_000) });
     if (!published) {
-      await feedingService.discardUnpublishedManualCommand(req.userId, deviceId, command.id);
+      await feedingService.discardUnpublishedManualCommand(ownerUserId, deviceId, command.id);
       sendError(res, 503, 'Feeder command was not sent; the MQTT publish was not accepted. No retry was queued');
       return;
     }
@@ -138,7 +139,7 @@ export const triggerManualCommand = async (req: AuthenticatedRequest, res: Respo
       action: 'FEEDING_MANUAL_COMMAND',
       status: 'SUCCESS',
       ipAddress: req.ip,
-      metadata: { action, commandId: command.id },
+      metadata: { action, commandId: command.id, ownerUserId },
     });
     sendSuccess(res, 202, 'Manual feed command queued; awaiting device acknowledgment',
       { commandId: command.id, status: 'PENDING_DEVICE_ACK', published: true });
@@ -159,12 +160,12 @@ export const getFeedingState = async (req: AuthenticatedRequest, res: Response):
       return;
     }
     const deviceId = (req.query.deviceId as string) || DEFAULT_DEVICE_ID;
-    const ownsDevice = await deviceService.verifyOwnership(req.userId, deviceId);
-    if (!ownsDevice) {
+    const ownerUserId = await resolveCommandOwnerUserId(req.userId, deviceId, req.userRole);
+    if (!ownerUserId) {
       sendError(res, 403, 'Device does not belong to authenticated user');
       return;
     }
-    const state = await feedingService.getState(req.userId, deviceId);
+    const state = await feedingService.getState(ownerUserId, deviceId);
     sendSuccess(res, 200, 'Feeding state retrieved', state);
   } catch (error) {
     logger.error('Failed to get feeding state', error);

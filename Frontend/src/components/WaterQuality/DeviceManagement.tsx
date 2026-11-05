@@ -1,5 +1,6 @@
 import React, { FormEvent, useCallback, useEffect, useState } from 'react';
 import { apiClient, getApiErrorMessage } from '../../services/apiClient';
+import { EmptyState, Notice, Panel, StateMark } from './Console';
 
 interface RegisteredDevice {
   deviceId: string;
@@ -58,49 +59,48 @@ export const DeviceManagement: React.FC = () => {
   };
 
   return (
-    <section className="rounded-xl border border-gray-200 bg-white p-3 shadow-sm" aria-labelledby="device-management-heading">
-      <div className="mb-3">
-        <h2 id="device-management-heading" className="text-sm font-semibold text-gray-800">Device Management</h2>
-        <p className="mt-1 text-xs text-gray-500">Register only the ID configured in the firmware currently running on your physical AquaSense device. Registration does not verify that the board is online.</p>
-      </div>
-
-      <form onSubmit={register} className="mb-4 grid grid-cols-1 gap-2 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
-        <label className="flex flex-col gap-1 text-xs font-medium text-gray-700">
-          Device ID
-          <input required minLength={3} maxLength={120} value={deviceId} onChange={(event) => setDeviceId(event.target.value)} disabled={submitting} autoComplete="off" className="rounded-lg border border-gray-300 px-3 py-2" placeholder="Exact firmware DeviceConfig::DEVICE_ID" />
-        </label>
-        <label className="flex flex-col gap-1 text-xs font-medium text-gray-700">
-          Display name (optional)
-          <input maxLength={120} value={name} onChange={(event) => setName(event.target.value)} disabled={submitting} className="rounded-lg border border-gray-300 px-3 py-2" placeholder="e.g. Main Tank" />
-        </label>
-        <button type="submit" disabled={submitting || !deviceId.trim()} className="rounded-lg bg-blue-700 px-4 py-2 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50">
+    <Panel
+      id="device-management-heading"
+      title="Devices"
+      description="Register the exact ID set in the firmware running on your AquaSense board. Registering does not check that the board is online."
+    >
+      <form onSubmit={register} className="grid gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
+        <div>
+          <label className="field-label" htmlFor="register-device-id">Device ID</label>
+          <input id="register-device-id" required minLength={3} maxLength={120} value={deviceId} onChange={(event) => setDeviceId(event.target.value)} disabled={submitting} autoComplete="off" spellCheck={false} className="field" placeholder="Firmware DeviceConfig::DEVICE_ID" />
+        </div>
+        <div>
+          <label className="field-label" htmlFor="register-device-name">Display name <span className="font-normal text-ink-3">(optional)</span></label>
+          <input id="register-device-name" maxLength={120} value={name} onChange={(event) => setName(event.target.value)} disabled={submitting} className="field" placeholder="e.g. Main tank" />
+        </div>
+        <button type="submit" disabled={submitting || !deviceId.trim()} className="btn-primary h-10">
           {submitting ? 'Registering…' : 'Register device'}
         </button>
       </form>
 
-      {error && <p role="alert" className="mb-3 rounded-lg bg-rose-50 p-2 text-xs text-rose-800">{error}</p>}
-      {message && <p role="status" className="mb-3 rounded-lg bg-emerald-50 p-2 text-xs text-emerald-800">{message}</p>}
+      <div className="mt-4 space-y-3">
+        {error && <Notice tone="alarm">{error}</Notice>}
+        {message && <Notice tone="ok">{message}</Notice>}
+      </div>
 
-      <div aria-live="polite">
-        {loading ? <p role="status" className="text-xs text-gray-500">Loading registered devices…</p> : devices.length === 0 ? (
-          <p className="rounded-lg bg-amber-50 p-2 text-xs text-amber-900">No devices are registered to this account. TAN entry becomes available after you register the ID of your actual device.</p>
+      <div aria-live="polite" className="mt-4">
+        {loading ? <p role="status" className="text-[13px] text-ink-3">Loading registered devices…</p> : devices.length === 0 ? (
+          <EmptyState title="No devices registered">TAN entry and device controls become available after you register the ID of your actual device.</EmptyState>
         ) : (
-          <ul className="divide-y divide-gray-100">
+          <ul className="divide-y divide-line-soft border-t border-line-soft">
             {devices.map((device) => (
-              <li key={device.deviceId} className="flex flex-wrap items-center justify-between gap-2 py-2 first:pt-0 last:pb-0">
+              <li key={device.deviceId} className="flex flex-wrap items-center justify-between gap-3 py-3">
                 <div className="min-w-0">
-                  <p className="truncate text-xs font-semibold text-gray-800">{device.name || device.deviceId}</p>
-                  <p className="break-all font-mono text-[11px] text-gray-500">{device.deviceId}</p>
-                  <p className="text-[10px] text-gray-400">Registered {formatRegisteredAt(device.createdAt)}</p>
+                  <p className="truncate text-sm font-semibold">{device.name || device.deviceId}</p>
+                  <p className="num break-all text-xs text-ink-2">{device.deviceId}</p>
+                  <p className="text-xs text-ink-3">Registered {formatRegisteredAt(device.createdAt)}</p>
                 </div>
-                <span className={`rounded-full px-2 py-1 text-[10px] font-semibold ${device.isActive ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-600'}`}>
-                  {device.isActive ? 'Active · selectable for TAN' : 'Inactive'}
-                </span>
+                <StateMark state={device.isActive ? 'ok' : 'off'} className="!text-xs">{device.isActive ? 'Active, selectable for TAN' : 'Inactive'}</StateMark>
               </li>
             ))}
           </ul>
         )}
       </div>
-    </section>
+    </Panel>
   );
 };

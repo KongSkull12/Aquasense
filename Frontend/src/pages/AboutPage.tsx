@@ -1,231 +1,87 @@
 import React from 'react';
+import { Link } from 'react-router-dom';
 import Navigation from '../components/Navigation';
 import Footer from '../components/Footer';
+import PageIntro from '../components/PageIntro';
 import aboutPeopleImage from '../assets/images/about/about_people.jpg';
 import aboutIotImage from '../assets/images/about/about_iot.jpg';
 import aboutSmartAlert from '../assets/images/about/about_smart_alert_automation.jpg';
 import aboutCrayImage from '../assets/images/about/about_cray.jpg';
 
+const parts = [
+  {
+    image: aboutIotImage,
+    alt: 'AquaSense sensor hardware',
+    title: 'Sensing',
+    items: ['Water temperature', 'pH', 'Turbidity (NTU estimate)', 'ORP / redox, not dissolved oxygen', 'Ultrasonic tank level, where installed'],
+  },
+  {
+    image: aboutSmartAlert,
+    alt: 'Alerts and device control',
+    title: 'Alerts and control',
+    items: ['Threshold alerts with SMS notification', 'SMS delivery log', 'Feeding schedules and manual feed commands', 'Timed pump and aerator commands, once commissioned'],
+  },
+  {
+    image: aboutCrayImage,
+    alt: 'A redclaw crayfish in a hand net',
+    title: 'For redclaw culture',
+    items: ['Guidance ranges for Cherax quadricarinatus', 'Unionized NH₃ fraction from qualified pH and temperature', 'Manual TAN entry from test kits or lab results'],
+  },
+];
+
 const AboutPage: React.FC = () => {
   return (
     <div className="min-h-screen bg-white">
-      {/* Navigation */}
       <Navigation />
+      <main>
+        <PageIntro
+          title="About AquaSense"
+          lede="An IoT monitoring and feeding system for crayfish farmers. ESP32 sensors report the water; the dashboard shows what they read and how far each reading can be trusted."
+          image={{ src: aboutPeopleImage, alt: 'The AquaSense team' }}
+        />
 
-      {/* Hero Section */}
-       <section className="relative px-4 py-16 overflow-hidden bg-gradient-to-br from-cyan-50 via-cyan-100 to-sky-100 sm:px-6 sm:py-20">
-        <div className="mx-auto max-w-7xl">
-          <div className="grid items-center grid-cols-1 gap-12 md:grid-cols-2">
-            {/* Left Side - Text */}
-            <div>
-              <h1 className="mb-6 text-3xl font-bold text-primary sm:text-5xl md:text-6xl">
-                About <span className="text-accent">AquaSense</span>
-              </h1>
-              <p className="text-base text-gray-700 sm:text-lg">
-                Revolutionizing Water Quality Monitoring with IoT, Smart Automation, and Sustainable Aquaculture for crayfish farmers worldwide.
-              </p>
-            </div>
-
-            {/* Right Side - Image */}
-            <div className="flex items-center justify-center">
-              <div className="w-full overflow-hidden shadow-lg h-96 rounded-2xl">
-                <img 
-                  src={aboutPeopleImage} 
-                  alt="AquaSense Team" 
-                  className="object-cover w-full h-full"
-                />
+        <section className="py-16 sm:py-24" aria-labelledby="system-heading">
+          <div className="mx-auto max-w-6xl px-4 sm:px-6">
+            <div className="grid gap-6 lg:grid-cols-[1fr_1.4fr] lg:gap-16">
+              <h2 id="system-heading" className="text-3xl font-semibold leading-tight sm:text-4xl">The system</h2>
+              <div className="space-y-4 text-[17px] leading-relaxed text-ink-2">
+                <p>AquaSense brings together sensor reporting, feeding, timed water exchange and alert notifications in one place.</p>
+                <p>It has no physical dissolved-oxygen probe, and ORP is a separate redox reading that is never converted to dissolved oxygen. Aerator automation is not yet commissioned.</p>
+                <p>Risk analytics are meant to support decisions once qualified inputs are available. They do not replace calibrated measurements or a physical DO test.</p>
               </div>
             </div>
-          </div>
-        </div>
-      </section>
 
-      {/* Main Content */}
-      <div className="px-4 py-12 mx-auto max-w-7xl sm:px-6">
-        {/* System Overview */}
-        <section className="mb-20">
-          <h2 className="mb-8 text-3xl font-bold text-primary sm:text-4xl">Our Integrated System</h2>
-          <p className="mb-6 text-lg leading-relaxed text-gray-700">
-           AquaSense is a comprehensive IoT-powered water quality monitoring and management solution designed to support sustainable crayfish farming. It integrates sensor reporting, feeding features, time-based water exchange, and alert notifications. AquaSense has no physical dissolved-oxygen probe; ORP is a separate redox measurement and is never converted to DO. Aerator control remains uncommissioned. Risk-oriented software analytics are intended to support farm decisions when qualified inputs are available; they do not replace calibrated measurements or physical DO testing.
-          </p>
-        </section>
-
-        {/* Three Pillars */}
-        <section className="grid grid-cols-1 gap-8 mb-20 md:grid-cols-3">
-          {/* IoT Component */}
-          <div className="h-full card">
-            <div className="w-full mb-5 overflow-hidden rounded-xl aspect-[4/3]">
-              <img 
-                src={aboutIotImage} 
-                alt="IoT Monitoring" 
-                className="object-cover w-full h-full"
-              />
+            <div className="mt-14 grid gap-8 md:grid-cols-3">
+              {parts.map((part) => (
+                <article key={part.title}>
+                  <img src={part.image} alt={part.alt} className="aspect-[4/3] w-full rounded-lg object-cover" loading="lazy" />
+                  <h3 className="mt-5 text-xl font-semibold">{part.title}</h3>
+                  <ul className="mt-3 divide-y divide-line-soft border-t border-line-soft">
+                    {part.items.map((item) => <li key={item} className="py-2.5 text-[15px] text-ink-2">{item}</li>)}
+                  </ul>
+                </article>
+              ))}
             </div>
-            <h3 className="mb-4 text-2xl font-bold text-primary">IoT Monitoring</h3>
-            <p className="mb-4 text-gray-700">Real-time sensor data collection and analysis:</p>
-            <ul className="space-y-2 text-gray-700">
-              <li className="flex items-start gap-2">
-                <span className="font-bold text-accent">✓</span>
-                <span>Water Temperature Tracking</span>
-              </li>
-              <li className="flex items-start gap-2">
-                <span className="font-bold text-accent">✓</span>
-                <span>pH Level Monitoring</span>
-              </li>
-              <li className="flex items-start gap-2">
-                <span className="font-bold text-accent">✓</span>
-                <span>ORP / Redox Input (not DO)</span>
-              </li>
-              <li className="flex items-start gap-2">
-                <span className="font-bold text-accent">✓</span>
-                <span>Turbidity & Water Clarity</span>
-              </li>
-            </ul>
-          </div>
-
-          {/* Smart Alerts & Automation Component */}
-          <div className="h-full card">
-            <div className="w-full mb-5 overflow-hidden rounded-xl aspect-[4/3]">
-              <img
-                src={aboutSmartAlert}
-                alt="Smart Alerts and Automation"
-                className="object-cover w-full h-full"
-              />
-            </div>
-            <h3 className="mb-4 text-2xl font-bold text-primary">Smart Alerts & Automation</h3>
-            <p className="mb-4 text-gray-700">Real-time notifications and intelligent farm control:</p>
-            <ul className="space-y-2 text-gray-700">
-              <li className="flex items-start gap-2">
-                <span className="font-bold text-warning">✓</span>
-                <span>Instant SMS & Mobile Alerts</span>
-              </li>
-              <li className="flex items-start gap-2">
-                <span className="font-bold text-warning">✓</span>
-                <span>24/7 Automated Monitoring</span>
-              </li>
-              <li className="flex items-start gap-2">
-                <span className="font-bold text-warning">✓</span>
-                <span>Feeding Schedules / Aerator Policy Uncommissioned</span>
-              </li>
-              <li className="flex items-start gap-2">
-                <span className="font-bold text-warning">✓</span>
-                <span>Timed Water Exchange (flow calibration required)</span>
-              </li>
-            </ul>
-          </div>
-
-          {/* Crayfish Aquaculture Component */}
-          <div className="h-full card">
-            <div className="w-full mb-5 overflow-hidden rounded-xl aspect-[4/3]">
-              <img 
-                src={aboutCrayImage} 
-                alt="Crayfish Optimization" 
-                className="object-cover w-full h-full"
-              />
-            </div>
-            <h3 className="mb-4 text-2xl font-bold text-primary">Crayfish Optimization</h3>
-            <p className="mb-4 text-gray-700">Specialized for sustainable aquaculture:</p>
-            <ul className="space-y-2 text-gray-700">
-              <li className="flex items-start gap-2">
-                <span className="font-bold text-success">✓</span>
-                <span>Optimal Growth Conditions</span>
-              </li>
-              <li className="flex items-start gap-2">
-                <span className="text-green-300">✓</span>
-                <span>Automated Feeding Systems</span>
-              </li>
-              <li className="flex items-start gap-2">
-                <span className="text-green-300">✓</span>
-                <span>Disease Prevention</span>
-              </li>
-              <li className="flex items-start gap-2">
-                <span className="text-green-300">✓</span>
-                <span>Yield Optimization</span>
-              </li>
-            </ul>
           </div>
         </section>
 
-        {/* Vision & Mission */}
-        <section className="grid grid-cols-1 gap-8 mb-16 md:grid-cols-2">
-          <div className="p-8 border border-blue-400 bg-primary rounded-xl border-opacity-30">
-            <h3 className="mb-4 text-2xl font-bold text-white">Our Vision</h3>
-            <p className="text-blue-200">
-             To become a trusted smart aquaculture platform that empowers farmers through real-time water-quality monitoring, intelligent automation, and predictive insights to reduce mortality risks, improve productivity, and support sustainable farm operations.
-            </p>
-          </div>
-          <div className="p-8 border border-blue-400 bg-primary rounded-xl border-opacity-30">
-            <h3 className="mb-4 text-2xl font-bold text-white">Our Mission</h3>
-            <p className="text-blue-200">
-              To provide accessible, intelligent water quality monitoring solutions that empower aquaculture operators to maximize yields, reduce costs, and operate sustainably through real-time IoT insights and automated optimization.
-            </p>
-          </div>
-        </section>
-
-        {/* Key Benefits */}
-        <section>
-          <h2 className="mb-8 text-2xl font-bold text-primary sm:text-3xl">Why AquaSense?</h2>
-          <div className="grid grid-cols-1 gap-10 mb-12 md:grid-cols-2">
-            <div className="flex gap-4">
-              <div className="flex-shrink-0 text-3xl">💰</div>
+        <section className="border-t border-line bg-water py-16 sm:py-24" aria-labelledby="aims-heading">
+          <div className="mx-auto grid max-w-6xl gap-10 px-4 sm:px-6 lg:grid-cols-[1fr_1.4fr] lg:gap-16">
+            <h2 id="aims-heading" className="text-3xl font-semibold leading-tight sm:text-4xl">What we are working toward</h2>
+            <div className="space-y-8">
               <div>
-                <h4 className="mb-2 text-lg font-bold text-primary">Cost Effective</h4>
-                <p className="text-slate-900">Feeding features support routine operation. Aerator and timed water-exchange control remain gated pending commissioning and physical pump-flow calibration.</p>
-              </div>
-            </div>
-            <div className="flex gap-4">
-              <div className="flex-shrink-0 text-3xl">📈</div>
-              <div>
-                <h4 className="mb-2 text-lg font-bold text-primary">Increased Yields</h4>
-                <p className="text-slate-900">Optimize water conditions for maximum crayfish growth and health through continuous monitoring.</p>
-              </div>
-            </div>
-            <div className="flex gap-4">
-              <div className="flex-shrink-0 text-3xl">🌱</div>
-              <div>
-                <h4 className="mb-2 text-lg font-bold text-primary">Sustainable</h4>
-                <p className="text-slate-900">Timed water exchange is intended to support water management after pump-flow calibration; it does not measure water level or guarantee transferred volume.</p>
-              </div>
-            </div>
-            <div className="flex gap-4">
-              <div className="flex-shrink-0 text-3xl">⚡</div>
-              <div>
-                <h4 className="mb-2 text-lg font-bold text-primary">Automated Management</h4>
-                <p className="text-slate-900">Reduce manual labor with intelligent automation for feeding and alerts.</p>
-              </div>
-            </div>
-          </div>
-
-          {/* Project Impact */}
-          <div className="p-8 border bg-gradient-to-r from-slate-800 to-blue-900 rounded-xl border-cyan-400 border-opacity-30">
-            <h3 className="mb-6 text-2xl font-bold text-cyan-300">Project Impact</h3>
-            <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
-              <div>
-                <h4 className="mb-3 font-bold text-green-300">For Aquaculture Farmers</h4>
-                <ul className="space-y-2 text-blue-200">
-                  <li>✓ 24/7 monitoring without manual labor</li>
-                  <li>✓ Immediate alerts for critical issues</li>
-                  <li>✓ Historical data for yield optimization</li>
-                  <li>✓ Remote management from mobile devices</li>
-                  <li>✓ Reduced operating costs</li>
-                </ul>
+                <h3 className="text-lg font-semibold">Vision</h3>
+                <p className="mt-2 text-[17px] leading-relaxed text-ink-2">A smart aquaculture platform farmers trust: real-time water monitoring, automation and early warning that help reduce losses and keep farms running sustainably.</p>
               </div>
               <div>
-                <h4 className="mb-3 font-bold text-green-300">For Sustainability</h4>
-                <ul className="space-y-2 text-blue-200">
-                  <li>✓ Reduced water waste through automated exchange</li>
-                  <li>✓ Predictive risk detection for early intervention</li>
-                  <li>✓ Water quality preservation</li>
-                  <li>✓ Ecosystem-friendly automation</li>
-                  <li>✓ Scalable sustainable solution</li>
-                </ul>
+                <h3 className="text-lg font-semibold">Mission</h3>
+                <p className="mt-2 text-[17px] leading-relaxed text-ink-2">Make water-quality monitoring accessible to small aquaculture operators, and be honest about what each measurement can and cannot tell them.</p>
               </div>
+              <Link to="/how-it-works" className="link inline-block">See how it works</Link>
             </div>
           </div>
         </section>
-      </div>
-
-      {/* Footer */}
+      </main>
       <Footer />
     </div>
   );

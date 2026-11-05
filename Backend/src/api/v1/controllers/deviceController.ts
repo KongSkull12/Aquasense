@@ -2,6 +2,7 @@ import { Response } from 'express';
 import { sendError, sendSuccess } from '../../../utils/response';
 import type { AuthenticatedRequest } from '../../../middleware/authMiddleware';
 import { deviceService } from '../../../services/device.service';
+import { listAccessibleDevices } from '../../../services/deviceAccess';
 import { logger } from '../../../utils/logger';
 import { auditLogService } from '../../../services/auditLog.service';
 
@@ -11,7 +12,7 @@ export const listDevices = async (req: AuthenticatedRequest, res: Response): Pro
       sendError(res, 401, 'Unauthorized');
       return;
     }
-    const devices = await deviceService.listByUser(req.userId);
+    const devices = await listAccessibleDevices(req.userId, req.userRole);
     sendSuccess(res, 200, 'Devices retrieved', devices);
   } catch (error) {
     logger.error('Failed to list devices', error);

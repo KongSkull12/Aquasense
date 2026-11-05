@@ -1,3 +1,4 @@
+import { ammoniaPKa, nh3Fraction } from './ammoniaCalculator';
 // Technical diagnostics, deliberately separate from husbandry thresholds.
 export const SENSOR_NAMES = ['temperature', 'ph', 'turbidity', 'orp'] as const;
 export type SensorName = typeof SENSOR_NAMES[number];
@@ -12,7 +13,19 @@ export interface SensorHealth {
   adcRange: 'PASS' | 'WARNING' | 'UNKNOWN'; stuckDurationMs: number;
   window: { count: number; min: number | null; max: number | null; average: number | null; range: number | null; standardDeviation: number | null };
 }
+export interface UltrasonicReading {
+  connected: boolean;
+  valid: boolean;
+  distanceCm: number | null;
+  depthCm: number | null;
+  targetDepthCm: number | null;
+  mountHeightCm: number | null;
+  levelPercent: number | null;
+  timestamp: string | null;
+  reason: string;
+}
 export type HealthSummary = Record<SensorName, SensorHealth>;
+export type ExtendedHealthSummary = HealthSummary & { ultrasonic?: UltrasonicReading };
 export const HEALTH_CONFIG = { staleMs: 15000, tanMaxAgeMs: 3600000, windowSize: 20, minSamples: 6, windowMs: 150000, stuckMs: 600000, railSamples: 3 };
 const noise = { temperature: 1, ph: 0.3, turbidity: 150, orp: 50 }; // Diagnostic ranges, not calibration coefficients.
 export function numeric(value: unknown): number | null {
@@ -35,7 +48,7 @@ type Track = { samples: Sample[]; lastAt: number; anchor: number; unchangedSince
 export class SensorValidator {
   private tracks = new Map<string, Track>();
   constructor(private config = HEALTH_CONFIG) {}
-  validate(device: string, name: SensorName, input: unknown, timestamp: unknown, diagnostics: any = {}, now = Date.now(), unit?: string): SensorHealth {
+  validate(device: string, name: SensorName, input: unknown, timestamp: unknown, diagnostics: any = {}, now = Date.now(), unit?: string, options?: { commissioned?: boolean }): SensorHealth {
     const value = numeric(input), at = timestampMs(timestamp);
     const rawAdc = numeric(diagnostics?.rawAdc), voltage = numeric(diagnostics?.voltage);
     const result: SensorHealth = { name, value, rawAdc, voltage, unit: unit || ({temperature:'C',ph:'pH',turbidity:'unknown',orp:'mV'}[name]),
@@ -55,12 +68,17 @@ export class SensorValidator {
     else if (name === 'temperature' && value === -127) fail('SENSOR_ERROR','DS18B20 disconnected/error reading detected');
     else if ((name === 'temperature' && (value < -55 || value > 125)) || (name === 'ph' && (value < 0 || value > 14)) ||
       (name === 'turbidity' && (value < 0 || (unit === 'raw_adc' && value > 4095)))) fail('INVALID','Outside sensor physical range');
-    // Device-supplied flags cannot authorize a calibration the backend has not commissioned.
-    if (name==='orp' && (value!==null || rawAdc!==null) && (result.calibration!=='CALIBRATED' || diagnostics?.conversion!=='VALIDATED')) fail('MISSING','ORP engineering conversion/calibration is not commissioned by the backend');
+    // A DS18B20 is factory calibrated. pH, ORP and turbidity become calibrated only after
+    // this server recorded a signed "saved" acknowledgement. Device payload flags cannot do that.
+    const factoryTemperature = name === 'temperature' && value !== null && value !== -127 && value >= -55 && value <= 125;
+    if (diagnostics?.connected !== false && (factoryTemperature || options?.commissioned === true)) result.calibration = 'CALIBRATED';
+    if (name==='orp' && (value!==null || rawAdc!==null) && result.calibration!=='CALIBRATED') fail('MISSING','ORP engineering conversion/calibration is not commissioned by the backend');
     if (!Number.isFinite(at) || at > now + 2000) fail('INVALID','Invalid or future acquisition timestamp');
     else if (now - at > this.config.staleMs) fail('STALE','No recent sensor reading received');
     if ((diagnostics?.rawAdc != null && rawAdc === null) || (rawAdc !== null && (rawAdc < 0 || rawAdc > 4095)) ||
       (diagnostics?.voltage != null && voltage === null) || (voltage !== null && (voltage < 0 || voltage > 3.3))) fail('INVALID','Malformed or out-of-range ADC/input voltage');
+    if (diagnostics?.connected === false) { fail('SENSOR_ERROR','Device reports sensor disconnected; value is diagnostic only'); result.calibration = 'REQUIRED'; }
+    else if (diagnostics?.valid === false) fail('INVALID','Device reports this sample as invalid; value is diagnostic only');
     if (at < track.lastAt && result.valid) fail('STALE','Out-of-order acquisition');
     const freshSample = Number.isFinite(at) && at > track.lastAt && now - at <= this.config.staleMs && at <= now + 2000;
     if (freshSample) {
@@ -99,10 +117,25 @@ export class SensorValidator {
     return result;
   }
 }
-export function refreshHealth(summary: HealthSummary, now = Date.now(), staleMs = HEALTH_CONFIG.staleMs): HealthSummary {
-  return Object.fromEntries(SENSOR_NAMES.map(name=> { const s=summary[name]; const at=timestampMs(s?.timestamp);
+export function refreshHealth(summary: ExtendedHealthSummary, now = Date.now(), staleMs = HEALTH_CONFIG.staleMs): ExtendedHealthSummary {
+  const refreshed = Object.fromEntries(SENSOR_NAMES.map(name=> { const s=summary[name]; const at=timestampMs(s?.timestamp);
     if (!s) return [name,new SensorValidator().validate('missing',name,null,null,{},now)];
-    return [name, !Number.isFinite(at) || at>now+2000 || now-at>staleMs ? {...s,health:'STALE',valid:false,measurementValid:false,readyForCalibration:false,reason:'No valid recent acquisition timestamp'} : {...s}]; })) as HealthSummary;
+    return [name, !Number.isFinite(at) || at>now+2000 || now-at>staleMs ? {...s,health:'STALE',valid:false,measurementValid:false,readyForCalibration:false,reason:'No valid recent acquisition timestamp'} : {...s}]; })) as unknown as ExtendedHealthSummary;
+  if (summary.ultrasonic) {
+    const sample = summary.ultrasonic;
+    const at = timestampMs(sample.timestamp);
+    const fresh = Number.isFinite(at) && at <= now + 2000 && now - at <= staleMs;
+    refreshed.ultrasonic = fresh ? {
+      ...sample,
+      depthCm: sample.depthCm ?? null,
+      targetDepthCm: sample.targetDepthCm ?? null,
+      mountHeightCm: sample.mountHeightCm ?? null,
+    } : {
+      ...sample, valid: false, distanceCm: null, depthCm: null, targetDepthCm: null, mountHeightCm: null, levelPercent: null,
+      reason: 'No recent ultrasonic reading',
+    };
+  }
+  return refreshed;
 }
 export function decisionEligible(summary?: HealthSummary): boolean {
   if (!summary) return false;
@@ -130,8 +163,8 @@ export function ammoniaSpeciation(health: HealthSummary, tan?: unknown, waterTyp
   }
   if (waterType !== 'freshwater') return {...result,reason:'Freshwater equation requires freshwater conditions; salinity correction is not implemented'};
   if (temperature.value < 0 || temperature.value > 50) return {...result,reason:'Outside freshwater speciation temperature domain (0–50 C)'};
-  result.pKa=0.09018+2729.92/(273.2+temperature.value);
-  result.fraction=1/(1+10**(result.pKa-ph.value)); result.percent=result.fraction*100; result.status='AVAILABLE';
+  result.pKa=ammoniaPKa(temperature.value);
+  result.fraction=nh3Fraction(result.pKa,ph.value); result.percent=result.fraction*100; result.status='AVAILABLE';
   result.reason='Fraction of TAN only; source-sensor accuracy has not been formally verified';
   if (result.tan) {
     const tanAt=timestampMs(result.tan.timestamp);

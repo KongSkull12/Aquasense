@@ -17,6 +17,9 @@ function check(name:string,input:unknown,expected:unknown,actual:()=>unknown) {
   test(name,()=> { const result=actual(); console.log(`Test: ${name}\nInput: ${JSON.stringify(input)}\nExpected: ${JSON.stringify(expected)}\nActual: ${JSON.stringify(result)}\n${JSON.stringify(result)===JSON.stringify(expected)?'PASS':'FAIL'}`); assert.deepEqual(result,expected); });
 }
 check('normal temperature',25,'VALID',()=>validate('temperature',25).health);
+check('factory DS18B20 needs no buffer calibration','CALIBRATED','CALIBRATED',()=>validate('temperature',25).calibration);
+check('DS18B20 error is not calibrated','REQUIRED','REQUIRED',()=>validate('temperature',-127).calibration);
+check('disconnected temperature is not calibrated','REQUIRED','REQUIRED',()=>new SensorValidator().validate('test','temperature',25,stamp(),{connected:false},now).calibration);
 check('DS18B20 error',-127,'SENSOR_ERROR',()=>validate('temperature',-127).health);
 check('temperature outside capability',126,'INVALID',()=>validate('temperature',126).health);
 check('normal pH',7,'VALID',()=>validate('ph',7).health);
@@ -36,6 +39,10 @@ test('raw ADC signal is distinct from an unavailable engineering measurement',()
   const signal=new SensorValidator().validate('raw-only','turbidity',null,stamp(),{rawAdc:1800},now,'raw_adc');
   assert.equal(signal.rawAvailable,true);assert.equal(signal.measurementValid,false);assert.equal(signal.valid,false);
   assert.equal(signal.health,'MISSING');assert.equal(signal.value,null);assert.equal(signal.rawAdc,1800);assert.equal(signal.communication,true);
+});
+test('a server-recorded calibration makes ORP a valid reading',()=>{
+  const reading=new SensorValidator().validate('orp-commissioned','orp',225,stamp(),{rawAdc:1800,voltage:1.68},now,'mV',{commissioned:true});
+  assert.equal(reading.calibration,'CALIBRATED');assert.equal(reading.valid,true);assert.equal(reading.health,'VALID');assert.equal(reading.value,225);
 });
 test('device diagnostics cannot commission ORP conversion or calibration',()=>{
   const unverified=new SensorValidator().validate('orp-unverified','orp',220,stamp(),{rawAdc:2000},now,'mV');
@@ -63,9 +70,9 @@ const tan={value:1,unit:'mg/L as N',source:'test_kit',validated:true,timestamp:s
 check('valid TAN retained while source sensor fails','TAN 1; temperature -127',[1,null],()=>{const s=ammoniaSpeciation(summary(-127),tan,'freshwater',now);return [s.tan?.value,s.nh3N];});
 test('reference equation and measured TAN concentration',()=>{
   const s=ammoniaSpeciation(calibratedSummary(),tan,'freshwater',now);
-  console.log(`Test: Emerson reference\nInput: 25 C, pH 8, TAN 1 mg/L as N\nExpected: pKa ~9.2448; fraction ~0.05384; NH3-N ~0.05384 mg/L as N\nActual: ${JSON.stringify(s)}\nPASS`);
-  assert.ok(Math.abs(s.pKa!-9.2448)<0.001);assert.ok(Math.abs(s.fraction!-0.05384)<0.0001);
-  assert.ok(Math.abs(s.percent!-5.384)<0.01);assert.equal(s.nh3N,s.fraction);assert.equal(s.concentrationUnit,'mg/L as N');
+  console.log(`Test: Emerson reference\nInput: 25 C, pH 8, TAN 1 mg/L as N\nExpected: pKa ~9.2464; fraction ~0.05366; NH3-N ~0.05366 mg/L as N\nActual: ${JSON.stringify(s)}\nPASS`);
+  assert.ok(Math.abs(s.pKa!-9.2464)<0.001);assert.ok(Math.abs(s.fraction!-0.05366)<0.0001);
+  assert.ok(Math.abs(s.percent!-5.366)<0.01);assert.equal(s.nh3N,s.fraction);assert.equal(s.concentrationUnit,'mg/L as N');
 });
 test('NH3-N requires TAN, pH and temperature acquisition times to align',()=>{
   const staleTan={...tan,timestamp:stamp(now-16000)};

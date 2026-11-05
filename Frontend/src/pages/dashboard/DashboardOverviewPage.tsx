@@ -1,12 +1,38 @@
-import React, { useMemo, useEffect, useState } from 'react';
-import { AreaChart, Area, XAxis, YAxis, CartesianGrid, ResponsiveContainer, Tooltip } from 'recharts';
+import React, { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useDashboardData } from '../../components/WaterQuality/useDashboardData';
 import { getDashboardProfile } from '../../components/WaterQuality/dashboardProfile';
-import { ParameterIcon as CustomIcon, type ParameterIconName } from '../../components/WaterQuality/ParameterIcon';
+import { isReadingLive, LIVE_READING_MS } from '../../components/WaterQuality/sensorDisplay';
+import { BandChart, BandKey, ChartPanel, KeyValues, MetaItem, Notice, PageHead, Panel, StateMark, type MarkState } from '../../components/WaterQuality/Console';
+import { bandLabel, classifyBand, formatNormalBand, type BandKey as LimitKey } from '../../components/WaterQuality/thresholdBands';
+import { RiskAssessmentPanel } from '../../components/WaterQuality/RiskAssessmentPanel';
+import { isStaffRole } from '../../auth/session';
+
+type Status = { label: string; state: MarkState };
+type NextStep = { text: string; to?: string; cta?: string };
+
+const hasSeries = (data: object[], key: string) => data.some((point) => {
+  const value = (point as Record<string, unknown>)[key];
+  return typeof value === 'number' && Number.isFinite(value);
+});
+
+// Next upcoming enabled schedule: dated entries on their day, undated ones daily.
+const nextFeed = (schedules: Array<{ date: string | null; time: string; enabled: boolean; label: string | null }>, now = new Date()) => {
+  const candidates = schedules.filter((item) => item.enabled && /^\d{1,2}:\d{2}/.test(item.time)).map((item) => {
+    const [hours, minutes] = item.time.split(':').map(Number);
+    const at = item.date ? new Date(`${item.date}T00:00:00`) : new Date(now);
+    at.setHours(hours, minutes, 0, 0);
+    if (!item.date && at <= now) at.setDate(at.getDate() + 1);
+    return { item, at };
+  }).filter(({ at }) => Number.isFinite(at.getTime()) && at > now);
+  candidates.sort((a, b) => a.at.getTime() - b.at.getTime());
+  return candidates[0] ?? null;
+};
 
 const DashboardOverviewPage: React.FC = () => {
-  const { isConnected, latestReading, chartData, predictiveWarning, error } = useDashboardData();
+  const { isConnected, latestReading, chartData, riskAssessment, thresholdBands, error, activeAlerts, feedingSchedules } = useDashboardData();
   const [profile, setProfile] = useState(getDashboardProfile());
+  const staffSession = isStaffRole();
 
   useEffect(() => {
     const refreshProfile = () => setProfile(getDashboardProfile());
@@ -14,14 +40,6 @@ const DashboardOverviewPage: React.FC = () => {
     return () => window.removeEventListener('farmerProfileUpdated', refreshProfile);
   }, []);
 
-  const processedChartData = useMemo(() => chartData, [chartData]);
-  const riskModelValidated = predictiveWarning?.modelStatus === 'READY'
-    && predictiveWarning.validationStatus === 'VALIDATED'
-    && predictiveWarning.analysisStatus === 'AVAILABLE'
-    && Number.isFinite(predictiveWarning.riskScore);
-  const currentRiskScore = riskModelValidated ? predictiveWarning?.riskScore ?? null : null;
-  const riskLevel = riskModelValidated ? predictiveWarning?.warningCard?.riskLevel ?? 'UNAVAILABLE' : 'UNAVAILABLE';
-  const riskColor = riskLevel === 'LOW' ? '#22c55e' : riskLevel === 'MODERATE' ? '#eab308' : riskLevel === 'HIGH' ? '#f97316' : riskLevel === 'CRITICAL' ? '#ef4444' : '#6b7280';
   const orpIsStale = latestReading?.sensorHealth?.orp.health === 'STALE';
   const orpIsCalibrated = latestReading?.sensorHealth?.orp.valid === true
     && latestReading.sensorHealth.orp.health === 'VALID'
@@ -30,233 +48,264 @@ const DashboardOverviewPage: React.FC = () => {
   const monitoredSensors = ['temperature', 'ph', 'turbidity', 'orp'] as const;
   const validSensorCount = monitoredSensors.filter((name) => latestReading?.sensorHealth?.[name].valid && latestReading.sensorHealth[name].health === 'VALID').length;
   const calibratedSensorCount = monitoredSensors.filter((name) => latestReading?.sensorHealth?.[name].calibration === 'CALIBRATED' && latestReading.sensorHealth[name].stability === 'STABLE').length;
-  const turbidityNtuHistoryAvailable = chartData.some((point) => point.turbidityUnit === 'NTU' && point.turbidity !== null && point.turbidity !== undefined);
-  const latestTurbidityNtuPoint = [...chartData].reverse().find((point) => point.turbidityUnit === 'NTU' && point.turbidity !== null && point.turbidity !== undefined);
-  const currentTurbidityNtu = latestReading?.turbidityUnit === 'NTU' ? latestReading.turbidity : null;
-  const turbidityNtu = currentTurbidityNtu ?? latestTurbidityNtuPoint?.turbidity ?? null;
-  const getStatus = (param: string, value: number|null|undefined, calibrated: boolean) => {
-    if(value==null || !Number.isFinite(value)) return {label:'Unavailable',color:'text-gray-600',bg:'bg-gray-100'};
-    if (!calibrated) return {label:'Calibration required · not classified',color:'text-amber-700',bg:'bg-amber-100'};
-    switch(param) {
-      case 'temp': return value >= 26 && value <= 29
-        ? { label: 'Within reported growth range', color: 'text-emerald-700', bg: 'bg-emerald-100' }
-        : { label: 'Outside reported growth range', color: 'text-amber-700', bg: 'bg-amber-100' };
-      case 'ph': return value >= 7 && value <= 8.5
-        ? { label: 'Within culture guidance', color: 'text-emerald-700', bg: 'bg-emerald-100' }
-        : { label: 'Outside culture guidance', color: 'text-amber-700', bg: 'bg-amber-100' };
-      case 'turbidity': return { label: 'No validated NTU threshold', color: 'text-gray-600', bg: 'bg-gray-100' };
-      default: return { label: 'Unknown', color: 'text-gray-600', bg: 'bg-gray-100' };
-    }
+  // Only data from a device that is currently sending is shown; no history fallbacks.
+  const live = isReadingLive(latestReading);
+  const liveChart = live ? chartData : [];
+  const turbidityNtuHistoryAvailable = liveChart.some((point) => point.turbidityUnit === 'NTU' && point.turbidity !== null && point.turbidity !== undefined);
+  const latestTankLevelPoint = [...liveChart].reverse().find((point) => point.tankLevelPercent != null && Number.isFinite(point.tankLevelPercent));
+  const latestTankLevel = latestReading?.tankLevel ?? latestReading?.sensorHealth?.ultrasonic ?? null;
+  const noValue = live ? 'No reading' : 'No live data';
+  const reportedPh = latestReading?.ph ?? latestReading?.sensorHealth?.ph.value ?? null;
+  const currentTurbidityNtu = latestReading?.turbidityUnit === 'NTU'
+    ? latestReading.turbidity ?? latestReading.sensorHealth?.turbidity.value ?? null
+    : null;
+  const turbidityNtu = currentTurbidityNtu;
+  const speciationAvailable = latestReading?.speciation?.status === 'AVAILABLE' && latestReading.speciation.percent != null;
+
+  const isQualified = (name: 'temperature' | 'ph' | 'turbidity') => {
+    const s = latestReading?.sensorHealth?.[name];
+    return s?.valid === true && s.health === 'VALID' && s.calibration === 'CALIBRATED' && s.stability === 'STABLE';
+  };
+  const humanize = (value: string) => value.toLowerCase().replace(/_/g, ' ');
+
+  const bandFor = (param: 'temp' | 'ph' | 'turbidity'): LimitKey => param === 'temp' ? 'temperature' : param;
+  const getStatus = (param: 'temp' | 'ph' | 'turbidity', value: number | null | undefined, qualified: boolean, calibrated: boolean): Status => {
+    if (value == null || !Number.isFinite(value)) return { label: noValue, state: 'off' };
+    if (!calibrated) return { label: 'Calibration required, not classified', state: 'trust' };
+    if (!qualified) return { label: 'Calibrated, settling', state: 'info' };
+    const label = bandLabel(classifyBand(value, thresholdBands[bandFor(param)]));
+    return { label, state: label === 'Normal' ? 'ok' : label === 'Warning' ? 'warn' : 'alarm' };
   };
 
-  const turbidityStatus = currentTurbidityNtu != null
-    ? getStatus('turbidity', currentTurbidityNtu, latestReading?.sensorHealth?.turbidity.valid===true && latestReading.sensorHealth.turbidity.health==='VALID' && latestReading.sensorHealth.turbidity.calibration==='CALIBRATED' && latestReading.sensorHealth.turbidity.stability==='STABLE')
-    : latestTurbidityNtuPoint
-      ? {label:`Last NTU sample ${latestTurbidityNtuPoint.time}; live sample unavailable`,color:'text-amber-700',bg:'bg-amber-100'}
-      : getStatus('turbidity', null, false);
+  const isCalibrated = (name: 'temperature' | 'ph' | 'turbidity' | 'orp') => latestReading?.sensorHealth?.[name]?.calibration === 'CALIBRATED';
+  const turbidityStatus: Status = currentTurbidityNtu != null
+    ? latestReading?.sensorHealth?.turbidity.valid === false
+      ? { label: `Reported, ${humanize(latestReading.sensorHealth.turbidity.health)}`, state: 'warn' }
+      : getStatus('turbidity', currentTurbidityNtu, isQualified('turbidity'), isCalibrated('turbidity'))
+    : getStatus('turbidity', null, false, false);
 
-  const metrics: Array<{ title: string; value: string; color: string; icon: ParameterIconName; status: { label: string; color: string; bg: string } }> = [
-    { title: 'TEMPERATURE', value: latestReading?.temperature != null ? `${latestReading.temperature?.toFixed(1)} °C` : '--', color: '#f59e0b', icon: 'temperature', status: getStatus('temp', latestReading?.temperature, latestReading?.sensorHealth?.temperature.valid===true && latestReading.sensorHealth.temperature.health==='VALID' && latestReading.sensorHealth.temperature.calibration==='CALIBRATED' && latestReading.sensorHealth.temperature.stability==='STABLE') },
-    { title: 'pH LEVEL', value: latestReading?.ph != null ? latestReading.ph?.toFixed(1) : '--', color: '#3b82f6', icon: 'ph', status: getStatus('ph', latestReading?.ph, latestReading?.sensorHealth?.ph.valid===true && latestReading.sensorHealth.ph.health==='VALID' && latestReading.sensorHealth.ph.calibration==='CALIBRATED' && latestReading.sensorHealth.ph.stability==='STABLE') },
-    { title: 'ORP / REDOX', value: latestReading?.orp != null ? `${latestReading.orp.toFixed(1)} mV` : '--', color: '#22c55e', icon: 'shield', status: orpIsStale ? {label:'Stale reported sample',color:'text-amber-700',bg:'bg-amber-100'} : orpIsCalibrated ? {label:'Calibrated reading',color:'text-emerald-700',bg:'bg-emerald-100'} : latestReading?.orp != null ? {label:'Reported; calibration required',color:'text-amber-700',bg:'bg-amber-100'} : {label:'Unavailable',color:'text-gray-600',bg:'bg-gray-100'} },
-    { title: 'TURBIDITY', value: turbidityNtu != null ? `${turbidityNtu.toFixed(1)} NTU` : '--', color: '#a855f7', icon: 'turbidity', status: turbidityStatus },
-    { title: 'NH3 FRACTION OF TAN', value: latestReading?.speciation?.status === 'AVAILABLE' && latestReading.speciation.percent != null ? `${latestReading.speciation.percent.toFixed(2)}%` : '--', color: '#ef4444', icon: 'ammonia', status: {label:latestReading?.speciation?.status === 'AVAILABLE' ? 'Calculated from pH + temperature' : latestReading?.speciation?.reason || 'Qualified pH and temperature required',color:'text-gray-600',bg:'bg-gray-100'} },
+  const readings: Array<{ label: string; value: string | null; unit?: string; status: Status }> = [
+    {
+      label: 'Temperature',
+      value: latestReading?.temperature != null ? latestReading.temperature.toFixed(1) : null,
+      unit: '°C',
+      status: getStatus('temp', latestReading?.temperature, isQualified('temperature'), isCalibrated('temperature')),
+    },
+    {
+      label: 'pH',
+      value: reportedPh != null ? reportedPh.toFixed(2) : null,
+      status: latestReading?.sensorHealth?.ph.valid === false && reportedPh != null
+        ? { label: `Reported, ${humanize(latestReading.sensorHealth.ph.health)}`, state: 'warn' }
+        : getStatus('ph', reportedPh, isQualified('ph'), isCalibrated('ph')),
+    },
+    {
+      label: 'ORP / redox',
+      value: latestReading?.orp != null ? latestReading.orp.toFixed(1) : null,
+      unit: 'mV',
+      status: !live ? { label: noValue, state: 'off' }
+        : orpIsStale ? { label: 'Stale sample', state: 'warn' }
+        : orpIsCalibrated ? { label: 'Calibrated reading', state: 'ok' }
+          : isCalibrated('orp') ? { label: 'Calibrated, settling', state: 'info' }
+          : latestReading?.orp != null ? { label: 'Reported; calibration required', state: 'trust' }
+            : { label: noValue, state: 'off' },
+    },
+    {
+      label: 'Turbidity',
+      value: turbidityNtu != null ? turbidityNtu.toFixed(1) : null,
+      unit: 'NTU',
+      status: turbidityStatus,
+    },
+    {
+      label: live && latestTankLevel?.depthCm != null ? 'Water depth' : 'Tank level',
+      value: live && latestTankLevel?.depthCm != null
+        ? latestTankLevel.depthCm.toFixed(2)
+        : live && latestTankLevel?.levelPercent != null ? latestTankLevel.levelPercent.toFixed(1) : null,
+      unit: live && latestTankLevel?.depthCm != null ? 'cm' : '%',
+      status: !live ? { label: noValue, state: 'off' }
+        : latestTankLevel?.valid && latestTankLevel.depthCm != null ? (() => {
+          const label = bandLabel(classifyBand(latestTankLevel.depthCm, thresholdBands.waterDepth));
+          return { label, state: (label === 'Normal' ? 'ok' : label === 'Warning' ? 'warn' : 'alarm') as MarkState };
+        })()
+          : latestTankLevel?.valid && latestTankLevel.distanceCm != null ? { label: `${latestTankLevel.distanceCm.toFixed(1)} cm below sensor`, state: 'info' }
+            : latestTankLevel?.levelPercent != null ? { label: `Reported: ${latestTankLevel.reason}`, state: 'warn' }
+              : { label: latestTankLevel?.reason || 'Ultrasonic reading unavailable', state: 'off' },
+    },
+    {
+      label: 'NH₃ fraction of TAN',
+      value: live && speciationAvailable ? latestReading!.speciation!.percent!.toFixed(2) : null,
+      unit: '%',
+      status: !live ? { label: noValue, state: 'off' }
+        : speciationAvailable
+          ? { label: 'Calculated from pH and temperature', state: 'info' }
+          : { label: latestReading?.speciation?.reason || 'Needs calibrated pH and temperature', state: 'off' },
+    },
   ];
 
-  const renderChart = (title: string, dataKey: string, color: string, yDomain: [number | string, number | string], idealLabel: string, detail?: React.ReactNode, secondSeries?: { dataKey: string; color: string }, dataOverride?: typeof chartData) => (
-    <div className="rounded-xl border border-gray-200 bg-white shadow-sm p-2.5 lg:p-2 h-[220px] lg:h-full lg:min-h-0 flex flex-col relative">
-      <div className="flex items-center justify-between gap-2 mb-1 shrink-0">
-        <h3 className="text-xs font-semibold flex items-center gap-1.5 truncate" style={{ color }}><CustomIcon name={dataKey === 'temperature' ? 'temperature' : dataKey === 'ph' ? 'ph' : dataKey === 'turbidity' ? 'turbidity' : secondSeries || dataKey === 'tan' || dataKey === 'nh3N' || dataKey === 'nh3FractionPercent' ? 'ammonia' : 'shield'} color={color} size="h-4 w-4" /> <span className="truncate">{title}</span></h3>
-        <span className="text-[9px] text-gray-400 whitespace-nowrap">{idealLabel}</span>
-      </div>
-      {detail && <div className="shrink-0 text-[9px] leading-tight text-gray-500">{detail}</div>}
-      <div className="relative flex-1 w-full min-h-0">
-        <ResponsiveContainer width="100%" height="100%">
-          <AreaChart data={dataKey==='turbidity'?(dataOverride ?? processedChartData).filter(point=>point.turbidityUnit==='NTU' && point.turbidity != null):(dataOverride ?? processedChartData)} margin={{ top: 10, right: 0, left: -20, bottom: 0 }}>
-            <defs>
-              <linearGradient id={`gradient-${dataKey}`} x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor={color} stopOpacity={0.3}/>
-                <stop offset="95%" stopColor={color} stopOpacity={0}/>
-              </linearGradient>
-              {secondSeries && <linearGradient id={`gradient-${secondSeries.dataKey}`} x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor={secondSeries.color} stopOpacity={0.3}/>
-                <stop offset="95%" stopColor={secondSeries.color} stopOpacity={0}/>
-              </linearGradient>}
-            </defs>
-            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e5e7eb" />
-            <XAxis dataKey="time" tick={{ fontSize: 10, fill: '#9ca3af' }} tickMargin={8} minTickGap={20} />
-            <YAxis domain={yDomain} tick={{ fontSize: 10, fill: '#9ca3af' }} axisLine={false} tickLine={false} />
-            <Tooltip
-              contentStyle={{ backgroundColor: '#ffffff', borderColor: '#e5e7eb', borderRadius: '8px', boxShadow: '0 4px 12px rgba(0,0,0,0.08)' }}
-              itemStyle={{ color: '#111827' }}
-              labelStyle={{ color: '#6b7280' }}
-            />
-            <Area type="monotone" dataKey={dataKey} stroke={color} strokeWidth={2} fillOpacity={1} fill={`url(#gradient-${dataKey})`} />
-            {secondSeries && <Area type="monotone" dataKey={secondSeries.dataKey} stroke={secondSeries.color} strokeWidth={2} fillOpacity={1} fill={`url(#gradient-${secondSeries.dataKey})`} />}
-          </AreaChart>
-        </ResponsiveContainer>
-      </div>
-    </div>
-  );
+  // One plain sentence on what to do next, derived only from reported state.
+  const nextSteps: NextStep[] = [];
+  if (!isConnected) nextSteps.push({ text: 'Live connection lost. Check that the AquaSense server is running.' });
+  if (!latestReading) nextSteps.push({ text: 'Waiting for the first sensor reading. Make sure your device is registered.', ...(staffSession ? {} : { to: '/dashboard/settings', cta: 'Open settings' }) });
+  else if (!live) nextSteps.push({ text: `No data from the ESP32 in the last ${LIVE_READING_MS / 1000} seconds, so no readings are shown. Check the device's power, Wi-Fi and MQTT connection.` });
+  if (activeAlerts.length) nextSteps.splice(isConnected && live ? 0 : nextSteps.length, 0, { text: `${activeAlerts.length} active alert${activeAlerts.length > 1 ? 's' : ''} need${activeAlerts.length > 1 ? '' : 's'} review.`, to: '/dashboard/alerts', cta: 'Review alerts' });
+  if (live && latestReading) {
+    const named = (label: 'Alert' | 'Warning') => readings.filter((reading) => reading.status.label === label).map((reading) => reading.label);
+    const alertNames = named('Alert');
+    const warningNames = named('Warning');
+    if (alertNames.length) nextSteps.unshift({ text: `${alertNames.join(' and ')} ${alertNames.length > 1 ? 'are' : 'is'} in Alert. Check the tank.`, ...(staffSession ? {} : { to: '/dashboard/thresholds', cta: 'Thresholds' }) });
+    else if (warningNames.length) nextSteps.unshift({ text: `${warningNames.join(' and ')} ${warningNames.length > 1 ? 'are' : 'is'} in Warning.`, ...(staffSession ? {} : { to: '/dashboard/thresholds', cta: 'Thresholds' }) });
+    const uncalibrated = (['temperature', 'ph'] as const).filter((name) => latestReading.sensorHealth?.[name] && !isCalibrated(name));
+    if (uncalibrated.length) nextSteps.push({ text: `Calibrate the ${uncalibrated.map((name) => name === 'ph' ? 'pH' : 'temperature').join(' and ')} probe${uncalibrated.length > 1 ? 's' : ''} so readings can be classified and the NH₃ fraction estimated.`, ...(staffSession ? {} : { to: '/dashboard/calibration', cta: 'Calibrate' }) });
+    const silent = [latestReading.orp == null ? 'ORP' : null, readings[4].value == null ? 'tank level' : null].filter(Boolean);
+    if (silent.length) nextSteps.push({ text: `${silent.join(' and ')} ${silent.length > 1 ? 'sensors are' : 'sensor is'} not reporting.` });
+    if (riskAssessment?.status === 'AVAILABLE' && (riskAssessment.level === 'High' || riskAssessment.level === 'Extreme')) {
+      nextSteps.unshift({ text: `Mortality risk score is ${riskAssessment.level} (${riskAssessment.score}/100). Check the contributing factors below and the tank.` });
+    }
+    if (!nextSteps.length) nextSteps.push({ text: 'All reporting sensors are calibrated and Normal.' });
+  }
+  const nextTone = !isConnected || (latestReading && !live) ? 'alarm' : nextSteps[0]?.text.includes('in Alert') ? 'alarm' : nextSteps[0]?.text.includes('in Warning') || activeAlerts.length ? 'warn' : 'info';
+  const upcomingFeed = nextFeed(feedingSchedules);
+  const enabledFeeds = feedingSchedules.filter((item) => item.enabled).length;
+
+  const lastReadingTime = latestReading?.timestamp ? new Date(latestReading.timestamp) : null;
 
   return (
-    <div className="flex flex-col gap-2.5 lg:gap-2 p-4 lg:h-full lg:min-h-0 lg:p-0 text-gray-800 font-sans">
+    <div className="space-y-5">
+      <PageHead
+        title={profile.tankName || 'Main tank'}
+        description="Live water readings. Values refresh about every 5 seconds; each shows whether the sensor behind it can be trusted."
+        meta={
+          <>
+            <MetaItem label="Last reading">
+              {lastReadingTime && Number.isFinite(lastReadingTime.getTime()) ? lastReadingTime.toLocaleTimeString('en-US') : 'None yet'}
+            </MetaItem>
+            <MetaItem label="Dashboard connection">
+              <StateMark state={isConnected ? 'ok' : 'alarm'} className="!text-sm !font-semibold">{isConnected ? 'Online' : 'Offline'}</StateMark>
+            </MetaItem>
+          </>
+        }
+      />
 
-      {/* Top Header Section */}
-      <header className="shrink-0 flex flex-col xl:flex-row justify-between items-center gap-4 bg-white border border-gray-200 shadow-sm rounded-2xl p-3 lg:p-2.5 text-center xl:text-left">
-        <div className="flex flex-col items-center gap-3 sm:flex-row">
-          <div className="flex-shrink-0 p-2 rounded-lg bg-blue-50">
-             <CustomIcon name="shield" color="#2563eb" size="h-6 w-6" />
-          </div>
-          <div>
-            <h1 className="text-base font-bold tracking-tight text-gray-900 uppercase md:text-lg lg:text-xl">AQUASENSE WATER QUALITY MONITORING DASHBOARD</h1>
-            <p className="text-xs text-gray-500 mt-0.5">Real-time sensor readings and freshwater ammonia speciation</p>
-          </div>
-        </div>
-        <div className="flex flex-wrap items-center justify-center w-full gap-3 text-xs xl:justify-end md:gap-6 md:text-sm xl:w-auto">
-          <div className="flex items-center gap-2 pr-3 border-r border-gray-200 md:pr-6">
-            <CustomIcon name="temperature" color="#9ca3af" size="h-5 w-5" />
-            <div className="flex flex-col text-left">
-              <span className="text-gray-500">{new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</span>
-              <span className="font-semibold text-gray-900">{new Date().toLocaleTimeString('en-US')}</span>
-            </div>
-          </div>
-          <div className="flex items-center gap-2 pr-3 border-r border-gray-200 md:pr-6">
-             <div className="flex flex-col text-right">
-                <span className="text-gray-500">Tank ID</span>
-                <span className="font-semibold text-blue-600">{profile.tankName || 'POND-01'}</span>
-             </div>
-          </div>
-          <div className="flex items-center gap-2 pl-1 md:pl-2">
-            <div className="flex flex-col text-left">
-              <span className="text-gray-500">Status</span>
-              <div className="flex items-center gap-2 mt-0.5">
-                <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-emerald-500' : 'bg-rose-500'}`}></div>
-                <span className={isConnected ? 'text-emerald-600 font-semibold' : 'text-rose-600 font-semibold'}>{isConnected ? 'Online' : 'Offline'}</span>
-              </div>
-            </div>
-          </div>
-        </div>
-      </header>
+      {/* When disconnected, the Next line already says so. */}
+      {error && isConnected && <Notice tone="warn" title="Data connection">{error}</Notice>}
 
-      {error && <div className="p-2 text-sm border shrink-0 rounded-xl border-amber-200 bg-amber-50 text-amber-900">Data connection status: {error}</div>}
+      {/* Next action */}
+      <div className={`flex gap-3 rounded-md px-4 py-3 text-sm leading-relaxed ${
+        nextTone === 'alarm' ? 'bg-alarm-bg text-[#7a1a12]' : nextTone === 'warn' ? 'bg-warn-bg text-[#6b3504]' : 'bg-band text-ink'
+      }`} role="status" aria-live="polite">
+        <span className="shrink-0 font-semibold">Next</span>
+        <ul className="space-y-1">
+          {nextSteps.map((step) => (
+            <li key={step.text}>
+              {step.text}
+              {step.to && <> <Link to={step.to} className="whitespace-nowrap font-semibold underline decoration-current/30 underline-offset-[3px] hover:decoration-current">{step.cta}</Link></>}
+            </li>
+          ))}
+        </ul>
+      </div>
 
-      {/* Top Metrics Cards */}
-      <section className="shrink-0 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-2.5 lg:gap-2">
-        {metrics.map((metric, idx) => (
-          <div key={idx} className="bg-white border border-gray-200 shadow-sm rounded-xl p-2.5 lg:p-2 flex flex-col justify-between items-center text-center relative overflow-hidden group hover:border-gray-300 transition-colors">
-             <div className="absolute transition-opacity -right-4 -top-4 opacity-5 group-hover:opacity-10">
-                <CustomIcon name={metric.icon} color={metric.color} size="h-8 w-8" />
-             </div>
-             <div className="flex items-center gap-1.5 mb-1 w-full justify-center">
-                <div className="p-1 rounded-full" style={{ backgroundColor: `${metric.color}15` }}>
-                   <CustomIcon name={metric.icon} color={metric.color} size="h-4 w-4" />
-                </div>
-                <span className="text-[10px] font-semibold text-gray-500 tracking-wider uppercase">{metric.title}</span>
-             </div>
-             <div className="text-lg lg:text-xl font-bold text-gray-900 mb-1.5 tracking-tight">{metric.value}</div>
-             <div className={`text-[10px] font-semibold px-2.5 py-0.5 rounded-full ${metric.status.bg} ${metric.status.color} uppercase tracking-wider`}>
-                {metric.status.label}
-             </div>
+      {/* Reading strip: fixed furniture per sensor, reflows in whole cells */}
+      <section aria-label="Current readings" className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-line bg-line md:grid-cols-3 xl:grid-cols-6">
+        {readings.map((reading) => (
+          <div key={reading.label} className="flex min-w-0 flex-col bg-white px-4 py-3.5 sm:px-5 sm:py-4">
+            <p className="text-[13px] font-medium text-ink-2">{reading.label}</p>
+            <p key={reading.value ?? 'none'} className={`num reading-settle mt-1.5 text-[28px] font-semibold leading-none tracking-tight sm:text-[32px] ${reading.value == null ? 'text-ink-3' : 'text-ink'}`}>
+              {reading.value ?? '—'}
+              {reading.value != null && reading.unit && <span className="ml-1 text-base font-medium text-ink-3">{reading.unit}</span>}
+            </p>
+            <StateMark state={reading.status.state} className="mt-2.5 !text-xs">{reading.status.label}</StateMark>
           </div>
         ))}
-
-        {/* Risk analysis remains unavailable until a model is validated and commissioned. */}
-        <div className="bg-white border border-gray-200 shadow-sm rounded-xl p-2.5 lg:p-2 flex flex-col justify-between items-center text-center relative overflow-hidden group hover:border-gray-300 transition-colors">
-            <span className="text-[10px] font-semibold text-gray-500 tracking-wider uppercase mb-1">RISK ANALYSIS</span>
-            <div className="mb-1 text-lg font-bold tracking-tight uppercase lg:text-xl" style={{ color: riskColor }}>{riskLevel}</div>
-            <div className="flex items-center gap-1.5">
-               <CustomIcon name="shield" color={riskColor} size="h-4 w-4" />
-               <span className="text-xs font-semibold text-gray-600">Index: {currentRiskScore === null ? '--' : `${currentRiskScore.toFixed(0)} / 100`}</span>
-            </div>
-        </div>
       </section>
 
-      {/* Main Grid Layout */}
-      <section className="grid grid-cols-1 lg:grid-cols-3 gap-2.5 lg:gap-2 lg:flex-1 lg:min-h-0">
-
-        {/* Left Side: Charts Grid (Spans 2 columns) */}
-        <div className="lg:col-span-2 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 lg:grid-rows-2 gap-2.5 lg:gap-2 lg:min-h-0">
-          {renderChart('Temperature (°C)', 'temperature', '#f59e0b', [20, 36], 'Growth guidance 26-29°C')}
-          {renderChart('pH Level', 'ph', '#3b82f6', [4, 10], 'Culture guidance pH 7-8.5')}
-          {renderChart('ORP / Redox (mV)', 'orp', '#22c55e', ['auto', 'auto'], 'Independent redox indicator', orpIsStale ? 'Latest sample is stale; historical device-reported values are uncalibrated' : latestReading?.orp != null ? 'Device-reported trend; calibration required for interpretation' : 'No reported ORP samples')}
-          {renderChart('Turbidity (NTU)', 'turbidity', '#a855f7', ['auto', 'auto'], 'Calibration required', turbidityNtuHistoryAvailable ? undefined : 'NTU unavailable for the current sensor samples')}
-          {renderChart(
-            'Unionized NH3 fraction (%)', 'nh3FractionPercent', '#ef4444', ['auto', 'auto'], 'Calculated from qualified pH + temperature',
-            <>{latestReading?.speciation?.status === 'AVAILABLE' && latestReading.speciation.percent != null ? `Latest fraction ${latestReading.speciation.percent.toFixed(3)}%` : latestReading?.speciation?.reason || 'Qualified pH and temperature are required'} · TAN and NH3-N concentration require measured TAN</>,
-            undefined,
-            processedChartData,
-          )}
-          <div className="relative flex h-[220px] flex-col rounded-xl border border-gray-200 bg-white p-2.5 shadow-sm lg:h-full lg:min-h-0 lg:p-2"><div className="flex items-center justify-between gap-2"><h3 className="text-xs font-semibold text-gray-700">Risk Index</h3><span className="text-[9px] text-gray-400">Unavailable</span></div><div className="flex flex-1 flex-col items-center justify-center text-center"><span className="text-2xl font-bold" style={{color:riskColor}}>{currentRiskScore === null ? '--' : `${currentRiskScore.toFixed(0)} / 100`}</span><span className="text-xs text-gray-500">{riskLevel}</span><span className="mt-2 text-[10px] text-gray-400">No validated, commissioned crayfish risk model</span></div></div>
-        </div>
-
-        {/* Right Side: Risk Assessment Panel */}
-        <div className="lg:col-span-1 flex flex-col gap-2.5 lg:gap-2 lg:min-h-0">
-
-          {/* Risk model readiness is reported explicitly; no score is implied by a gauge. */}
-          <div className="shrink-0 min-h-[150px] bg-white border border-gray-200 shadow-sm rounded-xl p-3 lg:p-2.5 flex flex-col items-center justify-center">
-             <h3 className="text-xs font-semibold text-gray-600 tracking-widest uppercase mb-2 w-full text-center">RISK MODEL STATUS</h3>
-             <span className="text-lg font-bold uppercase text-gray-600">{predictiveWarning?.modelStatus ?? 'UNAVAILABLE'}</span>
-             <div className="mt-2 grid w-full grid-cols-2 gap-x-3 gap-y-1 text-[10px] text-gray-600">
-               <span>Model validation</span><span className="text-right">{predictiveWarning?.validationStatus === 'VALIDATED' ? 'Validated' : 'Not commissioned'}</span>
-               <span>Sensor coverage</span><span className="text-right">{validSensorCount}/{monitoredSensors.length} valid</span>
-               <span>Calibrated and stable</span><span className="text-right">{calibratedSensorCount}/{monitoredSensors.length}</span>
-               <span>TAN concentration</span><span className="text-right">Requires actual measurement</span>
-             </div>
-             <p className="mt-2 text-[10px] text-gray-500">pH and temperature estimate the NH3 fraction only; they cannot determine TAN concentration.</p>
+      <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_340px]">
+        <section aria-label="Trends" className="min-w-0">
+          <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+            <h2 className="text-[15px] font-semibold">Recent trends</h2>
+            <BandKey />
           </div>
-
-          {/* Risk Level Guide Panel */}
-          <div className="lg:flex-1 lg:min-h-0 lg:overflow-y-auto bg-white border border-gray-200 shadow-sm rounded-xl p-3 lg:p-2.5">
-             <h3 className="text-[10px] font-semibold text-gray-500 tracking-widest uppercase mb-2 border-b border-gray-200 pb-1.5">ASSESSMENT LIMITATIONS</h3>
-             <div className="flex flex-col gap-1.5">
-                <p className="text-xs text-gray-600">No validated Cherax quadricarinatus risk model is commissioned.</p>
-                <p className="text-xs text-gray-600">No mortality probability or time-to-critical estimate is available.</p>
-                <p className="text-xs text-gray-600">Temperature and pH guidance is advisory; turbidity and ORP have no validated species-specific warning threshold.</p>
-             </div>
-          </div>
-
-          {/* Factors Contributing Panel */}
-          <div className="lg:flex-1 lg:min-h-0 lg:overflow-y-auto bg-white border border-gray-200 shadow-sm rounded-xl p-3 lg:p-2.5">
-             <h3 className="text-[10px] font-semibold text-gray-500 tracking-widest uppercase mb-2 border-b border-gray-200 pb-1.5">LIVE WATER QUALITY INDICATORS</h3>
-             <div className="flex flex-col gap-1.5 lg:gap-1.5">
-                {([
-                  { name: 'ORP / Redox (uncalibrated)', status: latestReading?.orp != null ? `${latestReading.orp.toFixed(1)} mV reported${orpIsStale ? ' · stale' : ''}` : 'Unavailable', color: '#22c55e', icon: 'shield' },
-                  { name: 'TAN concentration', status: 'Requires measured TAN', color: '#3b82f6', icon: 'ammonia' },
-                  { name: 'Unionized NH3 fraction', status: latestReading?.speciation?.status === 'AVAILABLE' && latestReading.speciation.percent != null ? `${latestReading.speciation.percent.toFixed(2)}%` : 'Unavailable', color: '#ef4444', icon: 'ammonia' },
-                  { name: 'Temperature', status: latestReading?.temperature != null ? `${latestReading.temperature.toFixed(1)} °C` : 'Unavailable', color: metrics[0].color, icon: 'temperature' },
-                  { name: 'pH Level', status: latestReading?.ph != null ? latestReading.ph.toFixed(2) : 'Unavailable', color: metrics[1].color, icon: 'ph' },
-                ] as Array<{ name: string; status: string; color: string; icon: ParameterIconName }>).map((factor, idx) => (
-                  <div key={idx} className="flex items-center justify-between text-xs">
-                     <div className="flex items-center gap-2">
-                        <CustomIcon name={factor.icon} color={factor.color} size="h-4 w-4" />
-                        <span className="text-gray-600">{factor.name}</span>
-                     </div>
-                     <div className="flex items-center gap-1.5" style={{ color: factor.color }}>
-                        <span className="font-semibold">{factor.status}</span>
-                        {factor.status === 'Unavailable' && <span className="text-gray-400">—</span>}
-                     </div>
+          {(() => {
+            const turbidityData = liveChart.filter((point) => point.turbidityUnit === 'NTU' && point.turbidity != null);
+            const series = [
+              { key: 'temperature', title: 'Temperature (°C)', label: 'Temperature', guidance: `Normal ${formatNormalBand(thresholdBands.temperature, 1, '°C')}`, data: liveChart, domain: [20, 36] as [number, number], band: [thresholdBands.temperature.normalMin ?? 26, thresholdBands.temperature.normalMax ?? 29] as [number, number], unit: '°C', digits: 1, empty: 'No temperature samples yet' },
+              { key: 'ph', title: 'pH', label: 'pH', guidance: `Normal ${formatNormalBand(thresholdBands.ph, 2, '')}`, data: liveChart, domain: [4, 10] as [number, number], band: [thresholdBands.ph.normalMin ?? 7, thresholdBands.ph.normalMax ?? 8.5] as [number, number], unit: '', digits: 2, empty: 'No pH samples yet' },
+              { key: 'orp', title: 'ORP / redox (mV)', label: 'ORP', guidance: 'No validated range', data: liveChart, domain: ['auto', 'auto'] as ['auto', 'auto'], unit: 'mV', digits: 1, empty: 'No ORP samples reported',
+                note: orpIsStale ? 'Latest sample is stale.' : isCalibrated('orp') ? 'Saved device calibration. ORP is a redox reading, not dissolved oxygen.' : latestReading?.orp != null ? 'Device-reported trend. Capture an ORP standard before it can be interpreted.' : undefined },
+              { key: 'turbidity', title: 'Turbidity (NTU)', label: 'Turbidity', guidance: `Normal ${formatNormalBand(thresholdBands.turbidity, 1, 'NTU')}`, data: turbidityData, domain: ['auto', 'auto'] as ['auto', 'auto'], band: thresholdBands.turbidity.normalMax == null ? undefined : [0, thresholdBands.turbidity.normalMax] as [number, number], unit: 'NTU', digits: 1, empty: 'NTU unavailable for current samples',
+                note: turbidityNtuHistoryAvailable ? (isCalibrated('turbidity') ? 'Linear estimate from the saved calibration.' : 'Linear estimate; sensor calibration required.') : undefined },
+              { key: 'nh3FractionPercent', title: 'NH₃ fraction (%)', label: 'NH₃ fraction', guidance: 'From qualified pH + temperature', data: liveChart, domain: ['auto', 'auto'] as ['auto', 'auto'], unit: '%', digits: 3,
+                empty: `Not calculated: ${(latestReading?.speciation?.reason || 'needs calibrated pH and temperature').replace(/^\w/, (c) => c.toLowerCase()).replace(/[.\s]*$/, '')}`,
+                note: `${speciationAvailable ? `Latest fraction ${latestReading!.speciation!.percent!.toFixed(3)}%. ` : ''}TAN and NH₃-N concentration need a measured TAN value.` },
+              { key: 'tankLevelPercent', title: 'Tank level (%)', label: 'Tank level', guidance: 'Ultrasonic, as reported', data: liveChart, domain: [0, 100] as [number, number], unit: '%', digits: 1, empty: 'No level samples reported',
+                note: latestTankLevelPoint ? `Last history sample ${latestTankLevelPoint.time}.` : undefined },
+            ];
+            const withData = series.filter((item) => hasSeries(item.data, item.key));
+            const withoutData = series.filter((item) => !hasSeries(item.data, item.key));
+            return (
+              <>
+                {withData.length > 0 && (
+                  <div className="grid gap-4 md:grid-cols-2">
+                    {withData.map((item, index) => (
+                      <ChartPanel key={item.key} title={item.title} guidance={item.guidance} note={item.note} className={withData.length % 2 === 1 && index === withData.length - 1 ? 'md:col-span-2' : ''}>
+                        <BandChart label={item.label} data={item.data} dataKey={item.key} domain={item.domain} band={'band' in item ? item.band : undefined} unit={item.unit} digits={item.digits} />
+                      </ChartPanel>
+                    ))}
                   </div>
-                ))}
-             </div>
-          </div>
-        </div>
-      </section>
+                )}
+                {withoutData.length > 0 && (
+                  <div className={`panel ${withData.length ? 'mt-4' : ''}`}>
+                    <p className="border-b border-line-soft px-4 py-2.5 text-[13px] font-semibold text-ink-2 sm:px-5">No trend yet</p>
+                    <ul className="divide-y divide-line-soft">
+                      {withoutData.map((item) => (
+                        <li key={item.key} className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-0.5 px-4 py-2.5 text-[13px] sm:px-5">
+                          <span className="font-medium text-ink">{item.label}</span>
+                          <span className="text-ink-3">{live ? item.empty : 'No live data'}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </>
+            );
+          })()}
+        </section>
 
-      {/* Footer Status Bar */}
-      <footer className="shrink-0 flex flex-col md:flex-row justify-between items-center gap-3 bg-white border border-gray-200 shadow-sm rounded-xl p-2.5 lg:p-2 text-center md:text-left">
-         <div className="flex flex-col items-center gap-2 sm:flex-row sm:gap-4">
-            <span className="text-[10px] text-gray-500 uppercase tracking-wider">Update Interval</span>
-            <div className="flex items-center gap-2 text-blue-700 bg-blue-50 px-2.5 py-0.5 rounded-lg text-xs font-semibold">
-               <svg className="w-3.5 h-3.5 animate-spin-slow flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
-               5 seconds
-            </div>
-         </div>
-         <div className="flex items-start sm:items-center gap-2 text-[11px] text-gray-500 text-left">
-            <div className="mt-0.5 sm:mt-0 flex-shrink-0"><CustomIcon name="shield" color="#9ca3af" size="h-4 w-4" /></div>
-            <span>All readings are real-time and refreshed every 5 seconds. Ensure regular calibration.</span>
-         </div>
-      </footer>
+        <aside className="flex min-w-0 flex-col gap-4" aria-label="Feeding and risk assessment">
+          <Panel title="Feeding" actions={<Link to="/dashboard/feeding" className="link text-[13px]">Open feeding</Link>}>
+            {upcomingFeed ? (
+              <div className="mb-4">
+                <p className="text-xs text-ink-3">Next feed</p>
+                <p className="num mt-0.5 text-[22px] font-semibold leading-tight">
+                  {upcomingFeed.item.time}
+                  <span className="ml-2 text-sm font-medium text-ink-2">
+                    {upcomingFeed.at.toDateString() === new Date().toDateString() ? 'today' : upcomingFeed.at.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
+                  </span>
+                </p>
+                {upcomingFeed.item.label && <p className="text-[13px] text-ink-2">{upcomingFeed.item.label}</p>}
+              </div>
+            ) : (
+              <p className="mb-4 text-[13px] leading-relaxed text-ink-2">No upcoming feed is scheduled.</p>
+            )}
+            <KeyValues rows={[{ label: 'Enabled schedules', value: `${enabledFeeds} of ${feedingSchedules.length}` }]} />
+          </Panel>
+          <RiskAssessmentPanel assessment={live ? riskAssessment : null} />
+
+          <Panel title="Sensor status">
+            <KeyValues rows={[
+              { label: 'Sensors valid', value: `${validSensorCount} of ${monitoredSensors.length}` },
+              { label: 'Calibrated and stable', value: `${calibratedSensorCount} of ${monitoredSensors.length}` },
+            ]} />
+          </Panel>
+
+          <Panel title="What this dashboard cannot tell you">
+            <ul className="space-y-2.5 text-[13px] leading-relaxed text-ink-2">
+              <li>The mortality-risk score is a rule-based model for <i>Cherax quadricarinatus</i>. It has not been validated against field mortality and is not a probability or a time-to-critical estimate.</li>
+              <li>pH and temperature give the NH₃ fraction only. They cannot determine TAN concentration.</li>
+              <li>Temperature and pH marks follow the Thresholds tab. Turbidity uses the alert-rule cuts there, not a species limit. ORP has no husbandry band.</li>
+              <li>“Online” means this browser is connected. Check the last reading time to confirm sensors are reporting.</li>
+            </ul>
+          </Panel>
+        </aside>
+      </div>
     </div>
   );
 };

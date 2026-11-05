@@ -89,6 +89,16 @@ export const tanMeasurementEntrySchema = z.object({
   attestMeasurement: z.literal(true),
 }).strict();
 
+// Exactly one of tan / nh3N may be given; neither returns the NH3 fraction only.
+export const ammoniaCalculationSchema = z.object({
+  temperature: z.number().finite(),
+  ph: z.number().finite(),
+  tan: z.number().finite().nonnegative().optional(),
+  nh3N: z.number().finite().nonnegative().optional(),
+}).strict().refine((body) => body.tan === undefined || body.nh3N === undefined, {
+  message: 'Provide either measured TAN or measured NH3-N, not both',
+});
+
 export const tanMeasurementQuerySchema = z.object({
   deviceId: z.string().trim().min(1).max(120).optional(),
   limit: z.coerce.number().int().min(1).max(100).default(30),
@@ -103,6 +113,17 @@ export const smsTestSchema = z.object({
   recipient: z.string().trim().regex(/^\+[1-9]\d{7,14}$/).optional(),
   message: z.string().trim().min(1).max(160).optional(),
 });
+
+export const smsRecipientsSchema = z.object({
+  enabled: z.boolean(),
+  phones: z.array(z.string().trim().max(24)).max(4),
+}).strict();
+
+export const createStaffSchema = z.object({
+  fullName: z.string().trim().min(1).max(255),
+  email: z.string().trim().email().max(255),
+  password: z.string().min(12).max(256),
+}).strict();
 
 const finiteNumber = z.number().finite();
 
@@ -140,6 +161,20 @@ export const thresholdSchema = z.object({
     if (!valid) context.addIssue({ code: z.ZodIssueCode.custom, path: path.split('.'), message });
   }
 });
+const thresholdBandSchema = z.object({
+  alertMin: finiteNumber.nullable(),
+  normalMin: finiteNumber.nullable(),
+  normalMax: finiteNumber.nullable(),
+  alertMax: finiteNumber.nullable(),
+}).strict();
+
+export const thresholdBandsSchema = z.object({
+  temperature: thresholdBandSchema,
+  ph: thresholdBandSchema,
+  turbidity: thresholdBandSchema,
+  waterDepth: thresholdBandSchema,
+}).strict();
+
 export const thresholdPatchSchema = z.object({
   temperature: z.object({ min: finiteNumber.optional(), max: finiteNumber.optional(), warning: finiteNumber.optional() }).strict().optional(),
   ph: z.object({ min: finiteNumber.optional(), max: finiteNumber.optional(), optimal: z.object({ min: finiteNumber.optional(), max: finiteNumber.optional() }).strict().optional() }).strict().optional(),

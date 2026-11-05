@@ -18,14 +18,15 @@ import type { AuthenticatedRequest } from '../../../middleware/authMiddleware';
 import { deviceService } from '../../../services/device.service';
 import { TanMeasurementInputError, tanMeasurementService } from '../../../services/tanMeasurement.service';
 import { auditLogService } from '../../../services/auditLog.service';
+import { riskAssessmentService } from '../../../services/riskAssessment.service';
+import { AmmoniaInputError, calculateAmmonia } from '../../../services/ammoniaCalculator';
+import { loadThresholdBands, saveThresholdBands, thresholdBandIssue, type ThresholdBands } from '../../../services/thresholdBands';
+import { accessibleDeviceIds, listAccessibleDevices, verifyDeviceAccess } from '../../../services/deviceAccess';
 
 const getReadingDeviceScope = async (req: AuthenticatedRequest): Promise<string[] | undefined> => {
   // An absent identity must never fall through to the service's unfiltered query.
   if (!req.userId) return [];
-  if (req.userRole === 'admin') return undefined;
-  return (await deviceService.listByUser(req.userId))
-    .filter((device) => device.isActive)
-    .map((device) => device.deviceId);
+  return accessibleDeviceIds(req.userId, req.userRole);
 };
 
 const mapDbStatsToWaterStats = async (minutes: number, deviceIds?: string[]): Promise<WaterQualityStats> => {
@@ -80,14 +81,35 @@ const ingestMeta: IngestMeta = {
   lastLocation: null,
 };
 
+/**
+ * Ammonia speciation calculator (steps 2–6): NH3 fraction from temperature and pH, then
+ * NH3-N from measured TAN (Option A) or TAN from measured NH3-N (Option B).
+ * POST /api/v1/water/ammonia/calculate
+ */
+export const calculateAmmoniaSpeciation = (req: Request, res: Response): void => {
+  try {
+    const { temperature, ph, tan, nh3N } = req.body as { temperature: number; ph: number; tan?: number; nh3N?: number };
+    const measurement = tan !== undefined ? { kind: 'TAN' as const, value: tan }
+      : nh3N !== undefined ? { kind: 'NH3_N' as const, value: nh3N } : null;
+    sendSuccess(res, 200, 'Ammonia speciation calculated', calculateAmmonia({ temperatureC: temperature, ph, measurement }));
+  } catch (error) {
+    if (error instanceof AmmoniaInputError) {
+      sendError(res, 400, error.message);
+      return;
+    }
+    logger.error('Failed to calculate ammonia speciation', error);
+    sendError(res, 500, 'Failed to calculate ammonia speciation');
+  }
+};
+
 export const createTanMeasurement = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     if (!req.userId) { sendError(res, 401, 'Unauthorized'); return; }
     const { deviceId, value, source, sampleCollectedAt, validationEvidence } = req.body;
-    const activeDevice = req.userRole === 'admin'
+    const allowed = req.userRole === 'admin'
       ? await deviceService.getActiveDevice(deviceId)
-      : await deviceService.verifyOwnership(req.userId, deviceId);
-    if (!activeDevice) { sendError(res, 403, 'Device must be active and registered to the authenticated user'); return; }
+      : await verifyDeviceAccess(req.userId, deviceId, req.userRole);
+    if (!allowed) { sendError(res, 403, 'Device must be active and registered to the authenticated user'); return; }
 
     const measurement = await tanMeasurementService.record(req.userId, { deviceId, value, source, sampleCollectedAt, validationEvidence });
     await auditLogService.createLog({
@@ -117,11 +139,11 @@ export const getTanMeasurements = async (req: AuthenticatedRequest, res: Respons
     if (requestedDevice) {
       const allowed = req.userRole === 'admin'
         ? await deviceService.getActiveDevice(requestedDevice)
-        : await deviceService.verifyOwnership(req.userId, requestedDevice);
+        : await verifyDeviceAccess(req.userId, requestedDevice, req.userRole);
       if (!allowed) { sendError(res, 403, 'Device must be active and available to the authenticated user'); return; }
       deviceIds = [requestedDevice];
     } else if (req.userRole !== 'admin') {
-      deviceIds = (await deviceService.listByUser(req.userId)).filter((device) => device.isActive).map((device) => device.deviceId);
+      deviceIds = (await listAccessibleDevices(req.userId, req.userRole)).map((device) => device.deviceId);
     }
     const limit = typeof req.query.limit === 'number' ? req.query.limit : Number(req.query.limit ?? 30);
     const measurements = await tanMeasurementService.list(deviceIds, limit);
@@ -216,13 +238,32 @@ export const getAlerts = (req: AuthenticatedRequest, res: Response): void => {
   void (async () => {
     try {
     const limit = parseInt(req.query.limit as string, 10) || 50;
-    const deviceIds = req.userRole === 'admin' ? undefined : (req.userId ? (await deviceService.listByUser(req.userId)).filter((device) => device.isActive).map((device) => device.deviceId) : []);
+    const deviceIds = req.userId ? await accessibleDeviceIds(req.userId, req.userRole) : [];
     const alerts = await alertService.getAlerts(limit, undefined, deviceIds);
     sendSuccess(res, 200, 'Alerts retrieved', alerts);
     } catch (error) {
     sendError(res, 500, 'Failed to fetch alerts', error instanceof Error ? error.message : 'Unknown error');
     }
   })();
+};
+
+export const getThresholdBands = async (_req: Request, res: Response): Promise<void> => {
+  sendSuccess(res, 200, 'Threshold bands', await loadThresholdBands());
+};
+
+export const saveThresholdBandsHandler = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const bands = req.body as ThresholdBands;
+    const issue = thresholdBandIssue(bands);
+    if (issue) {
+      sendError(res, 400, issue);
+      return;
+    }
+    sendSuccess(res, 200, 'Thresholds saved', await saveThresholdBands(bands));
+  } catch (error) {
+    logger.error('Failed to save threshold bands', error);
+    sendError(res, 500, 'Failed to save thresholds');
+  }
 };
 
 export const getThresholds = (_req: Request, res: Response): void => {
@@ -260,16 +301,20 @@ export const getDashboardData = async (req: AuthenticatedRequest, res: Response)
     const stats = await mapDbStatsToWaterStats(60, deviceIds);
     const alerts = await alertService.getAlerts(10, undefined, deviceIds);
     const thresholds = waterQualityService.getThresholds();
+    const thresholdBands = await loadThresholdBands();
     const predictive = await predictiveAnalyticsService.getWarningCard(60);
     const predictionHistory = await predictionLogService.getRecentLogs(30, deviceIds);
     const smsLogs = await smsLogService.getRecentLogs(15, deviceIds);
+    const riskAssessment = await riskAssessmentService.assess(deviceIds).catch(() => null);
 
     const dashboardData = {
       latest,
       stats,
       recentAlerts: alerts,
       thresholds,
+      thresholdBands,
       predictiveWarning: predictive,
+      riskAssessment,
       predictionHistory,
       smsLogs,
       timestamp: new Date(),

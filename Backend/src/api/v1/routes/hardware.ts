@@ -6,25 +6,35 @@ import { validateBody } from '../../../middleware/validate';
 import { hardwareCommandSchema, hardwareSyncSchema } from '../../../services/hardwareProtocol';
 import { hardwareService } from '../../../services/hardwareService';
 import { DeviceStopPendingError } from '../../../services/hardwareControlLock';
-import { deviceService } from '../../../services/device.service';
+import { resolveCommandOwnerUserId } from '../../../services/deviceAccess';
+import { STAFF_HARDWARE_ACTIONS } from '../../../services/userRoles';
 import { auditLogService } from '../../../services/auditLog.service';
 import { sendError, sendSuccess } from '../../../utils/response';
 import { mqttService } from '../../../services/mqttService';
 
 const router = Router();
-router.post('/hardware/commands', authenticateToken, requireRole(['admin', 'farmer']), validateBody(hardwareCommandSchema),
+router.post('/hardware/commands', authenticateToken, requireRole(['admin', 'farmer', 'staff']), validateBody(hardwareCommandSchema),
   async (req: AuthenticatedRequest, res) => {
-    if (config.mqtt.publicTelemetryOnly || !config.mqtt.actuatorCommandsEnabled) {
-      sendError(res, 503, 'Generic hardware commands are disabled in public development mode'); return;
+    if (!config.mqtt.actuatorCommandsEnabled) {
+      sendError(res, 503, 'Hardware commands are disabled on the server (MQTT_ACTUATOR_COMMANDS_ENABLED)'); return;
     }
-    const { deviceId, action, durationMs } = req.body;
+    // Public-dev delivers signed, expiring, replay-checked commands (the same
+    // channel feeding uses), so only refuse when that channel is down.
+    if (config.mqtt.publicTelemetryOnly && !mqttService.isActuatorCommandChannelConnected()) {
+      sendError(res, 503, 'Command was not sent because the MQTT control channel to the device is unavailable'); return;
+    }
+    const { deviceId, action, durationMs, param } = req.body;
     try {
-      if (!req.userId || !(await deviceService.verifyOwnership(req.userId, deviceId))) { sendError(res, 403, 'Device is not owned/active'); return; }
-      const command = await hardwareService.queue(req.userId, deviceId, action, durationMs);
+      if (req.userRole === 'staff' && !STAFF_HARDWARE_ACTIONS.has(String(action))) {
+        sendError(res, 403, 'Staff accounts can only drain, fill, run exchange, or stop the pumps'); return;
+      }
+      const ownerUserId = req.userId ? await resolveCommandOwnerUserId(req.userId, deviceId, req.userRole) : null;
+      if (!req.userId || !ownerUserId) { sendError(res, 403, 'Device is not owned/active'); return; }
+      const command = await hardwareService.queue(ownerUserId, deviceId, action, durationMs, param);
       const published = await mqttService.dispatchHardwareCommand({ id: command.id, deviceId, source: 'hardware', action,
-        durationMs, expiresAt: command.expiresAt });
+        durationMs, param, expiresAt: command.expiresAt });
       await auditLogService.createLog({ userId: req.userId, deviceId, action: 'HARDWARE_COMMAND', status: 'SUCCESS',
-        ipAddress: req.ip, metadata: { commandId: command.id, action, durationMs } });
+        ipAddress: req.ip, metadata: { commandId: command.id, action, durationMs, ownerUserId, ...(param ? { param } : {}) } });
       sendSuccess(res, 202, published ? 'Command queued; awaiting device acknowledgment' : 'Command queued; device acknowledgment pending',
         { id: command.id, commandId: command.id, action: command.action, status: command.status, result: command.result,
           expiresAt: command.expiresAt, published });
@@ -33,11 +43,12 @@ router.post('/hardware/commands', authenticateToken, requireRole(['admin', 'farm
       sendError(res, 503, 'Unable to queue hardware command');
     }
   });
-router.get('/hardware/state', authenticateToken, requireRole(['admin', 'farmer']), async (req: AuthenticatedRequest, res) => {
+router.get('/hardware/state', authenticateToken, requireRole(['admin', 'farmer', 'staff']), async (req: AuthenticatedRequest, res) => {
   const deviceId = typeof req.query.deviceId === 'string' ? req.query.deviceId : '';
   try {
-    if (!req.userId || !(await deviceService.verifyOwnership(req.userId, deviceId))) { sendError(res, 403, 'Device is not owned/active'); return; }
-    const state = await hardwareService.getState(req.userId, deviceId);
+    const ownerUserId = req.userId ? await resolveCommandOwnerUserId(req.userId, deviceId, req.userRole) : null;
+    if (!req.userId || !ownerUserId) { sendError(res, 403, 'Device is not owned/active'); return; }
+    const state = await hardwareService.getState(ownerUserId, deviceId);
     const telemetryOnline = mqttService.isTelemetryDeviceOnline(deviceId);
     sendSuccess(res, 200, 'Last reported hardware state', {
       ...state,

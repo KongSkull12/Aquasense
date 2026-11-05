@@ -322,8 +322,8 @@ bool MqttManager::publishReadings(const SensorReadings& reading) {
         timestampsValid = turbidityTimestampValid && timestampsValid;
         sensorTimestamps["turbidity"] = turbidityAt;
         turbidity["connected"] = reading.turbidityConnected;
-        const bool turbidityUsable = reading.turbidityConnected && reading.turbidityValid &&
-                                     isfinite(reading.turbidityRaw) && turbidityTimestampValid;
+        const bool turbidityReported = isfinite(reading.turbidityRaw) && turbidityTimestampValid;
+        const bool turbidityUsable = reading.turbidityConnected && reading.turbidityValid && turbidityReported;
         turbidity["valid"] = turbidityUsable;
         turbidity["sampleAgeMs"] = uint32_t(currentMonoMs - reading.turbidityDiagnostics.sampledAtMs);
         turbidity["rawAdc"] = reading.turbidityDiagnostics.rawAdc;
@@ -332,9 +332,31 @@ bool MqttManager::publishReadings(const SensorReadings& reading) {
         turbidity["adcMaximum"] = reading.turbidityDiagnostics.maximum;
         turbidity["adcLast"] = reading.turbidityDiagnostics.last;
         turbidity["clippedSamples"] = reading.turbidityDiagnostics.clipped;
-        if (turbidityUsable) frame["turbidity"] = reading.turbidityRaw;
+        if (turbidityReported) frame["turbidity"] = reading.turbidityRaw;
         else frame["turbidity"] = nullptr;
         frame["turbidityUnit"] = "NTU";
+
+        JsonObject ultrasonic = sensors.createNestedObject("ultrasonic");
+        char ultrasonicAt[25] = {};
+        const bool ultrasonicTimestampValid = isoTimestampAtAge(currentUtcMs, currentMonoMs,
+            reading.ultrasonicSampledAtMs, ultrasonicAt, sizeof(ultrasonicAt));
+        timestampsValid = ultrasonicTimestampValid && timestampsValid;
+        sensorTimestamps["ultrasonic"] = ultrasonicAt;
+        const bool ultrasonicReported = isfinite(reading.tankDistanceCm) &&
+            reading.tankDistanceCm > 0.0f && reading.tankDistanceCm <= 800.0f &&
+            isfinite(reading.tankLevelPercent) && reading.tankLevelPercent >= 0.0f &&
+            reading.tankLevelPercent <= 100.0f && ultrasonicTimestampValid;
+        const bool ultrasonicUsable = reading.ultrasonicConnected && reading.ultrasonicValid && ultrasonicReported;
+        ultrasonic["connected"] = reading.ultrasonicConnected;
+        ultrasonic["valid"] = ultrasonicUsable;
+        ultrasonic["sampleAgeMs"] = uint32_t(currentMonoMs - reading.ultrasonicSampledAtMs);
+        if (ultrasonicReported) {
+            frame["tankDistanceCm"] = reading.tankDistanceCm;
+            frame["tankLevelPercent"] = reading.tankLevelPercent;
+        } else {
+            frame["tankDistanceCm"] = nullptr;
+            frame["tankLevelPercent"] = nullptr;
+        }
 
         frameOverflowed = frame.overflowed();
         if (timestampsValid && !frameOverflowed) {

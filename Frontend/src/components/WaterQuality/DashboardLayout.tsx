@@ -1,171 +1,211 @@
-import { useState } from 'react';
-import { NavLink, Outlet, useNavigate } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { DashboardIcon } from './DashboardUi';
+import { getDashboardProfile } from './dashboardProfile';
 import { apiClient } from '../../services/apiClient';
+import { API_BASE_URL } from '../../config/runtime';
+import { canAccessDashboardPath, isStaffRole, readSessionUser, readUserRole, staffHomePath } from '../../auth/session';
 import logo from '../../assets/images/AquaSense_Logo.png';
 
-const linkBase = 'flex items-center gap-3 w-full rounded-xl px-3 py-2.5 text-left text-sm font-medium transition';
-const linkActive = 'bg-blue-50 text-blue-700 shadow-[0_0_0_1px_rgba(37,99,235,0.15)]';
-const linkInactive = 'text-gray-500 hover:bg-gray-50 hover:text-gray-700';
+type NavIcon = Parameters<typeof DashboardIcon>[0]['name'];
+type Release = { version: string; commit: string | null };
+
+const formatRelease = (release: Release | null): string =>
+  release ? `v${release.version}${release.commit ? ` · ${release.commit}` : ''}` : 'unknown';
+
+const appRelease: Release = { version: __APP_VERSION__, commit: __APP_COMMIT__ || null };
+
+const allNavItems: Array<{ to: string; label: string; icon: NavIcon }> = [
+  { to: '/dashboard/overview', label: 'Overview', icon: 'home' },
+  { to: '/dashboard/parameters', label: 'Parameters', icon: 'chart' },
+  { to: '/dashboard/thresholds', label: 'Thresholds', icon: 'limits' },
+  { to: '/dashboard/prediction', label: 'Prediction model', icon: 'model' },
+  { to: '/dashboard/ammonia', label: 'Ammonia calculator', icon: 'flask' },
+  { to: '/dashboard/feeding', label: 'Feeding', icon: 'feed' },
+  { to: '/dashboard/water-change', label: 'Water change', icon: 'drain' },
+  { to: '/dashboard/aerator', label: 'Aerator', icon: 'aerator' },
+  { to: '/dashboard/alerts', label: 'Alerts & logs', icon: 'bell' },
+  { to: '/dashboard/sms', label: 'SMS alerts', icon: 'sms' },
+  { to: '/dashboard/calibration', label: 'Calibration', icon: 'pulse' },
+  { to: '/dashboard/firmware', label: 'Firmware update', icon: 'chip' },
+  { to: '/dashboard/settings', label: 'Settings', icon: 'settings' },
+];
+
+const readUserLabel = (): string => {
+  const user = readSessionUser();
+  return user?.fullName || user?.name || user?.email || 'Signed in';
+};
 
 export const DashboardLayout: React.FC = () => {
   const navigate = useNavigate();
+  const location = useLocation();
   const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [profile, setProfile] = useState(getDashboardProfile());
+  const [apiRelease, setApiRelease] = useState<Release | null>(null);
+  const userLabel = readUserLabel();
+  const role = readUserRole();
+  const navItems = allNavItems.filter((item) => canAccessDashboardPath(item.to, role));
 
-  const closeMenu = () => setIsMenuOpen(false);
+  useEffect(() => {
+    if (isStaffRole(role) && !canAccessDashboardPath(location.pathname, role)) {
+      navigate(staffHomePath, { replace: true });
+    }
+  }, [location.pathname, navigate, role]);
+
+  // Show which backend release this dashboard is talking to, next to its own build.
+  useEffect(() => {
+    let active = true;
+    fetch(`${API_BASE_URL}/health`, { cache: 'no-store', headers: { Accept: 'application/json' } })
+      .then((response) => (response.ok ? response.json() : null))
+      .then((body: { data?: { release?: Release } } | null) => {
+        if (active && body?.data?.release) setApiRelease(body.data.release);
+      })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    const refreshProfile = () => setProfile(getDashboardProfile());
+    window.addEventListener('farmerProfileUpdated', refreshProfile);
+    return () => window.removeEventListener('farmerProfileUpdated', refreshProfile);
+  }, []);
+
+  // Close the phone menu after navigating and on Escape.
+  useEffect(() => { setIsMenuOpen(false); }, [location.pathname]);
+  useEffect(() => {
+    if (!isMenuOpen) return;
+    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') setIsMenuOpen(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [isMenuOpen]);
 
   const handleLogout = async () => {
-    closeMenu();
+    setIsMenuOpen(false);
     try {
       await apiClient.logout();
-    } finally {
-      localStorage.removeItem('user');
+    } catch {
+      // Leave anyway: the local session is cleared even if the server is unreachable.
     }
-    navigate('/login');
+    navigate('/login', { replace: true });
   };
 
-  return (
-    <div className="min-h-screen bg-[#eef2f7] text-gray-800 lg:h-screen lg:overflow-hidden">
-      <div className="min-h-screen lg:grid lg:h-screen lg:grid-cols-[260px_1fr] lg:overflow-hidden">
-        <div className="sticky top-0 z-30 flex items-center justify-between border-b border-gray-200 bg-white p-4 lg:hidden">
-          <div className="flex items-center gap-2">
-            <img src={logo} alt="AquaSense" className="h-9 w-9 rounded-full object-cover" />
-            <div>
-              <p className="text-[10px] uppercase tracking-[0.25em] text-blue-600 font-semibold">AquaSense</p>
-              <h1 className="text-base font-bold text-gray-900">Water Quality Console</h1>
-            </div>
-          </div>
+  const currentLabel = navItems.find((item) => location.pathname.startsWith(item.to))?.label ?? 'Dashboard';
+
+  const rail = (
+    <div className="flex h-full flex-col">
+      <div className="flex items-center gap-3 px-5 pb-6 pt-5">
+        <img src={logo} alt="" className="h-9 w-9 rounded-full object-cover ring-1 ring-white/15" />
+        <div className="min-w-0">
+          <p className="text-[15px] font-semibold leading-tight text-white">AquaSense</p>
+          <p className="truncate text-xs text-rail-text">{profile.farmName}</p>
+        </div>
+      </div>
+
+      <nav aria-label="Dashboard" className="flex-1 px-3">
+        <ul className="space-y-0.5">
+          {navItems.map((item) => (
+            <li key={item.to}>
+              <NavLink
+                to={item.to}
+                className={({ isActive }) => `group flex h-10 items-center gap-3 rounded-md px-3 text-sm transition-colors duration-150 ${
+                  isActive ? 'bg-white/[0.09] font-semibold text-white' : 'text-rail-text hover:bg-white/[0.05] hover:text-white'
+                }`}
+              >
+                {({ isActive }) => (
+                  <>
+                    <span className={`[&>svg]:h-[18px] [&>svg]:w-[18px] ${isActive ? 'text-[#9cc6dd]' : 'text-rail-text/80 group-hover:text-white'}`}>
+                      <DashboardIcon name={item.icon} />
+                    </span>
+                    <span>{item.label}</span>
+                  </>
+                )}
+              </NavLink>
+            </li>
+          ))}
+        </ul>
+      </nav>
+
+      <div className="border-t border-white/10 px-5 py-4">
+        <p className="text-xs text-rail-text">Tank</p>
+        <p className="truncate text-sm font-semibold text-white">{profile.tankName}</p>
+        <div className="mt-4 flex items-center justify-between gap-3">
+          <p className="min-w-0 truncate text-xs text-rail-text" title={userLabel}>{userLabel}</p>
           <button
             type="button"
-            onClick={() => setIsMenuOpen(true)}
-            className="inline-flex items-center justify-center rounded-lg border border-gray-200 bg-white p-2 text-gray-600"
-            aria-label="Open dashboard menu"
+            onClick={() => void handleLogout()}
+            className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-white/15 px-2.5 text-xs font-semibold text-white transition-colors hover:bg-white/10"
           >
-            <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M3 6h18M3 12h18M3 18h18" />
+            <svg viewBox="0 0 24 24" className="h-3.5 w-3.5 fill-none stroke-current" strokeWidth="2" aria-hidden="true">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M15 17l5-5-5-5M20 12H9M12 19H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h7" />
             </svg>
+            Log out
           </button>
         </div>
-
-        {isMenuOpen && (
-          <button
-            type="button"
-            className="fixed inset-0 z-30 bg-black/50 lg:hidden"
-            aria-label="Close dashboard menu"
-            onClick={closeMenu}
-          />
-        )}
-
-        <aside
-          className={`fixed inset-y-0 left-0 z-40 w-72 overflow-y-auto border-b border-gray-200 bg-white p-5 transition-transform duration-200 lg:static lg:z-auto lg:flex lg:h-screen lg:w-auto lg:flex-col lg:border-b-0 lg:border-r lg:translate-x-0 ${
-            isMenuOpen ? 'translate-x-0' : '-translate-x-full'
-          }`}
-        >
-          <div className="mb-6">
-            <p className="text-xs uppercase tracking-[0.2em] text-blue-600 font-bold">AquaSense</p>
-            <h1 className="mt-2 text-xl font-bold text-gray-900">Water Quality Console</h1>
-            <p className="mt-1 text-xs text-gray-500">Smart operations panel</p>
-          </div>
-
-          <div className="space-y-1.5">
-            <NavLink
-              to="/dashboard/overview"
-              onClick={closeMenu}
-              className={({ isActive }) => `${linkBase} ${isActive ? linkActive : linkInactive}`}
-            >
-              <svg viewBox="0 0 24 24" className="h-[18px] w-[18px] shrink-0 fill-none stroke-current" strokeWidth="2">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M3 12l9-8 9 8" />
-                <path strokeLinecap="round" strokeLinejoin="round" d="M5 10v10h14V10" />
-              </svg>
-              <span>Overview</span>
-            </NavLink>
-            <NavLink
-              to="/dashboard/parameters"
-              onClick={closeMenu}
-              className={({ isActive }) => `${linkBase} ${isActive ? linkActive : linkInactive}`}
-            >
-              <svg viewBox="0 0 24 24" className="h-[18px] w-[18px] shrink-0 fill-none stroke-current" strokeWidth="2">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M3 3v18h18" />
-                <path strokeLinecap="round" strokeLinejoin="round" d="M7 15l3-4 3 2 4-6" />
-              </svg>
-              <span>Parameters</span>
-            </NavLink>
-            <NavLink
-              to="/dashboard/feeding"
-              onClick={closeMenu}
-              className={({ isActive }) => `${linkBase} ${isActive ? linkActive : linkInactive}`}
-            >
-              <svg viewBox="0 0 24 24" className="h-[18px] w-[18px] shrink-0 fill-none stroke-current" strokeWidth="2">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v18" />
-                <path strokeLinecap="round" strokeLinejoin="round" d="M5 8h14" />
-                <path strokeLinecap="round" strokeLinejoin="round" d="M7 13h10" />
-                <path strokeLinecap="round" strokeLinejoin="round" d="M9 18h6" />
-              </svg>
-              <span>Feeding</span>
-            </NavLink>
-            <NavLink
-              to="/dashboard/water-change"
-              onClick={closeMenu}
-              className={({ isActive }) => `${linkBase} ${isActive ? linkActive : linkInactive}`}
-            >
-              <svg viewBox="0 0 24 24" className="h-[18px] w-[18px] shrink-0 fill-none stroke-current" strokeWidth="2">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M5 4c0-1 14-1 14 0v9c0 4-14 4-14 0z" />
-                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v6" />
-                <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l3 3 3-3" />
-              </svg>
-              <span>Water Change</span>
-            </NavLink>
-            <NavLink
-              to="/dashboard/aerator"
-              onClick={closeMenu}
-              className={({ isActive }) => `${linkBase} ${isActive ? linkActive : linkInactive}`}
-            >
-              <span className="[&>svg]:h-[18px] [&>svg]:w-[18px] shrink-0">
-                <DashboardIcon name="aerator" />
-              </span>
-              <span>Aerator</span>
-            </NavLink>
-            <NavLink
-              to="/dashboard/alerts"
-              onClick={closeMenu}
-              className={({ isActive }) => `${linkBase} ${isActive ? linkActive : linkInactive}`}
-            >
-              <svg viewBox="0 0 24 24" className="h-[18px] w-[18px] shrink-0 fill-none stroke-current" strokeWidth="2">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M6 9a6 6 0 0 1 12 0c0 7 3 6 3 8H3c0-2 3-1 3-8" />
-                <path strokeLinecap="round" strokeLinejoin="round" d="M10 20h4" />
-              </svg>
-              <span>Alerts & Logs</span>
-            </NavLink>
-            <NavLink
-              to="/dashboard/settings"
-              onClick={closeMenu}
-              className={({ isActive }) => `${linkBase} ${isActive ? linkActive : linkInactive}`}
-            >
-              <span className="[&>svg]:h-[18px] [&>svg]:w-[18px] shrink-0">
-                <DashboardIcon name="settings" />
-              </span>
-              <span>Settings</span>
-            </NavLink>
-          </div>
-
-          <button onClick={handleLogout} className="mt-6 flex w-full items-center justify-center gap-2 rounded-lg bg-blue-600 px-3 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-blue-700 transition-colors">
-            <svg viewBox="0 0 24 24" className="h-4 w-4 fill-none stroke-current" strokeWidth="2">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M15 17l5-5-5-5" />
-              <path strokeLinecap="round" strokeLinejoin="round" d="M20 12H9" />
-              <path strokeLinecap="round" strokeLinejoin="round" d="M12 19H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h7" />
-            </svg>
-            <span>Logout</span>
-          </button>
-
-          <div className="mt-auto pt-6 flex justify-center lg:flex-1 lg:items-end">
-            <img src={logo} alt="AquaSense mascot" className="h-24 w-24 rounded-full object-cover shadow-md ring-4 ring-gray-50" />
-          </div>
-        </aside>
-
-        <main className="p-4 md:p-6 lg:h-screen lg:overflow-y-auto lg:p-6">
-          <Outlet />
-        </main>
+        <p className="mt-3 text-[11px] leading-4 text-rail-text/70 tabular-nums">
+          App {formatRelease(appRelease)}
+          <br />
+          API {formatRelease(apiRelease)}
+        </p>
       </div>
+    </div>
+  );
+
+  return (
+    <div className="min-h-screen bg-white lg:grid lg:h-screen lg:grid-cols-[240px_minmax(0,1fr)] lg:overflow-hidden">
+      {/* Phone and tablet top bar */}
+      <div className="sticky top-0 z-30 flex h-14 items-center justify-between gap-3 bg-rail px-4 lg:hidden">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <img src={logo} alt="" className="h-8 w-8 rounded-full object-cover" />
+          <div className="min-w-0 leading-tight">
+            <p className="truncate text-sm font-semibold text-white">{currentLabel}</p>
+            <p className="truncate text-xs text-rail-text">{profile.tankName}</p>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={() => setIsMenuOpen(true)}
+          className="inline-flex h-10 w-10 items-center justify-center rounded-md text-white hover:bg-white/10"
+          aria-label="Open menu"
+          aria-expanded={isMenuOpen}
+          aria-controls="dashboard-rail"
+        >
+          <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+            <path strokeLinecap="round" d="M4 7h16M4 12h16M4 17h16" />
+          </svg>
+        </button>
+      </div>
+
+      {/* Scrim for the phone menu */}
+      <div
+        className={`fixed inset-0 z-40 bg-ink/40 transition-opacity duration-200 lg:hidden ${isMenuOpen ? 'opacity-100' : 'pointer-events-none opacity-0'}`}
+        onClick={() => setIsMenuOpen(false)}
+        aria-hidden="true"
+      />
+
+      <aside
+        id="dashboard-rail"
+        className={`fixed inset-y-0 left-0 z-50 w-[272px] overflow-y-auto bg-rail transition-transform duration-200 ease-out lg:static lg:z-auto lg:w-auto lg:translate-x-0 ${
+          isMenuOpen ? 'translate-x-0' : '-translate-x-full'
+        }`}
+      >
+        <button
+          type="button"
+          onClick={() => setIsMenuOpen(false)}
+          className="absolute right-3 top-4 inline-flex h-9 w-9 items-center justify-center rounded-md text-rail-text hover:bg-white/10 hover:text-white lg:hidden"
+          aria-label="Close menu"
+        >
+          <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+            <path strokeLinecap="round" d="M6 6l12 12M18 6 6 18" />
+          </svg>
+        </button>
+        {rail}
+      </aside>
+
+      <main className="min-w-0 px-4 pb-10 pt-5 sm:px-6 lg:h-screen lg:overflow-y-auto lg:px-8 lg:pt-7">
+        <div className="mx-auto max-w-[1440px]">
+          <Outlet />
+        </div>
+      </main>
     </div>
   );
 };

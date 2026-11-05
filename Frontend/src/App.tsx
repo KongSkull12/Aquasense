@@ -14,7 +14,13 @@ import DashboardFeedingPage from './pages/dashboard/DashboardFeedingPage';
 import DashboardWaterChangePage from './pages/dashboard/DashboardWaterChangePage';
 import DashboardAeratorPage from './pages/dashboard/DashboardAeratorPage';
 import DashboardAlertsPage from './pages/dashboard/DashboardAlertsPage';
+import DashboardCalibrationPage from './pages/dashboard/DashboardCalibrationPage';
 import DashboardSettingsPage from './pages/dashboard/DashboardSettingsPage';
+import DashboardPredictionPage from './pages/dashboard/DashboardPredictionPage';
+import DashboardSmsPage from './pages/dashboard/DashboardSmsPage';
+import DashboardThresholdsPage from './pages/dashboard/DashboardThresholdsPage';
+import DashboardAmmoniaPage from './pages/dashboard/DashboardAmmoniaPage';
+import DashboardFirmwarePage from './pages/dashboard/DashboardFirmwarePage';
 import { apiClient } from './services/apiClient';
 import './App.css';
 
@@ -37,8 +43,8 @@ const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
 
   if (status === 'checking') {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-white">
-        <p className="text-gray-700 text-sm font-semibold">Checking session...</p>
+      <div className="flex min-h-screen items-center justify-center bg-white" role="status">
+        <p className="text-sm text-ink-2">Checking your session…</p>
       </div>
     );
   }
@@ -71,12 +77,8 @@ function App(): JSX.Element {
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-white">
-        <div className="text-center">
-          <div className="text-6xl animate-bounce mb-4">🌊</div>
-          <p className="text-gray-900 text-xl font-semibold">Loading...</p>
-          <p className="text-gray-600 text-sm mt-2">Initializing AquaSense</p>
-        </div>
+      <div className="flex min-h-screen items-center justify-center bg-white" role="status">
+        <p className="text-sm text-ink-2">Loading AquaSense…</p>
       </div>
     );
   }
@@ -103,10 +105,16 @@ function App(): JSX.Element {
           <Route index element={<Navigate to="/dashboard/overview" replace />} />
           <Route path="overview" element={<DashboardOverviewPage />} />
           <Route path="parameters" element={<DashboardParametersPage />} />
+          <Route path="thresholds" element={<DashboardThresholdsPage />} />
+          <Route path="prediction" element={<DashboardPredictionPage />} />
+          <Route path="ammonia" element={<DashboardAmmoniaPage />} />
           <Route path="feeding" element={<DashboardFeedingPage />} />
           <Route path="water-change" element={<DashboardWaterChangePage />} />
           <Route path="aerator" element={<DashboardAeratorPage />} />
           <Route path="alerts" element={<DashboardAlertsPage />} />
+          <Route path="sms" element={<DashboardSmsPage />} />
+          <Route path="calibration" element={<DashboardCalibrationPage />} />
+          <Route path="firmware" element={<DashboardFirmwarePage />} />
           <Route path="settings" element={<DashboardSettingsPage />} />
         </Route>
       </Routes>

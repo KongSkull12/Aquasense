@@ -1,0 +1,32 @@
+<!doctype html><html><head><meta charset="utf-8">
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400..700&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0}
+body{width:1440px;height:900px;overflow:hidden;font-family:Archivo,sans-serif;background:#f7f8f6;color:#16232b;font-variant-numeric:tabular-nums}
+header{height:60px;background:#16232b;color:#fff;display:flex;align-items:center;padding:0 28px;gap:32px;font-size:14px}
+header b{font-size:17px;margin-right:24px}header .on{border-bottom:2px solid #e9c46a;padding-bottom:4px}
+header .tank{margin-left:auto;border:1px solid #3a4a55;padding:6px 12px;border-radius:6px}
+main{padding:28px;display:grid;grid-template-columns:1fr 380px;gap:24px}
+h1{font-size:24px;margin-bottom:4px}.sub{color:#5a6a73;font-size:13px;margin-bottom:22px}
+.param{background:#fff;border:1px solid #e1e5e2;border-radius:8px;padding:16px 20px;margin-bottom:14px;display:grid;grid-template-columns:180px 1fr 140px;gap:20px;align-items:center}
+.name{font-weight:600;font-size:15px}.trust{font-size:12px;color:#a0522d;margin-top:4px}
+.ladder{display:flex;height:22px;position:relative}
+.ladder span{flex:1;border-right:2px solid #fff}
+.mark{position:absolute;top:-6px;width:3px;height:34px;background:#16232b}
+.ticks{display:flex;justify-content:space-between;font-size:11px;color:#5a6a73;margin-top:6px}
+.v{font-size:30px;font-weight:600;text-align:right}.v small{font-size:14px;color:#5a6a73}
+.card{background:#fff;border:1px solid #e1e5e2;border-radius:8px;padding:18px 20px;margin-bottom:14px;font-size:13px}
+.card h3{font-size:15px;margin-bottom:10px}.row{display:flex;justify-content:space-between;padding:7px 0;border-top:1px solid #eef0ee}
+</style></head><body>
+<header><b>AquaSense</b><span class="on">Overview</span><span>Parameters</span><span>Feeding</span><span>Water change</span><span>Aerator</span><span>Alerts</span><span>Settings</span><span class="tank">Main Tank ▾</span></header>
+<main><div>
+<h1>Water right now</h1><div class="sub">Live · 10:23:46 PM · 3 of 5 sensors reporting</div>
+<div class="param"><div><div class="name">Temperature</div><div class="trust">Calibration required</div></div><div><div class="ladder"><span style="background:#3d5a80"></span><span style="background:#2a9d8f"></span><span style="background:#7fb069"></span><span style="background:#7fb069"></span><span style="background:#e9c46a"></span><span style="background:#e76f51"></span><i class="mark" style="left:44%"></i></div><div class="ticks"><span>20</span><span>24</span><span>26</span><span>29</span><span>32</span><span>36</span></div></div><div class="v">26.5<small> °C</small></div></div>
+<div class="param"><div><div class="name">pH</div><div class="trust">Calibration required</div></div><div><div class="ladder"><span style="background:#e9c46a"></span><span style="background:#d4c25a"></span><span style="background:#7fb069"></span><span style="background:#2a9d8f"></span><span style="background:#3d5a80"></span><span style="background:#5e4b8b"></span><i class="mark" style="left:48%"></i></div><div class="ticks"><span>6.0</span><span>6.5</span><span>7.0</span><span>7.5</span><span>8.0</span><span>8.5</span></div></div><div class="v">7.39</div></div>
+<div class="param"><div><div class="name">Turbidity</div><div class="trust">Calibration required</div></div><div><div class="ladder"><span style="background:#dfe7e2"></span><span style="background:#c9d4bf"></span><span style="background:#b3b98f"></span><span style="background:#9a9a6a"></span><span style="background:#7d7650"></span><span style="background:#5e563a"></span><i class="mark" style="left:30%"></i></div><div class="ticks"><span>0</span><span>10</span><span>20</span><span>40</span><span>60</span><span>100</span></div></div><div class="v">18.5<small> NTU</small></div></div>
+<div class="param"><div><div class="name">ORP</div><div class="trust">No samples reported</div></div><div><div class="ladder" style="opacity:.25"><span style="background:#999"></span><span style="background:#aaa"></span><span style="background:#bbb"></span></div></div><div class="v" style="color:#aab">—</div></div>
+<div class="param"><div><div class="name">Tank level</div><div class="trust">No samples reported</div></div><div><div class="ladder" style="opacity:.25"><span style="background:#999"></span><span style="background:#aaa"></span><span style="background:#bbb"></span></div></div><div class="v" style="color:#aab">—</div></div>
+</div><div>
+<div class="card"><h3>Risk assessment</h3><div class="row"><span>Model</span><span>Not commissioned</span></div><div class="row"><span>Calibrated</span><span>0 of 3</span></div><div class="row"><span>TAN</span><span>Needs a measurement</span></div></div>
+<div class="card"><h3>Feeding</h3><div class="row"><span>Next feed</span><span>6:00 AM · 40 g</span></div></div>
+</div></main></body></html>

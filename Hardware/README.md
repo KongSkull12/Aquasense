@@ -1,155 +1,73 @@
-# AquaSense hardware
+# AquaSense hardware firmware
 
-ESP32 Arduino firmware built with PlatformIO in VS Code. The integrated
-`water-monitor` handles sensors, LCD, DS3231, servo feeder, buzzer and relay
-control. User-confirmed wiring maps relay K3/K4/K2 to GPIO26/27/25 for fill,
-drain and aerator; GPIO33 is unused. Relay control remains
-disabled by a closed commissioning gate. Firmware polarity is configured
-active-LOW from the reported module intent, but physical trigger behavior,
-channel mapping and safe OFF behavior remain unverified.
+`src/main.cpp` is the active water-monitor firmware. It owns sensor sampling,
+validation, LCD updates, connection progress and the main loop. PlatformIO builds
+it as the `water-monitor` environment for an ESP32 Dev Module.
 
-## Layout
+## PlatformIO target
 
-```text
-Hardware/
-  platformio.ini              Isolated targets and pinned libraries
-  include/
-    config/                   Pins, network settings, calibration, thresholds,
-                              actuator timing and commissioning gates
-    models/                   SensorReadings, SystemState, Command, FeedingSchedule
-    secrets/                  Secrets.example.h and ignored Secrets.h
-  src/
-    main.cpp                  Composition and cooperative update loop
-    sensors/                  SensorManager, SensorConversions
-    actuators/                RelayController, FeedingManager, BuzzerManager
-    controllers/              WaterManager, AeratorManager, SystemController
-    communication/            WifiManager, MqttManager, BackendDeviceClient
-    display/                  LcdManager
-    services/                 TimeManager (NTP + DS3231)
-    feeder/                   Preserved standalone feeder
-    water-quality/            Preserved JSON sketch; pH is diagnostic-only,
-                              turbidity is raw ADC, and DO is not acquired
-    water-quality-legacy/     Preserved three-sensor firmware
-  lib/                        Future independently reusable project libraries
-  test/                       Compile-time checks and acceptance guide
-  reference/                  Sanitized original Arduino sketch
-  docs/                       Wiring, migration, backend contract and deployment
-```
-
-`BackendDeviceClient` provides authenticated schedule sync and state heartbeat.
-Backend authorizes commands and publishes signed, non-retained MQTT messages;
-`MqttManager` validates them and publishes correlated state acknowledgements.
-Hardware owns local interlocks/deadlines. Bounded queues pass snapshots between
-workers and main.
-
-## Targets and build
-
-| Environment | Purpose | Configuration |
-| --- | --- | --- |
-| `water-monitor` | Integrated ORP monitoring and hardware control | `include/config/`, `include/secrets/` |
-| `feeder` | Original HTTP/NTP servo feeder | `src/feeder/` |
-| `water-quality` | JSON telemetry: temperature, raw turbidity and raw pH diagnostic; no DO | `src/water-quality/` |
-| `water-quality-legacy` | Original temperature/pH/raw turbidity | `src/water-quality-legacy/` |
-
-Open/add Hardware in PlatformIO IDE for VS Code. Run from the repository root:
+From the repository root:
 
 ```powershell
-pio run -d Hardware -e water-monitor
 pio run -d Hardware
+pio run -d Hardware -e water-monitor
 pio device list
 ```
 
-Upload one target per board. Do not run standalone and integrated feeders with
-the same backend device ID. The integrated servo uses GPIO18 and buzzer GPIO19;
-the separate legacy feeder retains GPIO13.
-Board baseline is classic `esp32dev` with 4 MB flash; confirm the actual module.
+The active target includes `WifiManager` and `MqttManager`. It uses the pinned
+libraries in `platformio.ini`. `BackendDeviceClient` remains in the tree but is
+not part of this monitor build; sensor readings reach the backend through MQTT.
 
-Existing credentials remain in ignored `include/secrets/Secrets.h`. Fresh clone:
+## MQTT and backend
 
-```powershell
-if (-not (Test-Path Hardware/include/secrets/Secrets.h)) {
-    Copy-Item Hardware/include/secrets/Secrets.example.h Hardware/include/secrets/Secrets.h
-}
-```
+`WifiManager` reads Wi-Fi credentials from the ignored
+`include/secrets/Secrets.h`. `MqttManager` uses the broker, device ID and topic
+namespaces in `include/config/DeviceConfig.h`, and signs timestamped telemetry
+frames with `Secrets::DEVICE_KEY`. The checked-in public development profile is
+configured for `broker.hivemq.com:1883`, namespace `aquasense-dev`, and device
+ID `esp32-feeder-1`. These must match the Backend public-dev profile and its
+`DEVICE_KEYS` entry. The key itself is never stored in this README.
 
-- Secrets.h: WiFi/MQTT credentials and backend DEVICE_KEY.
-- DeviceConfig.h: device ID, API URL, HTTPS root CA, device-ID-derived MQTT client ID, broker and timing.
-- Pins.h: diagram-backed relay signal assignments and sensor GPIOs.
-- ActuatorConfig.h: tested polarity, measured pump limits, servo/buzzer behavior and automation gates.
-- CalibrationConfig.h: pH/ORP conversions and smoothing.
-- Thresholds.h: plausibility limits and inactive automation placeholders.
+The firmware starts UTC time synchronization with NTP after Wi-Fi connects.
+Public-dev ingestion accepts the signed, timestamped `.../telemetry/frame`
+publication; unsigned scalar topics are legacy compatibility output and are
+not used as current database readings. A verified frame also supplies the
+backend's public-dev device-online signal. This monitor has no actuators, so it
+rejects signed actuator commands with `rejected_no_actuators`.
 
-Empty device keys disable backend control. Placeholder builds compile but are not
-ready for operating hardware. Follow [backend commissioning](docs/backend-control.md).
+HiveMQ's public endpoint does not encrypt MQTT traffic. HMAC protects frame
+integrity and authenticity when the device key matches Backend configuration;
+it does not provide confidentiality. Do not publish the device key in source,
+logs or screenshots.
 
-## Behavior
+## Sensors and wiring
 
-The integrated water-monitor uses configured per-sensor ADC connection windows
-and conversion settings. It reports pH, temperature, a configured turbidity
-estimate labelled **NTU**, and signed **ORP mV**; ORP does not replace dissolved
-oxygen. The analog conversions have not been physically verified. It sends
-retained per-sensor MQTT values and connection states under `aquasense/`, with
-turbidity on `aquasense/turbidity-ntu` so the backend keeps NTU separate from
-legacy raw ADC. Validate the supplied coefficients against reference solutions
-and the actual analog front ends before relying on readings.
+| Hardware | ESP32 GPIO | Firmware behavior |
+| --- | ---: | --- |
+| pH analog output | 35 | Formula-based estimate; verify coefficients and signal conditioning |
+| Turbidity analog output | 34 | Formula-based NTU estimate; validate against reference samples |
+| ORP analog output | 32 | ORP mV estimate; this is not dissolved oxygen |
+| DS18B20 data | 4 | Temperature via OneWire |
+| LCD SDA / SCL | 21 / 22 | 20x4 I2C LCD at address 0x27 |
 
-Its LCD flow shows a block-progress welcome screen, Wi-Fi and MQTT connection
-progress, then continuously displays four sensor readings on a 20x4 module at
-0x27. It does not rotate to an actuator/network status page. An earlier wiring
-diagram labels a 16x2 module, so verify the installed display dimensions.
+The pasted ultrasonic sensor code is disabled. Its GPIO25 trigger and GPIO26
+echo conflict with the documented aerator and refill relay inputs. Do not
+enable it until the sensor is assigned verified free pins and the echo voltage
+divider is confirmed. This firmware does not drive relays, pumps, feeder servos
+or buzzers.
 
-Pump timing, mutual-exclusion and local deadline logic exists, but pump runs are
-currently inhibited: relay outputs are gated off and configured run limits are
-zero. The software active-LOW setting is not electrical verification. Physical
-reset/OFF bias must be measured before enabling relay outputs; the reported
-K2/K3/K4 mapping is reflected in Pins.h. There is no
-JSN-SR04T, float-switch, or inferred level measurement; water exchange is timed,
-not level-confirmed. Automatic water exchange and temperature-based aeration
-remain disabled until their policies and hardware are commissioned.
+The conversion coefficients and sensor connection windows are firmware
+settings, not proof of calibration. ORP is not a dissolved-oxygen measurement;
+the current backend frame does not include an ultrasonic tank-level reading.
 
-Feeding supports existing manual commands and up to 20 enabled user schedules.
-The servo closes at startup, manual ON is limited to ten seconds, and NVS stores
-schedules and duplicate-prevention records. Scheduling requires valid NTP or a
-previously synchronized battery-backed RTC. Missed minutes are not caught up.
-LCD shows a block-progress welcome screen, connection progress, then sensor
-readings only. The buzzer is held OFF at startup and only alarms on fresh,
-valid readings outside configured sensor alarm bounds. Its alarm thresholds
-are uncommissioned and disabled by default.
+## Local configuration
 
-Existing water-change, aerator and feeding controls use authenticated Backend
-APIs and display backend/device state. A queued command remains pending until a
-device acknowledgement arrives; logical state is not electrical or flow feedback.
+- Keep Wi-Fi credentials, MQTT HMAC key and optional MQTT credentials in the
+  ignored `include/secrets/Secrets.h`.
+- Register device ID `esp32-feeder-1` in the matching Backend profile.
+- Set the same device key in firmware `Secrets::DEVICE_KEY` and Backend
+  `DEVICE_KEYS`; the public-dev profile requires at least 32 characters.
+- Ensure the device has internet access so it can reach HiveMQ and the NTP
+  servers. Frames are not signed or ingested until the system clock is valid.
 
-## Dependencies
-
-Espressif32 **6.10.0** supplies Arduino ESP32 **2.0.17**, WiFi, HTTPClient,
-WiFiClientSecure, Wire, Preferences, SNTP and FreeRTOS.
-
-| Library | Version | Purpose |
-| --- | --- | --- |
-| PubSubClient | 2.8 | MQTT |
-| OneWire | 2.3.8 | DS18B20 bus |
-| DallasTemperature | 3.11.0 | Temperature |
-| LiquidCrystal_I2C (marcoschwartz) | 1.1.4 | LCD |
-| Adafruit RTClib | 2.1.4 | DS3231 |
-| Adafruit BusIO | 1.16.1 | RTClib dependency |
-| ArduinoJson | 6.21.5 | JSON protocols |
-| ESP32Servo | 1.1.2 | Servo; official tagged archive |
-
-Generated files/libraries are ignored. Optionally reuse this machine's cache:
-
-```powershell
-$env:PLATFORMIO_CORE_DIR = (Resolve-Path Hardware/.pio-core).Path
-```
-
-If pio is unavailable, use PlatformIO's terminal or
-`& "$env:USERPROFILE/.platformio/penv/Scripts/platformio.exe"`.
-
-If VS Code shows include-path errors when AquaSense is open as the workspace,
-run `Hardware/scripts/configure_intellisense.py` using PlatformIO's Python.
-See [ESP32 IntelliSense setup](docs/vscode-intellisense.md) for the exact command
-and how to refresh after dependency changes.
-
-Read [migration](docs/water-monitor-migration.md),
-[wiring](docs/wiring-and-protocols.md), [deployment](docs/deployment.md) and
-[tests](test/README.md).
+No firmware upload or physical sensor/relay acceptance is performed by a build.

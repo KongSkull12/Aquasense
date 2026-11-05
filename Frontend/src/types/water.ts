@@ -1,4 +1,4 @@
-import type { HealthSummary, Speciation } from './sensorHealth';
+import type { HealthSummary, Speciation, UltrasonicReading } from './sensorHealth';
 /**
  * Water Quality Types
  * Frontend type definitions for water quality monitoring
@@ -14,6 +14,7 @@ export interface WaterQualityReading {
   doMeasured?: boolean;
   waterQuality?: Record<string,string>;
   sensorHealth?: HealthSummary;
+  tankLevel?: UltrasonicReading | null;
   speciation?: Speciation;
   orp?: number|null;
   turbidityUnit?: string;
@@ -22,6 +23,19 @@ export interface WaterQualityReading {
   location: string;
   status: 'normal' | 'warning' | 'critical';
   connectionState?: 'LIVE' | 'ERROR';
+}
+
+export interface AmmoniaCalculation {
+  temperatureC: number;
+  ph: number;
+  pKa: number;
+  nh3Fraction: number;
+  nh3Percent: number;
+  tan: number | null;
+  nh3N: number | null;
+  tanOrigin: 'measured' | 'calculated' | null;
+  nh3NOrigin: 'measured' | 'calculated' | null;
+  concentrationUnit: 'mg/L as N';
 }
 
 export type TanSource = 'test_kit' | 'laboratory' | 'external_sensor' | 'manual';
@@ -125,6 +139,37 @@ export interface PredictiveWarningCard {
   action: string;
   confidence: number;
   estimatedUnsafeInMinutes: number | null;
+}
+
+export type RiskLevel = 'Low' | 'Moderate' | 'High' | 'Extreme';
+export type RiskTrend = 'Rising' | 'Falling' | 'Stable' | 'Unknown';
+export interface RiskFactor {
+  key: 'dissolvedOxygen' | 'ammonia' | 'temperature' | 'ph' | 'turbidity' | 'orp' | 'violationDuration';
+  label: string;
+  value: number | null;
+  unit: string;
+  points: number;
+  maxPoints: number;
+  available: boolean;
+  provisional: boolean;
+  detail: string;
+}
+/** Mortality-risk scoring + trend assessment from the backend (not field-validated). */
+export interface RiskAssessment {
+  status: 'AVAILABLE' | 'UNAVAILABLE';
+  reason?: string;
+  score: number | null;
+  worstCaseScore: number | null;
+  level: RiskLevel | null;
+  worstCaseLevel: RiskLevel | null;
+  complete: boolean;
+  factors: RiskFactor[];
+  trends: { temperature: RiskTrend; ammonia: RiskTrend; orp: RiskTrend; oxygen: RiskTrend };
+  violationMinutes: number | null;
+  inputsUncalibrated: boolean;
+  validation: 'NOT_FIELD_VALIDATED';
+  readingAt: string | null;
+  computedAt: string;
 }
 
 export interface PredictiveAnalyticsResult {

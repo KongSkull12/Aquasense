@@ -1,36 +1,8 @@
 import React from 'react';
-import { DashboardIcon } from '../../components/WaterQuality/DashboardUi';
 import { useDashboardData } from '../../components/WaterQuality/useDashboardData';
 import type { AlertSeverity, HealthAlert } from '../../types/water';
 import type { SmsLogEntry } from '../../types/sms';
-
-type Tone = 'emerald' | 'amber' | 'cyan' | 'rose' | 'gray';
-
-const toneStyles: Record<Tone, { bg: string; text: string; dot: string; pillBg: string; pillText: string }> = {
-  emerald: { bg: 'bg-emerald-50', text: 'text-emerald-600', dot: 'bg-emerald-500', pillBg: 'bg-emerald-100', pillText: 'text-emerald-700' },
-  amber: { bg: 'bg-amber-50', text: 'text-amber-600', dot: 'bg-amber-500', pillBg: 'bg-amber-100', pillText: 'text-amber-700' },
-  cyan: { bg: 'bg-cyan-50', text: 'text-cyan-600', dot: 'bg-cyan-500', pillBg: 'bg-cyan-100', pillText: 'text-cyan-700' },
-  rose: { bg: 'bg-rose-50', text: 'text-rose-600', dot: 'bg-rose-500', pillBg: 'bg-rose-100', pillText: 'text-rose-700' },
-  gray: { bg: 'bg-gray-100', text: 'text-gray-500', dot: 'bg-gray-400', pillBg: 'bg-gray-100', pillText: 'text-gray-600' },
-};
-
-const Pill = ({ label, tone }: { label: string; tone: Tone }) => (
-  <span className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-semibold whitespace-nowrap ${toneStyles[tone].pillBg} ${toneStyles[tone].pillText}`}>
-    <span className={`h-1.5 w-1.5 rounded-full ${toneStyles[tone].dot}`} />
-    {label}
-  </span>
-);
-
-const MetricTile = ({ label, value, detail, tone, icon }: { label: string; value: string; detail?: string; tone: Tone; icon: React.ReactNode }) => (
-  <div className="bg-white border border-gray-200 shadow-sm rounded-xl p-2.5 flex flex-col gap-1 min-w-0">
-    <div className="flex items-center justify-between gap-2">
-      <span className="text-[9px] font-semibold uppercase tracking-wide text-gray-500 truncate">{label}</span>
-      <span className={`grid h-6 w-6 shrink-0 place-items-center rounded-lg ${toneStyles[tone].bg} ${toneStyles[tone].text}`}>{icon}</span>
-    </div>
-    <p className={`text-base font-bold leading-tight truncate ${toneStyles[tone].text}`}>{value}</p>
-    {detail && <p className="text-[9px] text-gray-400 leading-snug line-clamp-2">{detail}</p>}
-  </div>
-);
+import { EmptyState, PageHead, Panel, StateMark, type MarkState } from '../../components/WaterQuality/Console';
 
 const maskPhone = (phone: string) => {
   if (!phone || phone.length < 7) return 'Hidden';
@@ -44,96 +16,78 @@ const isCriticalAlert = (alert: HealthAlert) => {
   return severity === 'CRITICAL' || severity === 'EMERGENCY';
 };
 
-const getSeverityTone = (severity: AlertSeverity | string): Tone => {
+const getSeverityState = (severity: AlertSeverity | string): MarkState => {
   const normalized = normalizeSeverity(severity);
-  if (normalized === 'EMERGENCY' || normalized === 'CRITICAL') return 'rose';
-  if (normalized === 'WARNING') return 'amber';
-  if (normalized === 'INFO') return 'cyan';
-  return 'gray';
+  if (normalized === 'EMERGENCY' || normalized === 'CRITICAL') return 'alarm';
+  if (normalized === 'WARNING') return 'warn';
+  if (normalized === 'INFO') return 'info';
+  return 'off';
 };
 
-const formatCategory = (alert: HealthAlert) => {
-  const label = alert.category || alert.parameter || 'Water quality';
-  return label
-    .replace(/_/g, ' ')
-    .toLowerCase()
-    .replace(/\b\w/g, (char) => char.toUpperCase());
-};
+const titleCase = (value: string) => value.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (char) => char.toUpperCase());
+
+const formatCategory = (alert: HealthAlert) => titleCase(alert.category || alert.parameter || 'Water quality');
 
 const getAlertTime = (alert: HealthAlert) => alert.createdAt || alert.timestamp || alert.updatedAt || new Date().toISOString();
 
 const getAlertValue = (alert: HealthAlert) => {
   const value = alert.currentValue ?? alert.value;
-  if (value === undefined) return '--';
+  if (value === undefined) return '—';
   return `${value.toFixed(2)}${alert.unit ? ` ${alert.unit}` : ''}`;
 };
 
 const getAlertThreshold = (alert: HealthAlert) => {
   const threshold = alert.thresholdValue ?? alert.threshold;
-  if (threshold === undefined) return '--';
+  if (threshold === undefined) return '—';
   return `${threshold.toFixed(2)}${alert.unit ? ` ${alert.unit}` : ''}`;
 };
 
 const getActionLabel = (alert: HealthAlert) => (alert.action || 'Review tank').replace(/_/g, ' ').toLowerCase();
 
-const EmptyState = ({ title, detail }: { title: string; detail: string }) => (
-  <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 text-center">
-    <p className="text-xs font-semibold text-emerald-600">{title}</p>
-    <p className="mt-1 text-[10px] text-gray-500">{detail}</p>
-  </div>
-);
-
 const AlertRow = ({ alert, showAction = false }: { alert: HealthAlert; showAction?: boolean }) => (
-  <div className="rounded-lg border border-gray-200 bg-gray-50 p-2.5 transition hover:border-gray-300">
-    <div className="flex flex-col gap-1.5 sm:flex-row sm:items-start sm:justify-between">
+  <li className="px-4 py-3.5 sm:px-5">
+    <div className="flex items-start justify-between gap-4">
       <div className="min-w-0">
-        <div className="flex flex-wrap items-center gap-1.5">
-          <p className="text-xs font-semibold text-gray-900">{formatCategory(alert)}</p>
-          <Pill label={normalizeSeverity(alert.severity)} tone={getSeverityTone(alert.severity)} />
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <p className="text-sm font-semibold">{formatCategory(alert)}</p>
+          <StateMark state={getSeverityState(alert.severity)} className="!text-xs">{titleCase(normalizeSeverity(alert.severity))}</StateMark>
         </div>
-        <p className="mt-1 text-[11px] leading-relaxed text-gray-600">{alert.message}</p>
+        <p className="mt-1 text-[13px] leading-relaxed text-ink-2">{alert.message}</p>
       </div>
-      <p className="shrink-0 text-[9px] text-gray-400">{new Date(getAlertTime(alert)).toLocaleTimeString()}</p>
+      <time className="num shrink-0 text-xs text-ink-3" dateTime={new Date(getAlertTime(alert)).toISOString()}>{new Date(getAlertTime(alert)).toLocaleTimeString()}</time>
     </div>
-
-    <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-gray-500">
-      <span>Current: <strong className="font-semibold text-gray-800">{getAlertValue(alert)}</strong></span>
-      <span>Limit: <strong className="font-semibold text-gray-800">{getAlertThreshold(alert)}</strong></span>
-      {alert.status && <span>Status: <strong className="font-semibold text-gray-800">{alert.status}</strong></span>}
-    </div>
-
+    <dl className="num mt-2 flex flex-wrap gap-x-5 gap-y-1 text-xs text-ink-3">
+      <div className="flex gap-1.5"><dt>Current</dt><dd className="font-semibold text-ink">{getAlertValue(alert)}</dd></div>
+      <div className="flex gap-1.5"><dt>Limit</dt><dd className="font-semibold text-ink">{getAlertThreshold(alert)}</dd></div>
+      {alert.status && <div className="flex gap-1.5"><dt>Status</dt><dd className="font-semibold text-ink">{titleCase(alert.status)}</dd></div>}
+    </dl>
     {showAction && (
-      <div className="mt-1.5 rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] text-amber-800">
-        Recommended action: <span className="font-semibold capitalize">{getActionLabel(alert)}</span>
-      </div>
+      <p className="mt-2 text-[13px] text-ink">
+        <span className="text-ink-3">Recommended: </span>
+        <span className="font-semibold">{getActionLabel(alert).replace(/^\w/, (char) => char.toUpperCase())}</span>
+      </p>
     )}
-  </div>
+  </li>
 );
 
-const SmsRow = ({ log }: { log: SmsLogEntry }) => (
-  <div className="flex items-center justify-between gap-3 rounded-lg border border-gray-200 bg-gray-50 p-2.5">
-    <div className="min-w-0">
-      <p className="truncate text-xs font-semibold text-gray-900">{log.category.replace(/_/g, ' ')}</p>
-      <p className="mt-0.5 text-[10px] text-gray-500">{new Date(log.sentAt).toLocaleString()}</p>
-    </div>
-    <div className="shrink-0 text-right">
-      <p className="mb-1 text-[10px] text-gray-500">{maskPhone(log.recipient)}</p>
-      <Pill label={log.deliveryStatus === 'unknown' ? 'Unconfirmed' : (log.deliveryStatus || (log.success ? 'Sent' : 'Failed'))} tone={log.success ? 'emerald' : ['pending', 'retrying', 'unknown'].includes(log.deliveryStatus || '') ? 'amber' : 'rose'} />
-    </div>
-  </div>
-);
+const SmsRow = ({ log }: { log: SmsLogEntry }) => {
+  const pending = ['pending', 'retrying', 'unknown'].includes(log.deliveryStatus || '');
+  const label = log.deliveryStatus === 'unknown' ? 'Unconfirmed' : (log.deliveryStatus || (log.success ? 'Sent' : 'Failed'));
+  return (
+    <li className="flex items-center justify-between gap-4 px-4 py-3 sm:px-5">
+      <div className="min-w-0">
+        <p className="truncate text-sm font-semibold">{titleCase(log.category)}</p>
+        <p className="num mt-0.5 text-xs text-ink-3">{new Date(log.sentAt).toLocaleString()} · {maskPhone(log.recipient)}</p>
+      </div>
+      <StateMark state={log.success ? 'ok' : pending ? 'warn' : 'alarm'} className="shrink-0 !text-xs">{label.charAt(0).toUpperCase() + label.slice(1)}</StateMark>
+    </li>
+  );
+};
 
-const PanelShell = ({ title, tone, badge, children }: { title: string; tone: Tone; badge: React.ReactNode; children: React.ReactNode }) => (
-  <div className="rounded-xl border border-gray-200 bg-white shadow-sm p-3 flex flex-col min-h-0">
-    <div className="mb-2 shrink-0 flex items-center justify-between gap-2">
-      <h3 className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-gray-500">
-        <span className={`h-1.5 w-1.5 rounded-full ${toneStyles[tone].dot}`} />
-        {title}
-      </h3>
-      {badge}
-    </div>
-    <div className="flex-1 min-h-[8rem] lg:min-h-0 overflow-y-auto space-y-2 pr-1">{children}</div>
-  </div>
+const ListPanel = ({ title, count, children }: { title: string; count: string; children: React.ReactNode }) => (
+  <Panel title={title} actions={<span className="num text-xs text-ink-3">{count}</span>} bodyClassName="max-h-[460px] overflow-y-auto">
+    {children}
+  </Panel>
 );
 
 const DashboardAlertsPage: React.FC = () => {
@@ -146,65 +100,68 @@ const DashboardAlertsPage: React.FC = () => {
   const pendingSms = smsLogs.filter((log) => ['pending', 'retrying', 'unknown'].includes(log.deliveryStatus || '')).length;
   const latestCritical = critical[0];
 
+  const summary: Array<{ label: string; value: number; detail: string; state: MarkState }> = [
+    { label: 'Active alerts', value: active.length, detail: active.length ? 'Needs review' : 'No active issues', state: active.length ? 'warn' : 'ok' },
+    { label: 'Critical', value: critical.length, detail: critical.length ? 'Check the tank first' : 'Nothing urgent', state: critical.length ? 'alarm' : 'ok' },
+    { label: 'SMS sent', value: sentSms, detail: `${pendingSms} pending or unconfirmed`, state: 'info' },
+    { label: 'SMS failed', value: failedSms, detail: failedSms ? 'Check connection or SMS API' : 'No failed sends', state: failedSms ? 'warn' : 'ok' },
+  ];
+
   return (
-    <div className="flex flex-col gap-2.5 lg:h-full lg:min-h-0">
-      <header className="shrink-0 flex items-center gap-3 bg-white border border-gray-200 shadow-sm rounded-2xl p-3">
-        <div className="bg-rose-50 p-2 rounded-lg flex-shrink-0">
-          <span className="text-rose-600"><DashboardIcon name="alert" /></span>
-        </div>
-        <div>
-          <h1 className="text-base lg:text-lg font-bold tracking-tight text-gray-900">Alerts & SMS Logs</h1>
-          <p className="text-xs text-gray-500 mt-0.5">Simple view of active problems, critical warnings, and notification history</p>
-        </div>
-      </header>
+    <div className="space-y-5">
+      <PageHead title="Alerts & logs" description="Active problems, critical warnings, and the SMS notification history." />
 
-      <section className="shrink-0 grid grid-cols-2 xl:grid-cols-4 gap-2.5">
-        <MetricTile label="Active Alerts" value={`${active.length}`} detail={active.length ? 'Needs farmer review' : 'No active issues'} tone={active.length > 0 ? 'amber' : 'emerald'} icon={<DashboardIcon name="bell" />} />
-        <MetricTile label="Critical" value={`${critical.length}`} detail={critical.length ? 'Check tank first' : 'No urgent issue'} tone={critical.length > 0 ? 'rose' : 'gray'} icon={<DashboardIcon name="alert" />} />
-        <MetricTile label="SMS Sent" value={`${sentSms}`} detail={`${pendingSms} pending or unconfirmed`} tone="cyan" icon={<DashboardIcon name="sms" />} />
-        <MetricTile label="SMS Failed" value={`${failedSms}`} detail={failedSms ? 'Review connection/API' : 'No failed sends'} tone={failedSms > 0 ? 'amber' : 'gray'} icon={<DashboardIcon name="sms" />} />
+      <section aria-label="Summary" className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-line bg-line xl:grid-cols-4">
+        {summary.map((item) => (
+          <div key={item.label} className="bg-white px-4 py-3.5 sm:px-5 sm:py-4">
+            <p className="text-[13px] font-medium text-ink-2">{item.label}</p>
+            <p className="num mt-1.5 text-[28px] font-semibold leading-none">{item.value}</p>
+            <StateMark state={item.state} className="mt-2.5 !text-xs">{item.detail}</StateMark>
+          </div>
+        ))}
       </section>
 
-      <section className="lg:flex-1 lg:min-h-0 grid grid-cols-1 xl:grid-cols-2 xl:grid-rows-2 gap-2.5">
-        <PanelShell title="Active Alerts" tone={active.length > 0 ? 'amber' : 'emerald'} badge={<Pill label={`${active.length} active`} tone={active.length > 0 ? 'amber' : 'emerald'} />}>
+      {latestCritical && (
+        <section aria-label="Most recent critical alert" className="rounded-lg border border-alarm/30 bg-alarm-bg">
+          <div className="flex items-baseline justify-between gap-3 px-4 pt-3 sm:px-5">
+            <h2 className="text-sm font-semibold text-alarm">Critical</h2>
+            {critical.length > 1 && <p className="text-xs text-[#7a1a12]">{critical.length - 1} more in active alerts</p>}
+          </div>
+          <ul><AlertRow alert={latestCritical} showAction /></ul>
+        </section>
+      )}
+
+      <div className="grid gap-4 xl:grid-cols-2">
+        <ListPanel title="Active alerts" count={`${active.length} active`}>
           {active.length === 0 ? (
-            <EmptyState title="All clear" detail="There are no active alerts for the tank." />
+            <div className="p-5"><EmptyState title="All clear">There are no active alerts for the tank.</EmptyState></div>
           ) : (
-            active.slice(0, 8).map((alert) => <AlertRow key={alert.id} alert={alert} showAction />)
+            <ul className="divide-y divide-line-soft">{active.slice(0, 8).map((alert) => <AlertRow key={alert.id} alert={alert} showAction />)}</ul>
           )}
-        </PanelShell>
+        </ListPanel>
 
-        <PanelShell title="Critical" tone={critical.length > 0 ? 'rose' : 'emerald'} badge={<Pill label={`${critical.length} urgent`} tone={critical.length > 0 ? 'rose' : 'emerald'} />}>
-          {!latestCritical ? (
-            <EmptyState title="No urgent alert" detail="Emergency and critical alerts will appear here." />
-          ) : (
-            <>
-              <AlertRow alert={latestCritical} showAction />
-              {critical.length > 1 && (
-                <p className="rounded-md border border-rose-200 bg-rose-50 px-2 py-1 text-[10px] text-rose-700">
-                  {critical.length - 1} more critical alert(s) in Active Alerts.
-                </p>
-              )}
-            </>
-          )}
-        </PanelShell>
-
-        <PanelShell title="Recent Alerts" tone={recent.length > 0 ? 'cyan' : 'emerald'} badge={<Pill label={`${recent.length} records`} tone="cyan" />}>
+        <ListPanel title="Recent alerts" count={`${recent.length} records`}>
           {recent.length === 0 ? (
-            <EmptyState title="No alert history yet" detail="Recent alerts will be listed after sensor readings trigger warnings." />
+            <div className="p-5"><EmptyState title="No alert history yet">Alerts appear here once sensor readings trigger a warning.</EmptyState></div>
           ) : (
-            recent.slice(0, 10).map((alert) => <AlertRow key={alert.id} alert={alert} />)
+            <ul className="divide-y divide-line-soft">{recent.slice(0, 10).map((alert) => <AlertRow key={alert.id} alert={alert} />)}</ul>
           )}
-        </PanelShell>
+        </ListPanel>
 
-        <PanelShell title="SMS Logs" tone={failedSms > 0 ? 'amber' : 'cyan'} badge={<Pill label={`${smsLogs.length} logs`} tone={failedSms > 0 ? 'amber' : 'cyan'} />}>
+        <ListPanel title="SMS log" count={`${smsLogs.length} messages`}>
           {smsLogs.length === 0 ? (
-            <EmptyState title="No SMS logs yet" detail="Sent and failed SMS attempts will show here." />
+            <div className="p-5"><EmptyState title="No SMS sent yet">Sent and failed SMS attempts are listed here.</EmptyState></div>
           ) : (
-            smsLogs.slice(0, 10).map((log) => <SmsRow key={log.id} log={log} />)
+            <ul className="divide-y divide-line-soft">{smsLogs.slice(0, 10).map((log) => <SmsRow key={log.id} log={log} />)}</ul>
           )}
-        </PanelShell>
-      </section>
+        </ListPanel>
+
+        {!latestCritical && (
+          <ListPanel title="Critical" count="0 urgent">
+            <div className="p-5"><EmptyState title="No urgent alert">Emergency and critical alerts are pinned to the top of this page when they happen.</EmptyState></div>
+          </ListPanel>
+        )}
+      </div>
     </div>
   );
 };

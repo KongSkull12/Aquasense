@@ -26,10 +26,10 @@ const ScrollManager: React.FC = () => {
       type="button"
       onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
       aria-label="Scroll back to top"
-      className={`fixed bottom-6 left-1/2 z-50 inline-flex h-12 w-12 -translate-x-1/2 items-center justify-center rounded-full bg-primary text-white shadow-lg transition-all duration-300 hover:bg-blue-800 ${
-        showBackToTop
+      className={`fixed bottom-5 right-5 z-50 inline-flex h-11 w-11 items-center justify-center rounded-md bg-ink text-white shadow-overlay transition-[opacity,transform,background-color] duration-200 ease-out hover:bg-ink-soft ${
+        showBackToTop && !pathname.startsWith('/dashboard')
           ? 'translate-y-0 opacity-100 pointer-events-auto'
-          : 'translate-y-3 opacity-0 pointer-events-none'
+          : 'translate-y-2 opacity-0 pointer-events-none'
       }`}
     >
       <svg

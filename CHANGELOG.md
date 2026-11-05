@@ -1,0 +1,126 @@
+# Changelog
+
+All notable changes to AquaSense. Versions follow [Semantic Versioning](https://semver.org/):
+MAJOR for breaking API or firmware-protocol changes, MINOR for new features, PATCH for fixes.
+
+The running version is shown in the dashboard sidebar (App = frontend, API = backend) and in
+`GET /health` and `GET /api/v1/health` under `data.release`.
+
+## How to release
+
+1. Add the changes under a new version heading below.
+2. Set the same `version` in `Frontend/package.json` and `Backend/package.json`.
+3. Commit, tag and push: `git tag vX.Y.Z && git push kongskull main --tags`.
+   Vercel and Render redeploy `main` automatically.
+
+## [1.4.0] - 2026-11-03
+
+### Added
+- Optional temperature calibration (Dashboard → Calibration → Temperature). Capture what a trusted
+  thermometer reads in the same water: one point corrects the offset, a second point at least
+  5 °C away also fits the slope. The DS18B20 stays counted as calibrated without it, so readings
+  and the ammonia calculator work whether or not it is done.
+- Calibration commands accept `temp` (`CAL_CAPTURE temp:<°C>`, `CAL_STATUS`/`CAL_CLEAR`/`CAL_RESET temp`).
+- Firmware: the temperature correction is applied to the DS18B20 reading and saved under its own
+  flash key `calT`, leaving the pH, ORP and turbidity calibration untouched. A capture averages
+  5 conversions and is refused if they spread more than 0.25 °C; slopes outside 0.8–1.25 are
+  rejected. Serial Monitor: `temp <°C>`, `clear temp`, `reset temp`, `set temp <slope> <offset>`.
+
+### Upgrade notes
+- Flash the new firmware (app-only `.ino.bin`) to use temperature calibration. Older firmware
+  answers `temp` commands with `rejected_bad_param`.
+
+## [1.3.1] - 2026-11-03
+
+### Fixed
+- Firmware update page: flashing stopped right after the chip was detected with "Failed to
+  fetch dynamically imported module …/stub_flasher/esp32.json". Vite left esptool-js's flasher
+  stubs unbundled; the build now bundles them as small per-chip chunks.
+- Firmware: the sketch did not compile in v1.3.0 (`'FeederStep' was not declared`). The new
+  `turbidityFromVoltage()` sat above the shared types, where the Arduino builder inserts its
+  function prototypes; it now lives in the SENSORS section.
+
+## [1.3.0] - 2026-11-03
+
+### Added
+- Firmware update page (Dashboard → Firmware update) that flashes the ESP32 over USB from Chrome
+  or Edge, without the Arduino IDE. It recognizes app-only (`.ino.bin`, written at `0x10000`) and
+  full merged images (`.ino.merged.bin`, written at `0x0`), refuses bootloader, partition-table
+  and wrong-chip files, verifies the written data by MD5, and restarts the board. The file stays
+  in the browser and is never uploaded. Uses Espressif's `esptool-js` 0.7.0, loaded only on Connect.
+- Staff accounts: an admin creates staff logins (`GET/POST /api/v1/staff`,
+  `DELETE /api/v1/staff/:id`) that share the admin's tank devices. Staff see Overview, Parameters,
+  Feeding, Water change and Alerts only. Device access for readings, alerts, commands and the
+  live socket goes through one shared check (`deviceAccess.ts`).
+
+### Changed
+- Firmware: "Feeder on" holds the gate open until "Feeder off", with a 60 s safety close; the servo
+  signal switches off once the horn arrives, so it stops buzzing.
+- Firmware: turbidity uses the DFRobot SEN0189 voltage curve with a gain and offset calibration,
+  and pH accepts a one- or two-buffer calibration.
+- Firmware: an `https://` `BACKEND_HTTP_URL` (such as Render) is verified against the root
+  certificates in `RootCerts.h`; plain LAN calls time out after 3 s instead of stalling MQTT.
+
+### Upgrade notes
+- Calibration is now saved under the flash key `cal2`. pH and ORP calibration carry over, but
+  turbidity resets to defaults on first boot, so recalibrate it (`turb 0`, then a known standard).
+
+## [1.2.0] - 2026-11-02
+
+### Added
+- Ammonia calculator page (Dashboard → Ammonia calculator) that walks through all seven steps:
+  sensor temperature and pH (live or entered manually), pKa, NH₃ fraction, NH₃ percentage, the
+  ammonia measurement, the resulting concentrations, and a results summary.
+- Option B: a measured NH₃-N gives TAN = NH₃-N / fNH₃. Option A (NH₃-N = TAN × fNH₃) is also
+  available in the calculator.
+- `POST /api/v1/water/ammonia/calculate` with `temperature`, `ph` and optionally `tan` or `nh3N`
+  (mg/L as N).
+
+### Changed
+- pKa now uses T + 273.15 (was 273.2), matching the documented formula
+  pKa = 0.09018 + 2729.92 / (T + 273.15). At 25 °C, pKa moves from 9.2448 to 9.2464.
+- Live speciation and the calculator share one implementation (`ammoniaCalculator.ts`).
+
+## [1.1.3] - 2026-11-02
+
+### Fixed
+- Sign-in failed with "CSRF token validation failed" when the browser still had an older
+  session cookie. Sign-in and sign-up no longer require the CSRF token (they start a new
+  session), and the dashboard fetches a fresh token and retries once after a CSRF rejection.
+
+## [1.1.2] - 2026-11-02
+
+### Added
+- `/health` reports `mqtt.lastPublicFrameRejectedReason` (`no_device_key`, `bad_signature` or
+  `invalid_frame`) and the backend logs a warning when ESP32 frames are dropped. A
+  `bad_signature` means `DEVICE_KEYS` on the server does not match `DEVICE_KEY` in the firmware.
+
+## [1.1.1] - 2026-11-02
+
+### Fixed
+- Logout, saving SMS numbers, feeding schedules, relays, calibration and thresholds failed with
+  "CSRF token validation failed" when the frontend and backend are on different domains
+  (Vercel + Render). The backend now also returns the CSRF token from login, signup and
+  session checks, and the dashboard sends it from there.
+- Logout always returns to the sign-in page, even if the server cannot be reached.
+- Dashboards stopped refreshing after ~10-15 minutes because polling exceeded the API rate
+  limit (500 per 15 min). The limit is now 3000, configurable with `API_RATE_LIMIT_MAX`.
+- Sidebar showed "Signed in" instead of the account after a failed request cleared it.
+
+## [1.1.0] - 2026-11-02
+
+### Added
+- Calibration page for pH, turbidity and ORP from the dashboard.
+- Thresholds, Prediction model and SMS alerts pages.
+- Risk scoring service and risk assessment panel.
+- SMS recipient settings per user.
+- Release version and commit shown in the dashboard sidebar and health endpoints.
+- `Frontend/vercel.json` so dashboard routes survive a page refresh.
+
+### Fixed
+- Startup on an empty database (schema upgrades no longer run before tables exist).
+
+## [1.0.0] - 2026-10-25
+
+- First deployed version: water-quality monitoring, sensor health, feeding schedules,
+  aerator and water-change control, SMS alerts.

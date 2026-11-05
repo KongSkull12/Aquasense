@@ -1,177 +1,147 @@
 import { SensorHealthPanel } from '../../components/WaterQuality/SensorHealthPanel';
 import React from 'react';
-import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
-import { DashboardIcon } from '../../components/WaterQuality/DashboardUi';
 import { useDashboardData } from '../../components/WaterQuality/useDashboardData';
 import type { WaterQualityStats } from '../../types/water';
-import { currentWaterSensorValue } from '../../components/WaterQuality/sensorDisplay';
+import { currentWaterSensorValue, isReadingLive, LIVE_READING_MS } from '../../components/WaterQuality/sensorDisplay';
+import { RiskAssessmentPanel } from '../../components/WaterQuality/RiskAssessmentPanel';
+import { BandChart, BandKey, ConnectionNotice, EmptyState, PageHead, Panel, StateMark, type MarkState } from '../../components/WaterQuality/Console';
+import { bandLabel, classifyBand, formatNormalBand, type BandKey as LimitKey } from '../../components/WaterQuality/thresholdBands';
 
 type ParameterKey = 'temperature' | 'ph' | 'orp' | 'turbidity' | 'ammonia';
 
 type CardStats = { current: number|null; average: number|null; min: number|null; max: number|null };
 
 type CardConfig = {
-  key: ParameterKey | 'riskScore';
+  key: 'temperature' | 'ph' | 'orp' | 'turbidity';
   label: string;
   unit: string;
-  color: string;
-  normal: (value: number) => boolean;
-  normalLabel: string;
-  warnLabel: string;
+  digits: number;
+  domain: [number | 'auto', number | 'auto'];
 };
 
 const parameterCards: CardConfig[] = [
-  { key: 'temperature', label: 'Temperature (growth guidance 26-29 °C)', unit: 'C', color: '#f59e0b', normal: (value) => value >= 26 && value <= 29, normalLabel: 'Within guidance', warnLabel: 'Outside guidance' },
-  { key: 'ph', label: 'pH Level (culture guidance 7-8.5)', unit: '', color: '#3b82f6', normal: (value) => value >= 7 && value <= 8.5, normalLabel: 'Within guidance', warnLabel: 'Outside guidance' },
-  { key: 'orp', label: 'ORP / Redox (reported; uncalibrated)', unit: 'mV', color: '#22c55e', normal: () => false, normalLabel: 'Not classified', warnLabel: 'Not classified' },
-  { key: 'turbidity', label: 'Turbidity', unit: 'NTU', color: '#a855f7', normal: () => false, normalLabel: 'Unclassified', warnLabel: 'Unclassified' },
-  { key: 'ammonia', label: 'NH3 fraction of TAN', unit: '%', color: '#ef4444', normal: () => false, normalLabel: 'Calculated', warnLabel: 'Inputs need qualification' },
-  { key: 'riskScore', label: 'Risk Model Status', unit: '', color: '#6b7280', normal: () => false, normalLabel: 'Unavailable', warnLabel: 'Unavailable' },
+  { key: 'temperature', label: 'Temperature', unit: '°C', digits: 1, domain: [20, 36] },
+  { key: 'ph', label: 'pH', unit: '', digits: 2, domain: [4, 10] },
+  { key: 'orp', label: 'ORP / redox', unit: 'mV', digits: 1, domain: ['auto', 'auto'] },
+  { key: 'turbidity', label: 'Turbidity', unit: 'NTU', digits: 1, domain: ['auto', 'auto'] },
 ];
 
-const formatValue = (value: number|null, unit: string) => value === null ? '--' : `${value.toFixed(unit === '' ? 2 : 1)}${unit ? ` ${unit}` : ''}`;
+const formatValue = (value: number|null, unit: string, digits: number) => value === null ? '—' : `${value.toFixed(digits)}${unit ? ` ${unit}` : ''}`;
 
 const DashboardParametersPage: React.FC = () => {
-  const { statistics, chartData, predictiveWarning, latestReading, error } = useDashboardData();
-  const lastTurbidityNtuPoint = [...chartData].reverse().find((point) => point.turbidityUnit === 'NTU' && point.turbidity != null);
+  const { statistics, chartData, riskAssessment, thresholdBands, latestReading, error, isConnected } = useDashboardData();
+  // Readings, statistics and trends are shown only while the device is sending.
+  const live = isReadingLive(latestReading);
   const liveTurbidityNtu = latestReading?.turbidityUnit === 'NTU' ? latestReading.turbidity : null;
 
-  const riskModelValidated = predictiveWarning?.modelStatus === 'READY'
-    && predictiveWarning.validationStatus === 'VALIDATED'
-    && predictiveWarning.analysisStatus === 'AVAILABLE'
-    && Number.isFinite(predictiveWarning.riskScore);
-  const currentRiskScore = riskModelValidated ? predictiveWarning?.riskScore ?? null : null;
-  const currentRiskLevel = riskModelValidated ? predictiveWarning?.warningCard?.riskLevel ?? 'UNAVAILABLE' : 'UNAVAILABLE';
+  const fractionAvailable = latestReading?.speciation?.status === 'AVAILABLE';
+  const fraction = fractionAvailable ? latestReading.speciation?.percent ?? null : null;
+  const fractionChart = chartData.filter((point) => point.nh3FractionPercent !== null && point.nh3FractionPercent !== undefined);
 
   return (
-    <div className="flex flex-col gap-3 lg:h-full lg:min-h-0">
-      <header className="shrink-0 flex items-center gap-3 bg-white border border-gray-200 shadow-sm rounded-2xl p-3">
-        <div className="bg-blue-50 p-2 rounded-lg flex-shrink-0">
-          <span className="text-blue-600"><DashboardIcon name="chart" /></span>
-        </div>
-        <div>
-          <h1 className="text-base lg:text-lg font-bold tracking-tight text-gray-900">Parameters</h1>
-          <p className="text-xs text-gray-500 mt-0.5">Detailed sensor evidence from the latest monitoring window{statistics?.stale ? ' · Live statistics stale while disconnected' : ''}</p>
-        </div>
-      </header>
+    <div className="space-y-5">
+      <PageHead
+        title="Parameters"
+        description={<>Sensor evidence from the latest monitoring window: current value, window statistics, and sensor health.{statistics?.stale ? ' Live statistics are stale while disconnected.' : ''}</>}
+        actions={<BandKey />}
+      />
 
-      {error && <div className="shrink-0 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">Connection state: {error}</div>}
+      <ConnectionNotice isConnected={isConnected} error={error} />
+
       <SensorHealthPanel reading={latestReading} />
-      {statistics ? (
-        <section className="lg:flex-1 lg:min-h-0 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 lg:grid-rows-2 gap-2.5">
+
+      {!live ? (
+        <EmptyState title={latestReading ? 'No live data from the device' : 'No sensor data yet'}>
+          {latestReading
+            ? `The ESP32 has not sent a reading in the last ${LIVE_READING_MS / 1000} seconds, so no values, statistics or trends are shown. Check its power, Wi-Fi and MQTT connection.`
+            : 'Values, statistics and trends appear here once your registered ESP32 starts sending readings.'}
+        </EmptyState>
+      ) : statistics ? (
+        <section aria-label="Parameter trends" className="grid gap-4 md:grid-cols-2 2xl:grid-cols-3">
           {parameterCards.map((item) => {
-            const isRisk = item.key === 'riskScore';
-            if(item.key==='ammonia') {
-              const fractionAvailable = latestReading?.speciation?.status === 'AVAILABLE';
-              const fraction = fractionAvailable ? latestReading.speciation?.percent ?? null : null;
-              const fractionChart = chartData.filter((point) => point.nh3FractionPercent !== null && point.nh3FractionPercent !== undefined);
-              return (
-                <div key={item.key} className="rounded-xl border border-gray-200 bg-white shadow-sm p-2 flex flex-col min-h-[180px] lg:min-h-0">
-                  <div className="flex items-center justify-between gap-2 shrink-0">
-                    <h3 className="text-[10px] font-semibold uppercase tracking-wide text-gray-500 truncate">Unionized NH3 fraction</h3>
-                    <span className="text-xs font-bold text-gray-900 shrink-0">{fraction === null ? 'Unavailable' : `${fraction.toFixed(2)}%`}</span>
-                  </div>
-                  <p className="text-[9px] text-gray-400 mt-0.5 shrink-0">Freshwater fraction of TAN · concentration still requires measured TAN</p>
-                  <div className="flex-1 min-h-0 mt-1">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <AreaChart data={fractionChart} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" vertical={false} />
-                        <XAxis dataKey="time" stroke="#9ca3af" tick={{ fontSize: 9 }} tickMargin={4} minTickGap={20} />
-                        <YAxis stroke="#9ca3af" tick={{ fontSize: 9 }} axisLine={false} tickLine={false} unit="%" />
-                        <Tooltip formatter={(value) => [`${Number(value).toFixed(3)}%`, 'NH3 fraction']} />
-                        <Area type="monotone" dataKey="nh3FractionPercent" name="NH3 fraction (%)" stroke={item.color} fill={item.color} fillOpacity={0.18} dot={false} connectNulls={false} />
-                      </AreaChart>
-                    </ResponsiveContainer>
-                  </div>
-                  {!fractionAvailable && <p className="text-[9px] text-amber-700 shrink-0">{latestReading?.speciation?.reason || 'Fresh qualified pH and temperature readings are required.'}</p>}
-                </div>
-              );
-            }
-            if (isRisk) {
-              return (
-                <div key={item.key} className="rounded-xl border border-gray-200 bg-white shadow-sm p-4 flex flex-col gap-2">
-                  <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500">{item.label}</h3>
-                  <span className="text-xl font-bold text-gray-900">{currentRiskLevel}</span>
-                  <p className="text-xs text-gray-500">
-                    {currentRiskScore === null
-                      ? 'No validated, commissioned risk model; no score is available.'
-                      : `Validated model index: ${currentRiskScore.toFixed(2)} / 100.`}
-                  </p>
-                </div>
-              );
-            }
-            const sensorStats: WaterQualityStats[ParameterKey] = statistics[item.key as ParameterKey];
-            const sensorValue = currentWaterSensorValue(latestReading, item.key as 'temperature'|'ph'|'orp'|'turbidity');
+            const sensorStats: WaterQualityStats[ParameterKey] = statistics[item.key];
+            const sensorValue = currentWaterSensorValue(latestReading, item.key);
             const stats: CardStats = { ...sensorStats, current: item.key === 'turbidity'
-              ? liveTurbidityNtu ?? lastTurbidityNtuPoint?.turbidity ?? null
+              ? liveTurbidityNtu ?? null
               : sensorValue };
-            const sensorName = item.key === 'temperature' || item.key === 'ph' || item.key === 'orp' || item.key === 'turbidity' ? item.key : null;
-            const health = sensorName ? latestReading?.sensorHealth?.[sensorName] : null;
-            const isNormal = stats.current!==null && item.normal(stats.current);
+            const health = latestReading?.sensorHealth?.[item.key];
+            const bandKey = item.key === 'orp' ? null : item.key as LimitKey;
+            const level = bandKey && stats.current != null ? classifyBand(stats.current, thresholdBands[bandKey]) : null;
+            const levelLabel = level ? bandLabel(level) : null;
+            const guidance = item.key === 'orp'
+              ? 'Redox, after a saved calibration'
+              : `Normal ${formatNormalBand(thresholdBands[item.key as LimitKey], item.digits, item.unit)}`;
+            const chartBand: [number, number] | undefined = item.key === 'temperature' || item.key === 'ph'
+              ? [thresholdBands[item.key].normalMin ?? 0, thresholdBands[item.key].normalMax ?? 0]
+              : item.key === 'turbidity' && thresholdBands.turbidity.normalMax != null
+                ? [0, thresholdBands.turbidity.normalMax]
+                : undefined;
             const sensorStatus = statistics.stale ? 'STALE' : !latestReading ? 'UNAVAILABLE' : !health ? 'UNKNOWN' :
               !health.valid || health.measurementValid===false ? (health.health==='STALE' ? 'STALE' : 'UNAVAILABLE') :
               health.health==='UNSTABLE' || health.stability==='UNSTABLE' ? 'UNSTABLE' :
-              health.calibration!=='CALIBRATED' ? 'CALIBRATION REQUIRED' : isNormal ? item.normalLabel : item.warnLabel;
-            const statusLabel = item.key === 'turbidity' && liveTurbidityNtu == null && lastTurbidityNtuPoint
-              ? `LAST NTU ${lastTurbidityNtuPoint.time}; LIVE UNAVAILABLE`
-              : item.key==='turbidity' && sensorStatus===item.normalLabel ? 'UNCLASSIFIED · NO SPECIES NTU LIMIT' : sensorStatus;
-            const statusQualified = !['STALE','UNAVAILABLE','UNKNOWN','UNSTABLE','CALIBRATION REQUIRED'].includes(statusLabel) && !statusLabel.startsWith('UNCLASSIFIED');
+              health.calibration!=='CALIBRATED' ? 'CALIBRATION REQUIRED' :
+              health.stability!=='STABLE' ? 'SETTLING' : item.key === 'orp' ? 'Calibrated reading' : levelLabel || 'Unclassified';
+            const statusLabel = sensorStatus;
+            const statusState: MarkState = ['STALE', 'UNSTABLE'].includes(statusLabel) ? 'warn'
+              : statusLabel === 'CALIBRATION REQUIRED' ? 'trust'
+              : statusLabel === 'SETTLING' ? 'info'
+                : ['UNAVAILABLE', 'UNKNOWN', 'Unclassified'].includes(statusLabel) ? 'off'
+                  : statusLabel === 'Alert' ? 'alarm'
+                    : statusLabel === 'Warning' ? 'warn'
+                      : 'ok';
+            const statusText = /^[A-Z ]+$/.test(statusLabel) ? statusLabel.charAt(0) + statusLabel.slice(1).toLowerCase() : statusLabel;
             const chart = chartData.filter(point=>item.key!=='turbidity' || (point.turbidityUnit==='NTU' && point.turbidity != null)).slice(-20);
             const currentLabel = item.key==='orp' && stats.current!==null && health?.valid!==true
-              ? `Reported ${formatValue(stats.current, item.unit)} · unverified`
-              : formatValue(stats.current, item.unit);
+              ? `${formatValue(stats.current, item.unit, item.digits)}`
+              : formatValue(stats.current, item.unit, item.digits);
 
             return (
-              <div key={item.key} className="rounded-xl border border-gray-200 bg-white shadow-sm p-2 flex flex-col min-h-[180px] lg:min-h-0">
-                <div className="flex items-center justify-between gap-2 shrink-0">
-                  <h3 className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-gray-500 truncate">
-                    <span className="inline-block h-1.5 w-1.5 rounded-full shrink-0" style={{ backgroundColor: item.color }} />
-                    <span className="truncate">{item.label}</span>
-                  </h3>
-                  <span className="text-xs font-bold text-gray-900 shrink-0">{currentLabel}</span>
-                </div>
-
-                <div className="mt-0.5 flex items-center justify-between gap-2 shrink-0">
-                  <p className="text-[9px] text-gray-400 truncate">
-                    Avg {formatValue(stats.average, item.unit)} · Min {formatValue(stats.min, item.unit)} · Max {formatValue(stats.max, item.unit)}
+              <Panel
+                key={item.key}
+                title={item.label}
+                description={guidance}
+                actions={<span className="num text-xl font-semibold">{currentLabel}</span>}
+                bodyClassName="px-4 pb-4 pt-3 sm:px-5"
+              >
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
+                  <StateMark state={statusState}>{item.key === 'orp' && stats.current !== null && health?.valid !== true ? `Unverified · ${statusText}` : statusText}</StateMark>
+                  <p className="num text-xs text-ink-3">
+                    Avg {formatValue(stats.average, item.unit, item.digits)} · Min {formatValue(stats.min, item.unit, item.digits)} · Max {formatValue(stats.max, item.unit, item.digits)}
                   </p>
-                  <span className={`inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[9px] font-semibold shrink-0 ${statusQualified && isNormal ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
-                    <span className={`h-1 w-1 rounded-full ${statusQualified && isNormal ? 'bg-emerald-500' : 'bg-amber-500'}`} />
-                    {statusLabel}
-                  </span>
                 </div>
-
-                <div className="flex-1 min-h-0 mt-1">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={chart} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>
-                      <defs>
-                        <linearGradient id={`${item.key}-gradient`} x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="5%" stopColor={item.color} stopOpacity={0.3} />
-                          <stop offset="95%" stopColor={item.color} stopOpacity={0} />
-                        </linearGradient>
-                      </defs>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" vertical={false} />
-                      <XAxis dataKey="time" stroke="#9ca3af" tick={{ fontSize: 9 }} tickMargin={4} minTickGap={20} />
-                      <YAxis stroke="#9ca3af" tick={{ fontSize: 9 }} axisLine={false} tickLine={false} />
-                      <Tooltip contentStyle={{ backgroundColor: '#ffffff', border: '1px solid #e5e7eb', borderRadius: '10px', color: '#111827', boxShadow: '0 4px 12px rgba(0,0,0,0.08)' }} />
-                      <Area
-                        type="monotone"
-                        dataKey={item.key}
-                        stroke={item.color}
-                        fill={`url(#${item.key}-gradient)`}
-                        dot={false}
-                        activeDot={{ r: 4, strokeWidth: 0, fill: item.color }}
-                        strokeWidth={2}
-                      />
-                    </AreaChart>
-                  </ResponsiveContainer>
-                </div>
-              </div>
+                <BandChart label={item.label} data={chart} dataKey={item.key} domain={item.domain} band={chartBand} unit={item.unit} digits={item.digits} height={170} />
+              </Panel>
             );
           })}
+
+          <Panel
+            title="Unionized NH₃ fraction"
+            description="Freshwater fraction of TAN; concentration still needs measured TAN"
+            actions={<span className="num text-xl font-semibold">{fraction === null ? '—' : `${fraction.toFixed(2)}%`}</span>}
+            bodyClassName="px-4 pb-4 pt-3 sm:px-5"
+          >
+            <div className="mb-3">
+              {fractionAvailable
+                ? <StateMark state="info">Calculated from pH and temperature</StateMark>
+                : <StateMark state="off">{latestReading?.speciation?.reason || 'Fresh qualified pH and temperature readings are required.'}</StateMark>}
+            </div>
+            <BandChart label="NH₃ fraction" data={fractionChart} dataKey="nh3FractionPercent" domain={['auto', 'auto']} unit="%" digits={3} height={170} emptyText="Not calculated yet" />
+          </Panel>
+
+          <RiskAssessmentPanel assessment={riskAssessment} compact />
         </section>
+      ) : !isConnected ? (
+        <EmptyState title="No window statistics yet">Trends and averages arrive over the live connection and appear here once it reconnects.</EmptyState>
       ) : (
-        <div className="rounded-xl border border-gray-200 bg-white shadow-sm p-8 text-center text-gray-500">Loading sensor data...</div>
+        <section aria-label="Loading parameters" className="grid gap-4 md:grid-cols-2 2xl:grid-cols-3" aria-busy="true">
+          {Array.from({ length: 3 }).map((_, index) => (
+            <div key={index} className="panel h-[262px] animate-pulse p-5">
+              <div className="h-4 w-32 rounded bg-line-soft" />
+              <div className="mt-3 h-3 w-48 rounded bg-line-soft" />
+              <div className="mt-6 h-[150px] rounded bg-water" />
+            </div>
+          ))}
+        </section>
       )}
     </div>
   );

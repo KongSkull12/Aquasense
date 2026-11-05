@@ -1,33 +1,14 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { DashboardIcon } from '../../components/WaterQuality/DashboardUi';
 import { useDashboardData } from '../../components/WaterQuality/useDashboardData';
 import { apiClient, getApiErrorMessage } from '../../services/apiClient';
-
-const inputClass = 'rounded-lg border border-gray-200 bg-gray-50 px-2.5 py-1.5 text-xs text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-400';
+import { DeviceSelect, EmptyState, KeyValues, MetaItem, Notice, PageHead, Panel, StateMark } from '../../components/WaterQuality/Console';
+import { describeDeviceResult } from '../../components/WaterQuality/deviceResults';
+import { isStaffRole } from '../../auth/session';
 
 interface Device { deviceId: string; name?: string; isActive: boolean }
 interface FeedingCommand { id: string; action: string; status: 'PENDING' | 'ACKED'; metadata?: Record<string, unknown> | null; executedAt?: string | null; createdAt?: string }
 interface FeedingState { scheduleCount: number; enabledCount: number; pendingCommands: number; lastCommand: FeedingCommand | null }
 interface HardwareState { deviceId: string; online: boolean; receivedAt: string | null; state: null | { feederBusy: boolean } }
-
-const Pill = ({ label, tone }: { label: string; tone: 'emerald' | 'amber' | 'gray' }) => {
-  const styles = {
-    emerald: 'bg-emerald-100 text-emerald-700',
-    amber: 'bg-amber-100 text-amber-700',
-    gray: 'bg-gray-100 text-gray-600',
-  }[tone];
-  const dot = {
-    emerald: 'bg-emerald-500',
-    amber: 'bg-amber-500',
-    gray: 'bg-gray-400',
-  }[tone];
-  return (
-    <span className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-semibold ${styles}`}>
-      <span className={`h-1.5 w-1.5 rounded-full ${dot}`} />
-      {label}
-    </span>
-  );  
-};
 
 const DashboardFeedingPage: React.FC = () => {
   const { feedingSchedules, feedingLoading, triggerManual, addSchedule, toggleSchedule, removeSchedule, updateSchedule } = useDashboardData();
@@ -48,6 +29,7 @@ const DashboardFeedingPage: React.FC = () => {
   const [editLabel, setEditLabel] = useState('');
   const enabledCount = feedingSchedules.filter((item) => item.enabled).length;
   const deviceOnline = !!hardwareState?.online && loadedAt !== null && Date.now() - loadedAt < 20000;
+  const staffView = isStaffRole();
 
   const refreshState = useCallback(async (selectedId = deviceId) => {
     if (!selectedId) return;
@@ -89,7 +71,7 @@ const DashboardFeedingPage: React.FC = () => {
       setManualMessage(null);
       const published = await triggerManual(action, deviceId);
       setManualMessage(published
-        ? `${action === 'TRIGGER' ? 'Feed trigger' : `Feeder ${action}`} published to HiveMQ; servo movement is unconfirmed until the ESP32 acknowledges.`
+        ? `${action === 'TRIGGER' ? 'Feed trigger' : `Feeder ${action}`} published to HiveMQ. Servo movement is unconfirmed until the ESP32 acknowledges.`
         : 'Command was not sent. The broker did not accept it, and no retry was queued.');
       await refreshState();
     } catch (cause) {
@@ -106,113 +88,123 @@ const DashboardFeedingPage: React.FC = () => {
     setScheduleLabel('');
   };
 
+  const feederStatus = manualBusy ? 'Sending' : hardwareState?.state?.feederBusy ? 'Feeding' : deviceOnline ? 'Ready' : 'Unavailable';
+  const disabledReason = !deviceOnline ? 'Device must report online before a feeder command can be sent.' : undefined;
+
   return (
-    <div className="flex flex-col gap-3 lg:h-full lg:min-h-0">
-      <header className="flex items-center gap-3 p-3 bg-white border border-gray-200 shadow-sm shrink-0 rounded-2xl">
-        <div className="flex-shrink-0 p-2 rounded-lg bg-amber-50">
-          <span className="text-amber-600"><DashboardIcon name="feed" /></span>
-        </div>
-        <div>
-          <h1 className="text-base font-bold tracking-tight text-gray-900 lg:text-lg">Feeding</h1>
-          <p className="text-xs text-gray-500 mt-0.5">{enabledCount} active schedule(s), {feedingSchedules.length} total</p>
-        </div>
-      </header>
+    <div className="space-y-5">
+      <PageHead
+        title="Feeding"
+        description={staffView ? 'Send feeder commands for the farm’s registered device.' : 'Send feeder commands and manage feeding schedules for the ESP32 feeder.'}
+        meta={
+          <>
+            {!staffView && <MetaItem label="Active schedules">{enabledCount} of {feedingSchedules.length}</MetaItem>}
+            <MetaItem label="Feeder">
+              <StateMark state={manualBusy || hardwareState?.state?.feederBusy ? 'warn' : deviceOnline ? 'ok' : 'off'} className="!text-sm !font-semibold">{feederStatus}</StateMark>
+            </MetaItem>
+          </>
+        }
+      />
 
-      <section className="shrink-0 grid grid-cols-1 gap-2.5 lg:grid-cols-2">
-        <div className="p-3 bg-white border border-gray-200 shadow-sm rounded-xl">
-          <div className="flex items-center justify-between gap-2 mb-2">
-            <h3 className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-gray-500">
-              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-              Manual Control
-            </h3>
-            <Pill label={manualBusy ? 'Sending' : hardwareState?.state?.feederBusy ? 'Feeding' : deviceOnline ? 'Ready' : 'Unavailable'} tone={manualBusy || hardwareState?.state?.feederBusy ? 'amber' : deviceOnline ? 'emerald' : 'gray'} />
+      <div className={`grid gap-4 ${staffView ? '' : 'lg:grid-cols-2'}`}>
+        <Panel title="Manual control" description="Device-reported logical state. It does not confirm food was physically dispensed.">
+          <div className="space-y-4">
+            <DeviceSelect
+              id="feeding-device"
+              value={deviceId}
+              devices={devices}
+              onChange={(value) => { setDeviceId(value); setFeedingState(null); setHardwareState(null); setLoadedAt(null); }}
+            />
+            <KeyValues rows={[
+              { label: 'Device', value: <StateMark state={deviceOnline ? 'ok' : 'off'}>{deviceOnline ? 'Online' : 'Offline or stale'}</StateMark> },
+              { label: 'Feeder state', value: hardwareState?.state ? (hardwareState.state.feederBusy ? 'Feeding' : 'Idle') : 'Unknown' },
+              { label: 'Latest command', value: feedingState?.lastCommand ? `${feedingState.lastCommand.action}: ${feedingState.lastCommand.status.toLowerCase()}${feedingState.lastCommand.metadata?.deviceResult ? ` · ${describeDeviceResult(String(feedingState.lastCommand.metadata.deviceResult))}` : ''}${manualBusy ? ' · pending' : ''}` : 'None reported' },
+            ]} />
+            <div className="grid grid-cols-3 gap-2">
+              <button type="button" disabled={manualBusy || !deviceOnline} title={disabledReason} onClick={() => void runManual('TRIGGER')} className="btn-primary">Feed now</button>
+              <button type="button" disabled={manualBusy || !deviceOnline} title={disabledReason} onClick={() => void runManual('ON')} className="btn-secondary">Feeder on</button>
+              <button type="button" disabled={manualBusy || !deviceOnline} title={disabledReason} onClick={() => void runManual('OFF')} className="btn-secondary">Feeder off</button>
+            </div>
+            {!deviceOnline && <Notice tone="info">Controls stay disabled until fresh, verified ESP32 telemetry arrives and the HiveMQ command connection is available.</Notice>}
+            {manualMessage && <p role="status" aria-live="polite" className="text-[13px] leading-relaxed text-sounding">{manualMessage}</p>}
+            {stateError && <p role="alert" className="text-[13px] text-alarm">{stateError}</p>}
+            <div className="num space-y-0.5 text-xs text-ink-3">
+              {feedingState?.lastCommand?.id && <p className="break-all">Command ID {feedingState.lastCommand.id}</p>}
+              {loadedAt && <p>Last state poll {new Date(loadedAt).toLocaleTimeString()}</p>}
+            </div>
           </div>
-          <label className="mb-2 block text-[10px] font-semibold text-gray-600" htmlFor="feeding-device">Device</label>
-          <select id="feeding-device" value={deviceId} onChange={(event) => { setDeviceId(event.target.value); setFeedingState(null); setHardwareState(null); setLoadedAt(null); }} className="mb-2 w-full rounded border border-gray-200 bg-gray-50 p-2 text-xs">
-            {devices.length === 0 && <option value="">No active registered device</option>}
-            {devices.map((device) => <option key={device.deviceId} value={device.deviceId}>{device.name || device.deviceId} ({device.deviceId})</option>)}
-          </select>
-          <div className="mb-2 grid grid-cols-2 gap-2 text-[10px] text-gray-600">
-            <span>Device: <strong>{deviceOnline ? 'ONLINE' : 'OFFLINE / STALE'}</strong></span>
-            <span>Feeder state: <strong>{hardwareState?.state ? (hardwareState.state.feederBusy ? 'FEEDING' : 'IDLE') : 'UNKNOWN'}</strong></span>
-          </div>
-          <div className="grid grid-cols-3 gap-2">
-            <button disabled={manualBusy || !deviceOnline} title={!deviceOnline ? 'Device must report online before a feeder command can be sent.' : undefined} onClick={() => void runManual('ON')} className="px-3 py-2 text-xs font-semibold text-white transition-colors rounded-lg bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40">ON</button>
-            <button disabled={manualBusy || !deviceOnline} title={!deviceOnline ? 'Device must report online before a feeder command can be sent.' : undefined} onClick={() => void runManual('OFF')} className="px-3 py-2 text-xs font-semibold text-white transition-colors rounded-lg bg-rose-600 hover:bg-rose-700 disabled:opacity-40">OFF</button>
-            <button disabled={manualBusy || !deviceOnline} title={!deviceOnline ? 'Device must report online before a feeder command can be sent.' : undefined} onClick={() => void runManual('TRIGGER')} className="px-3 py-2 text-xs font-semibold text-white transition-colors bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-40">Feed</button>
-          </div>
-          {!deviceOnline && <p role="status" className="mt-2 text-[10px] text-amber-700">Feeder controls are disabled until fresh, verified ESP32 telemetry is received and the HiveMQ command connection is available.</p>}
-          <p className="mt-2 text-[10px] text-gray-400">State is device-reported logical status; it does not confirm food was physically dispensed. Manual commands use the backend feeder command endpoint.</p>
-          {manualMessage && <p role="status" aria-live="polite" className="mt-1 text-[10px] text-blue-700">{manualMessage}</p>}
-          <p className="mt-2 text-[10px] text-gray-600" aria-live="polite">{feedingState?.lastCommand ? `Latest command ${feedingState.lastCommand.action}: ${feedingState.lastCommand.status}${feedingState.lastCommand.metadata?.deviceResult ? ` · ${String(feedingState.lastCommand.metadata.deviceResult)}` : ''}` : 'No reported feeding command'}{manualBusy ? ' · PENDING' : ''}</p>
-          {feedingState?.lastCommand?.id && <p className="mt-1 break-all text-[10px] text-gray-400">Command ID: {feedingState.lastCommand.id}</p>}
-          {loadedAt && <p className="mt-1 text-[10px] text-gray-400">Last state poll: {new Date(loadedAt).toLocaleTimeString()}</p>}
-          {stateError && <p role="alert" className="mt-1 text-[10px] text-rose-700">{stateError}</p>}
-        </div>
+        </Panel>
 
-        <div className="p-3 bg-white border border-gray-200 shadow-sm rounded-xl">
-          <div className="mb-2 flex items-center gap-1.5">
-            <span className="text-cyan-600"><DashboardIcon name="clock" /></span>
-            <h3 className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">Add Schedule</h3>
-          </div>
-          <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
-            <input type="date" value={scheduleDate} onChange={(e) => setScheduleDate(e.target.value)} className={inputClass} />
-            <input type="time" value={scheduleTime} onChange={(e) => setScheduleTime(e.target.value)} className={inputClass} />
-            <input type="text" value={scheduleLabel} onChange={(e) => setScheduleLabel(e.target.value)} placeholder="Label" className={inputClass} />
-          </div>
-          <button disabled={feedingLoading || !scheduleTime} onClick={() => void saveSchedule()} className="mt-2.5 rounded-lg bg-cyan-600 px-4 py-1.5 text-xs font-semibold text-white hover:bg-cyan-700 transition-colors disabled:opacity-40">
-            Save Schedule
-          </button>
-        </div>
-      </section>
-
-      <div className="p-3 bg-white border border-gray-200 shadow-sm lg:flex-1 lg:min-h-0 lg:overflow-y-auto rounded-xl">
-        <div className="flex items-center justify-between gap-2 mb-2">
-          <h3 className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-gray-500">
-            <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
-            Scheduled Feedings
-          </h3>
-          <Pill label={`${enabledCount} enabled`} tone="amber" />
-        </div>
-        {feedingLoading ? (
-          <p className="text-xs text-gray-400">Loading schedules...</p>
-        ) : feedingSchedules.length === 0 ? (
-          <p className="text-xs text-gray-400">No schedules yet.</p>
-        ) : (
-          <div className="space-y-2">
-            {feedingSchedules.map((item) => (
-              <div key={item.id} className="rounded-lg border border-gray-200 bg-gray-50 p-2.5">
-                {editingScheduleId === item.id ? (
-                  <div className="space-y-2">
-                    <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
-                      <input type="date" value={editDate} onChange={(e) => setEditDate(e.target.value)} className={inputClass} />
-                      <input type="time" value={editTime} onChange={(e) => setEditTime(e.target.value)} className={inputClass} />
-                      <input type="text" value={editLabel} onChange={(e) => setEditLabel(e.target.value)} className={inputClass} />
-                    </div>
-                    <div className="flex gap-2">
-                      <button onClick={() => void updateSchedule(item.id, editDate, editTime, editLabel).then(() => setEditingScheduleId(null))} className="rounded-lg bg-cyan-600 px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-cyan-700 transition-colors">Save</button>
-                      <button onClick={() => setEditingScheduleId(null)} className="rounded-lg bg-gray-200 px-3 py-1.5 text-[11px] font-semibold text-gray-700 hover:bg-gray-300 transition-colors">Cancel</button>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div>
-                      <p className="text-xs font-semibold text-gray-900">{item.date ? `${item.date} ` : 'Daily '}@ {item.time}</p>
-                      {item.label && <p className="text-[10px] text-gray-500">{item.label}</p>}
-                    </div>
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <Pill label={item.enabled ? 'Enabled' : 'Disabled'} tone={item.enabled ? 'emerald' : 'gray'} />
-                      <button onClick={() => { setEditingScheduleId(item.id); setEditDate(item.date || ''); setEditTime(item.time); setEditLabel(item.label || ''); }} className="rounded-lg bg-gray-200 px-2.5 py-1 text-[10px] font-semibold text-gray-700 hover:bg-gray-300 transition-colors">Edit</button>
-                      <button onClick={() => void toggleSchedule(item)} className="rounded-lg bg-amber-500 px-2.5 py-1 text-[10px] font-semibold text-white hover:bg-amber-600 transition-colors">{item.enabled ? 'Disable' : 'Enable'}</button>
-                      <button onClick={() => void removeSchedule(item.id)} className="rounded-lg bg-rose-500 px-2.5 py-1 text-[10px] font-semibold text-white hover:bg-rose-600 transition-colors">Remove</button>
-                    </div>
-                  </div>
-                )}
+        {!staffView && (
+          <Panel title="Add a schedule" description="Leave the date empty for a daily feed.">
+            <form onSubmit={(event) => { event.preventDefault(); void saveSchedule(); }} className="space-y-4">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div>
+                  <label className="field-label" htmlFor="schedule-date">Date <span className="font-normal text-ink-3">(optional)</span></label>
+                  <input id="schedule-date" type="date" value={scheduleDate} onChange={(e) => setScheduleDate(e.target.value)} className="field" />
+                </div>
+                <div>
+                  <label className="field-label" htmlFor="schedule-time">Time</label>
+                  <input id="schedule-time" type="time" required value={scheduleTime} onChange={(e) => setScheduleTime(e.target.value)} className="field" />
+                </div>
               </div>
-            ))}
-          </div>
+              <div>
+                <label className="field-label" htmlFor="schedule-label">Label <span className="font-normal text-ink-3">(optional)</span></label>
+                <input id="schedule-label" type="text" value={scheduleLabel} onChange={(e) => setScheduleLabel(e.target.value)} placeholder="e.g. Morning feed" className="field" />
+              </div>
+              <button type="submit" disabled={feedingLoading || !scheduleTime} className="btn-primary">Save schedule</button>
+            </form>
+          </Panel>
         )}
       </div>
+
+      {!staffView && (
+        <Panel title="Scheduled feedings" description={`${enabledCount} enabled`} bodyClassName="p-0">
+          {feedingLoading ? (
+            <div className="space-y-2 p-5" aria-busy="true">
+              {Array.from({ length: 3 }).map((_, index) => <div key={index} className="h-11 animate-pulse rounded bg-water" />)}
+            </div>
+          ) : feedingSchedules.length === 0 ? (
+            <div className="p-5"><EmptyState title="No schedules yet">Add a time above and the feeder will run it every day, or on the date you pick.</EmptyState></div>
+          ) : (
+            <ul className="divide-y divide-line-soft">
+              {feedingSchedules.map((item) => (
+                <li key={item.id} className="px-4 py-3 sm:px-5">
+                  {editingScheduleId === item.id ? (
+                    <form onSubmit={(event) => { event.preventDefault(); void updateSchedule(item.id, editDate, editTime, editLabel).then(() => setEditingScheduleId(null)); }} className="space-y-3">
+                      <div className="grid gap-3 sm:grid-cols-3">
+                        <input aria-label="Date" type="date" value={editDate} onChange={(e) => setEditDate(e.target.value)} className="field" />
+                        <input aria-label="Time" type="time" required value={editTime} onChange={(e) => setEditTime(e.target.value)} className="field" />
+                        <input aria-label="Label" type="text" value={editLabel} onChange={(e) => setEditLabel(e.target.value)} className="field" />
+                      </div>
+                      <div className="flex gap-2">
+                        <button type="submit" className="btn-primary btn-sm">Save</button>
+                        <button type="button" onClick={() => setEditingScheduleId(null)} className="btn-quiet btn-sm">Cancel</button>
+                      </div>
+                    </form>
+                  ) : (
+                    <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+                      <div className="flex min-w-0 items-baseline gap-4">
+                        <p className="num w-14 shrink-0 text-base font-semibold">{item.time}</p>
+                        <div className="min-w-0">
+                          <p className="truncate text-sm text-ink">{item.label || 'Feed'}</p>
+                          <p className="text-xs text-ink-3">{item.date ? item.date : 'Daily'}</p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <StateMark state={item.enabled ? 'ok' : 'off'} className="mr-3 !text-xs">{item.enabled ? 'Enabled' : 'Disabled'}</StateMark>
+                        <button type="button" onClick={() => void toggleSchedule(item)} className="btn-quiet btn-sm">{item.enabled ? 'Disable' : 'Enable'}</button>
+                        <button type="button" onClick={() => { setEditingScheduleId(item.id); setEditDate(item.date || ''); setEditTime(item.time); setEditLabel(item.label || ''); }} className="btn-quiet btn-sm">Edit</button>
+                        <button type="button" onClick={() => void removeSchedule(item.id)} className="btn-quiet btn-sm !text-alarm hover:!bg-alarm-bg">Remove</button>
+                      </div>
+                    </div>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </Panel>
+      )}
     </div>
   );
 };
