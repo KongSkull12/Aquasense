@@ -8,11 +8,12 @@ import { DeviceSelect, EmptyState, MetaItem, Notice, PageHead, Panel, StateMark,
 interface Device { deviceId: string; name?: string; isActive: boolean }
 interface ApiCommand { id: string; action: string; param?: string | null; status: 'PENDING' | 'ACKED' | 'EXPIRED'; result?: string | null; createdAt?: string }
 interface HardwareState { online: boolean; receivedAt: string | null; commands?: ApiCommand[] }
-type SensorKey = 'ph' | 'turb' | 'orp' | 'temp' | 'tank';
+type ProbeSensorKey = 'ph' | 'turb' | 'orp' | 'temp';
+type SensorKey = ProbeSensorKey | 'tank';
 type CalAction = 'CAL_CAPTURE' | 'CAL_STATUS' | 'CAL_CLEAR' | 'CAL_RESET';
 
 const SENSORS: Array<{
-  key: SensorKey; health: 'ph' | 'turbidity' | 'orp' | 'temperature'; title: string; optional?: boolean;
+  key: ProbeSensorKey; health: 'ph' | 'turbidity' | 'orp' | 'temperature'; title: string; optional?: boolean;
   // 'value' when the sensor is digital and reports no separate probe input (DS18B20).
   input: 'voltage' | 'rawAdc' | 'value'; inputUnit: string;
   steadyWithin: number; refLabel: string; refUnit: string; min: number; max: number; presets: number[]; steps: string[]; hint?: string;
@@ -81,12 +82,12 @@ const DashboardCalibrationPage: React.FC = () => {
   const [deviceId, setDeviceId] = useState('');
   const [hardware, setHardware] = useState<HardwareState | null>(null);
   const [loadedAt, setLoadedAt] = useState<number | null>(null);
-  const [references, setReferences] = useState<Record<'ph' | 'turb' | 'orp' | 'temp', string>>({ ph: '6.86', turb: '0', orp: '', temp: '' });
+  const [references, setReferences] = useState<Record<ProbeSensorKey, string>>({ ph: '6.86', turb: '0', orp: '', temp: '' });
   const [tankTarget, setTankTarget] = useState('3');
   const [sending, setSending] = useState<SensorKey | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [lastCommand, setLastCommand] = useState<Partial<Record<SensorKey, string>>>({});
-  const recentInputs = useRef<Record<'ph' | 'turb' | 'orp' | 'temp', number[]>>({ ph: [], turb: [], orp: [], temp: [] });
+  const recentInputs = useRef<Record<ProbeSensorKey, number[]>>({ ph: [], turb: [], orp: [], temp: [] });
   const lastFrame = useRef<string | null>(null);
 
   const refresh = useCallback(async (selectedId = deviceId) => {
