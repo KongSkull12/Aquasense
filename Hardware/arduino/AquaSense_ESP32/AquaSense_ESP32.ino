@@ -890,13 +890,14 @@ bool publishFrame() {
     char ts[25];
     isoAtAge(nowUtc, age, ts, sizeof(ts));
     stamps[name] = ts;
-    // Publish engineering values only when connected, finite, and not marked
-    // as requiring calibration / saturated / disconnected. STABILIZING still
-    // publishes so the dashboard can watch settling, but CALIBRATION_REQUIRED
-    // for turbidity (no curve) does not invent NTU.
-    const bool usable = s.connected && isfinite(s.value) && s.sampledAtMs != 0
+    // Publish finite engineering values whenever the probe is connected so the
+    // dashboard can show them. valid=false when calibration is still required,
+    // saturated, or otherwise untrusted — classification stays off until then.
+    // Turbidity stays null until a two-point voltage→NTU fit exists (no curve).
+    const bool publishable = s.connected && isfinite(s.value) && s.sampledAtMs != 0
       && s.quality != SQ_DISCONNECTED && s.quality != SQ_ADC_SATURATED
-      && s.quality != SQ_CALIBRATION_REQUIRED && s.quality != SQ_SENSOR_ERROR;
+      && s.quality != SQ_SENSOR_ERROR;
+    const bool usable = publishable && s.quality != SQ_CALIBRATION_REQUIRED;
     JsonObject o = sensors.createNestedObject(name);
     o["connected"] = s.connected;
     o["valid"] = usable;
@@ -912,8 +913,8 @@ bool publishFrame() {
       o["adcLast"] = s.diag.last;
       o["clippedSamples"] = s.diag.clipped;
     }
-    // A disconnected / invalid sensor reports null, never a stale or invented number.
-    if (usable) frame[name] = s.value; else frame[name] = nullptr;
+    // Disconnected / saturated / non-finite → null. Uncalibrated but finite → publish.
+    if (publishable) frame[name] = s.value; else frame[name] = nullptr;
   };
   add("temperature", tempS, false);
   add("ph", phS, true);

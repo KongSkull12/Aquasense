@@ -78,11 +78,19 @@ const DashboardOverviewPage: React.FC = () => {
   };
 
   const isCalibrated = (name: 'temperature' | 'ph' | 'turbidity' | 'orp') => latestReading?.sensorHealth?.[name]?.calibration === 'CALIBRATED';
+  const turbidityHealth = latestReading?.sensorHealth?.turbidity;
+  const turbidityNeedsCal = live && currentTurbidityNtu == null
+    && (turbidityHealth?.calibration === 'REQUIRED'
+      || turbidityHealth?.communication === true
+      || turbidityHealth?.rawAdc != null
+      || turbidityHealth?.voltage != null);
   const turbidityStatus: Status = currentTurbidityNtu != null
-    ? latestReading?.sensorHealth?.turbidity.valid === false
-      ? { label: `Reported, ${humanize(latestReading.sensorHealth.turbidity.health)}`, state: 'warn' }
+    ? turbidityHealth?.valid === false
+      ? { label: `Reported, ${humanize(turbidityHealth.health)}`, state: 'warn' }
       : getStatus('turbidity', currentTurbidityNtu, isQualified('turbidity'), isCalibrated('turbidity'))
-    : getStatus('turbidity', null, false, false);
+    : turbidityNeedsCal
+      ? { label: 'Calibration required — capture two NTU standards', state: 'trust' }
+      : getStatus('turbidity', null, false, false);
 
   const readings: Array<{ label: string; value: string | null; unit?: string; status: Status }> = [
     {
@@ -94,9 +102,15 @@ const DashboardOverviewPage: React.FC = () => {
     {
       label: 'pH',
       value: reportedPh != null ? reportedPh.toFixed(2) : null,
-      status: latestReading?.sensorHealth?.ph.valid === false && reportedPh != null
-        ? { label: `Reported, ${humanize(latestReading.sensorHealth.ph.health)}`, state: 'warn' }
-        : getStatus('ph', reportedPh, isQualified('ph'), isCalibrated('ph')),
+      status: reportedPh != null
+        ? (!isCalibrated('ph')
+          ? { label: 'Calibration required, not classified', state: 'trust' }
+          : latestReading?.sensorHealth?.ph.valid === false
+            ? { label: `Reported, ${humanize(latestReading.sensorHealth.ph.health)}`, state: 'warn' }
+            : getStatus('ph', reportedPh, isQualified('ph'), true))
+        : live && (latestReading?.sensorHealth?.ph?.communication || latestReading?.sensorHealth?.ph?.rawAdc != null)
+          ? { label: 'Calibration required — capture buffer standards', state: 'trust' }
+          : getStatus('ph', null, false, false),
     },
     {
       label: 'ORP / redox',
