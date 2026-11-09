@@ -13,8 +13,11 @@
 #include <RTClib.h>
 #include <WiFi.h>
 #include <PubSubClient.h>
+#include <Preferences.h>
 #include <esp_system.h>
 #include <time.h>
+#include <stdlib.h>
+#include <ctype.h>
 #include "secrets/Secrets.h"
 #include "config/DeviceConfig.h"
 #include "models/SensorReadings.h"
@@ -26,7 +29,7 @@
 
 const char *MQTT_SERVER = "broker.hivemq.com";
 const int MQTT_PORT = 1883;
-constexpr char AQUASENSE_FIRMWARE_VERSION[] = "2026.10.24-sensor-telemetry-v2";
+constexpr char AQUASENSE_FIRMWARE_VERSION[] = "2026.11.08-ph-serial-cal-v1";
 
 WiFiClient espClient;
 PubSubClient mqtt(espClient);
@@ -76,9 +79,18 @@ DallasTemperature tempSensor(&oneWire);
 // =====================================================
 // CALIBRATION
 // =====================================================
+//
+// pH uses the common PH-4502C tutorial formula:
+//   pH = (-5.70 * voltage) + calibration_value
+// Voltage comes from a 10-sample trimmed average (drop low/high
+// outliers, average the middle 6), matching Program2_SensorpH_ESP32.
+// Calibrate from Serial Monitor: put the probe in a known buffer,
+// wait for a stable reading, then type e.g.  ph 6.86
+//
 
-float PH_SLOPE = -5.70;
-float PH_OFFSET = 21.34;
+const float PH_SLOPE = -5.70f;
+const float PH_OFFSET_DEFAULT = 21.34f;
+float PH_OFFSET = PH_OFFSET_DEFAULT; // serial-calibrated; persisted in NVS
 
 float ORP_SLOPE = 1333.33;
 float ORP_OFFSET = -2000.0;
@@ -142,12 +154,18 @@ int ultrConnectCounter = 0, ultrDisconnectCounter = 0;
 
 float temperatureC = NAN;
 float phValue = NAN;
+float lastPhVoltage = NAN;
 float turbidityNTU = NAN;
 float orpValue = NAN;
 float tankDistanceCm = NAN;
 AnalogDiagnostics phDiagnostics;
 AnalogDiagnostics turbidityDiagnostics;
 AnalogDiagnostics orpDiagnostics;
+Preferences phPrefs;
+String serialLine;
+bool phUserCalibrated = false;
+
+void updatePHConnection(int raw, int dev);
 
 // =====================================================
 // TIMERS
@@ -159,7 +177,8 @@ unsigned long lastMQTTPublish = 0;
 unsigned long lastWiFiCheck = 0;
 unsigned long lastLCDPageFlip = 0;
 
-const unsigned long SENSOR_INTERVAL = 1000;
+// pH Program2 sampling alone takes ~300 ms (10 × 30 ms), so keep headroom.
+const unsigned long SENSOR_INTERVAL = 1500;
 const unsigned long LCD_INTERVAL = 500;
 const unsigned long MQTT_INTERVAL = 5000;
 const unsigned long WIFI_CHECK_INTERVAL = 5000;
@@ -324,6 +343,221 @@ float readVoltageCalibrated(int pin, int samples = 20)
         delayMicroseconds(500);
     }
     return (total / (float)samples) / 1000.0;
+}
+
+// Program2-style pH acquisition: 10 ADC samples, bubble-sort,
+// average the middle 6, convert with 3.3 V / 4095 counts.
+AnalogSample samplePHProgram2(float &voltageOut)
+{
+    const int n = 10;
+    int bufferArr[n];
+    int minimum = 4095;
+    int maximum = 0;
+    int last = 0;
+    uint8_t clipped = 0;
+
+    for (int i = 0; i < n; i++)
+    {
+        int raw = analogRead(PH_PIN);
+        bufferArr[i] = raw;
+        last = raw;
+        if (raw < minimum)
+            minimum = raw;
+        if (raw > maximum)
+            maximum = raw;
+        if (raw <= 8 || raw >= 4087)
+            clipped++;
+        delay(30);
+    }
+
+    for (int i = 0; i < n - 1; i++)
+    {
+        for (int j = i + 1; j < n; j++)
+        {
+            if (bufferArr[i] > bufferArr[j])
+            {
+                int temp = bufferArr[i];
+                bufferArr[i] = bufferArr[j];
+                bufferArr[j] = temp;
+            }
+        }
+    }
+
+    long avgval = 0;
+    for (int i = 2; i < 8; i++)
+        avgval += bufferArr[i];
+
+    voltageOut = (float)avgval * ADC_REFERENCE / ADC_MAX_VALUE / 6.0f;
+
+    AnalogSample s;
+    s.avg = (int)(avgval / 6);
+    s.dev = maximum - minimum;
+    s.minimum = minimum;
+    s.maximum = maximum;
+    s.last = last;
+    s.clipped = clipped;
+    return s;
+}
+
+void loadPhCalibration()
+{
+    if (!phPrefs.begin("aquasense", true))
+    {
+        Serial.println("[pH] NVS open failed; using default offset");
+        PH_OFFSET = PH_OFFSET_DEFAULT;
+        phUserCalibrated = false;
+        return;
+    }
+    PH_OFFSET = phPrefs.getFloat("phOff", PH_OFFSET_DEFAULT);
+    phUserCalibrated = phPrefs.getBool("phCal", false);
+    phPrefs.end();
+    Serial.printf("[pH] Loaded calibration offset=%.3f slope=%.2f calibrated=%s\n",
+                  PH_OFFSET, PH_SLOPE, phUserCalibrated ? "yes" : "no");
+}
+
+bool savePhCalibration()
+{
+    if (!phPrefs.begin("aquasense", false))
+    {
+        Serial.println("[pH] NVS open failed; calibration not saved");
+        return false;
+    }
+    phPrefs.putFloat("phOff", PH_OFFSET);
+    phPrefs.putBool("phCal", phUserCalibrated);
+    phPrefs.end();
+    return true;
+}
+
+void printPhSerialHelp()
+{
+    Serial.println();
+    Serial.println("pH Serial calibration (115200 baud):");
+    Serial.println("  ph <buffer>   e.g. ph 6.86 / ph 4.01 / ph 7.00");
+    Serial.println("                Put probe in that solution, wait steady, then send.");
+    Serial.println("                Adjusts calibration_value so reading matches.");
+    Serial.println("  ph status     Show slope, offset, last voltage and pH");
+    Serial.println("  ph reset      Restore default offset 21.34 and save");
+    Serial.println("  help          Show this help");
+    Serial.println();
+}
+
+void printPhStatus()
+{
+    Serial.println("[pH] status:");
+    Serial.printf("  slope=%.2f  offset(calibration_value)=%.3f  calibrated=%s\n",
+                  PH_SLOPE, PH_OFFSET, phUserCalibrated ? "yes" : "no");
+    Serial.printf("  last V=");
+    if (isfinite(lastPhVoltage))
+        Serial.printf("%.4f", lastPhVoltage);
+    else
+        Serial.print("--");
+    Serial.print("  pH=");
+    if (phConnected && isfinite(phValue))
+        Serial.printf("%.2f", phValue);
+    else
+        Serial.print("DISCONNECTED");
+    Serial.println();
+}
+
+bool calibratePhToBuffer(float knownPh)
+{
+    if (!(knownPh >= 0.0f && knownPh <= 14.0f))
+    {
+        Serial.println("[pH] Buffer must be between 0 and 14");
+        return false;
+    }
+
+    float voltage = NAN;
+    AnalogSample s = samplePHProgram2(voltage);
+    updatePHConnection(s.avg, s.dev);
+    storeAnalogDiagnostics(phDiagnostics, s, voltage, millis());
+    lastPhVoltage = voltage;
+
+    if (!phConnected)
+    {
+        phValue = NAN;
+        Serial.println("[pH] Calibration aborted: probe looks disconnected/unstable");
+        Serial.printf("[pH] RAW=%d DEV=%d V=%.4f\n", s.avg, s.dev, voltage);
+        return false;
+    }
+
+    // pH = slope * V + offset  =>  offset = knownPh - slope * V
+    const float previous = PH_OFFSET;
+    PH_OFFSET = knownPh - (PH_SLOPE * voltage);
+    phValue = clampFloat((voltage * PH_SLOPE) + PH_OFFSET, 0.0f, 14.0f);
+    phUserCalibrated = true;
+
+    const bool saved = savePhCalibration();
+    Serial.println("[pH] Calibration applied:");
+    Serial.printf("  buffer=%.2f  V=%.4f  offset %.3f -> %.3f\n",
+                  knownPh, voltage, previous, PH_OFFSET);
+    Serial.printf("  pH Value: %.2f  (%s)\n",
+                  phValue, saved ? "saved to NVS" : "NOT saved");
+    return saved;
+}
+
+void handleSerialCommands()
+{
+    while (Serial.available() > 0)
+    {
+        const char c = (char)Serial.read();
+        if (c == '\r')
+            continue;
+        if (c != '\n')
+        {
+            if (serialLine.length() < 80)
+                serialLine += c;
+            continue;
+        }
+
+        serialLine.trim();
+        if (serialLine.length() == 0)
+        {
+            serialLine = "";
+            continue;
+        }
+
+        String lower = serialLine;
+        lower.toLowerCase();
+
+        if (lower == "help" || lower == "?")
+        {
+            printPhSerialHelp();
+        }
+        else if (lower == "ph" || lower == "ph status" || lower == "phstatus")
+        {
+            printPhStatus();
+        }
+        else if (lower == "ph reset" || lower == "phreset")
+        {
+            PH_OFFSET = PH_OFFSET_DEFAULT;
+            phUserCalibrated = false;
+            const bool saved = savePhCalibration();
+            Serial.printf("[pH] Offset reset to %.3f calibrated=no (%s)\n",
+                          PH_OFFSET, saved ? "saved" : "NOT saved");
+            printPhStatus();
+        }
+        else if (lower.startsWith("ph "))
+        {
+            const String arg = serialLine.substring(3);
+            char *end = nullptr;
+            const float known = strtof(arg.c_str(), &end);
+            if (end == arg.c_str() || (end && *end != '\0' && !isspace((unsigned char)*end)))
+            {
+                Serial.println("[pH] Use: ph <buffer>   e.g. ph 6.86");
+            }
+            else
+            {
+                calibratePhToBuffer(known);
+            }
+        }
+        else
+        {
+            Serial.printf("[Serial] Unknown command '%s'. Type help\n", serialLine.c_str());
+        }
+
+        serialLine = "";
+    }
 }
 
 bool adcLooksConnected(int raw, int dev, int lo, int hi)
@@ -496,10 +730,11 @@ void readPH()
     if (!HAS_PH_SENSOR)
         return;
 
-    AnalogSample s = sampleADC(PH_PIN);
-    const float v = readVoltageCalibrated(PH_PIN);
+    float v = NAN;
+    AnalogSample s = samplePHProgram2(v);
     storeAnalogDiagnostics(phDiagnostics, s, v, millis());
     updatePHConnection(s.avg, s.dev);
+    lastPhVoltage = v;
 
     Serial.print("[pH] RAW=");
     Serial.print(s.avg);
@@ -513,11 +748,13 @@ void readPH()
         return;
     }
 
-    phValue = clampFloat((v * PH_SLOPE) + PH_OFFSET, 0.0, 14.0);
+    // Same formula as Program2_SensorpH_ESP32:
+    // ph_act = -5.70 * volt + calibration_value
+    phValue = clampFloat((v * PH_SLOPE) + PH_OFFSET, 0.0f, 14.0f);
 
     Serial.print(" V=");
-    Serial.print(v, 3);
-    Serial.print(" pH=");
+    Serial.print(v, 4);
+    Serial.print("  pH Value: ");
     Serial.println(phValue, 2);
 
     delayMicroseconds(200); // settle before next ADC pin
@@ -939,7 +1176,8 @@ void publishSensorStates()
     reading.phDiagnostics = phDiagnostics;
     reading.turbidityDiagnostics = turbidityDiagnostics;
     reading.orpDiagnostics = orpDiagnostics;
-    reading.calibrated = false;
+    reading.phCalibrated = phUserCalibrated;
+    reading.calibrated = phUserCalibrated;
     signedTelemetryManager.update(reading);
 
     if (!mqtt.connected())
@@ -1034,9 +1272,9 @@ void updateLCD()
     {
         // Page 0: pH, Temp, Turbidity, ORP
         if (phConnected && !isnan(phValue))
-            snprintf(buf, sizeof(buf), "pH: %.2f", phValue);
+            snprintf(buf, sizeof(buf), "pH Value: %.2f", phValue);
         else
-            snprintf(buf, sizeof(buf), "pH: DISCONNECTED");
+            snprintf(buf, sizeof(buf), "pH Value: ----");
         lcdPrintLine(0, buf);
 
         if (tempConnected && !isnan(temperatureC))
@@ -1093,9 +1331,16 @@ void printStatus()
     Serial.println();
     Serial.println("========== AQUASENSE ==========");
 
-    Serial.print("pH: ");
-    if (phConnected)
-        Serial.println(phValue, 2);
+    Serial.print("pH Value: ");
+    if (phConnected && !isnan(phValue))
+    {
+        Serial.print(phValue, 2);
+        Serial.print("  (V=");
+        Serial.print(lastPhVoltage, 4);
+        Serial.print(" offset=");
+        Serial.print(PH_OFFSET, 3);
+        Serial.println(")");
+    }
     else
         Serial.println("DISCONNECTED");
 
@@ -1185,6 +1430,10 @@ void setup()
     analogSetPinAttenuation(PH_PIN, ADC_11db);
     analogSetPinAttenuation(TURB_PIN, ADC_11db);
     analogSetPinAttenuation(ORP_PIN, ADC_11db);
+    pinMode(PH_PIN, INPUT);
+
+    loadPhCalibration();
+    printPhSerialHelp();
 
     tempSensor.begin();
     Serial.print("DS18B20 devices found: ");
@@ -1220,6 +1469,7 @@ void setup()
 void loop()
 {
     unsigned long now = millis();
+    handleSerialCommands();
 
     if (WiFi.status() == WL_CONNECTED && !ntpSyncStarted)
     {

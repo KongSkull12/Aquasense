@@ -17,12 +17,20 @@ const SENSORS: Array<{
   // 'value' when the sensor is digital and reports no separate probe input (DS18B20).
   input: 'voltage' | 'rawAdc' | 'value'; inputUnit: string;
   steadyWithin: number; refLabel: string; refUnit: string; min: number; max: number; presets: number[]; steps: string[]; hint?: string;
+  // Active water-monitor firmware calibrates pH from the ESP32 Serial Monitor, not MQTT CAL_* commands.
+  serialOnly?: boolean;
 }> = [
   {
     key: 'ph', health: 'ph', title: 'pH', input: 'voltage', inputUnit: 'V', steadyWithin: 0.01,
     refLabel: 'Buffer value', refUnit: 'pH', min: 0, max: 14, presets: [6.86, 4.01, 9.18],
-    steps: ['Rinse the probe with distilled water and blot it dry.', 'Put it in the 6.86 buffer, wait for Steady, then capture — the offset saves immediately so this buffer should read correctly.', 'Repeat with 4.01 (and optionally 9.18) to fit the slope as well.'],
-    hint: 'Buffer values are for 25 °C. At 30 °C use 6.85, 4.01 and 9.14 (or the table on your sachet).',
+    serialOnly: true,
+    steps: [
+      'Open the ESP32 Serial Monitor at 115200 baud (PlatformIO / Arduino IDE).',
+      'Rinse and blot the probe, put it in a known buffer (for example 6.86), and wait until Voltage and pH Value settle.',
+      'Type the buffer value and press Enter, e.g. ph 6.86 — the firmware adjusts calibration_value and saves it in NVS.',
+      'Optional checks: ph status  |  ph reset  |  help',
+    ],
+    hint: 'pH is no longer calibrated from this tab. Use Serial Monitor commands on the device. Formula: pH = -5.70 × V + offset (Program2-style trimmed ADC average on GPIO35).',
   },
   {
     key: 'turb', health: 'turbidity', title: 'Turbidity', input: 'voltage', inputUnit: 'V', steadyWithin: 0.03,
@@ -62,7 +70,12 @@ const parseResult = (sensor: SensorKey, result?: string | null): { state: MarkSt
     ? `slope ${slope}, offset ${offset}${sensor === 'ph' && slope !== 0 ? ` (${(1000 / Math.abs(slope)).toFixed(1)} mV per pH)` : ''}`
     : '';
   if (result.startsWith('saved')) return { state: 'ok', text: `Saved on the device, fitted from ${n} point${n === 1 ? '' : 's'}: ${line}.` };
-  if (result.startsWith('recorded')) return { state: 'info', text: `Point 1 recorded (input ${num('x')}). Capture a second reference to finish.` };
+  if (result.startsWith('recorded')) {
+    const need = num('need');
+    const x = num('x');
+    if (need != null && n != null) return { state: 'info', text: `Point ${n} of ${need} recorded${x != null ? ` (input ${x.toFixed(4)} V)` : ''}. Capture the remaining distinct buffers.` };
+    return { state: 'info', text: `Point recorded${x != null ? ` (input ${x.toFixed(4)})` : ''}. Capture the next reference to finish.` };
+  }
   if (result.startsWith('status')) return { state: 'info', text: `Saved calibration: ${line}. ${n} point${n === 1 ? '' : 's'} captured since the device started.` };
   if (result.startsWith('reset')) return { state: 'ok', text: `Reset to the default calibration and saved: ${line}.` };
   if (result === 'cleared') return { state: 'info', text: 'Captured points cleared. The saved calibration is unchanged.' };
@@ -187,7 +200,7 @@ const DashboardCalibrationPage: React.FC = () => {
     <div className="space-y-5">
       <PageHead
         title="Calibration"
-        description="Calibrate pH, turbidity and ORP against reference solutions, optionally temperature against a trusted thermometer, and tank depth from the ultrasonic sensor. Captures are saved on the ESP32."
+        description="Calibrate turbidity and ORP against reference solutions, optionally temperature against a trusted thermometer, and tank depth from the ultrasonic sensor. pH is calibrated on the ESP32 Serial Monitor (ph <buffer>), not from this tab."
         meta={<MetaItem label="Device"><StateMark state={fresh ? 'ok' : 'off'} className="!text-sm !font-semibold">{fresh ? 'Online' : 'Offline or stale'}</StateMark></MetaItem>}
       />
 
@@ -267,9 +280,15 @@ const DashboardCalibrationPage: React.FC = () => {
           const spread = samples.length >= 3 ? Math.max(...samples) - Math.min(...samples) : null;
           const steady = spread !== null && spread <= sensor.steadyWithin;
           const calMark = health?.calibration === 'CALIBRATED' ? 'Calibrated' : health?.calibration === 'REQUIRED' ? 'Needs calibration' : null;
+          const healthState = health?.health;
+          const probeBad = healthState === 'SATURATED' || healthState === 'SENSOR_ERROR' || healthState === 'MISSING'
+            || health?.valid === false && (healthState === 'INVALID' || health?.reason?.toLowerCase().includes('disconnect'));
+          const railStuck = sensor.input === 'voltage' && input != null && (input >= 3.15 || input <= 0.05);
           const settle: { state: MarkState; text: string } = !live || input == null ? { state: 'off', text: calMark || 'No live input' }
-            : spread === null ? { state: 'info', text: 'Measuring…' }
-              : steady ? { state: 'ok', text: calMark ? `Steady · ${calMark}` : 'Steady' } : { state: 'warn', text: 'Settling' };
+            : healthState === 'SATURATED' || railStuck ? { state: 'alarm', text: 'ADC rail / open — fix wiring' }
+              : probeBad ? { state: 'alarm', text: health?.reason || 'Probe not ready' }
+                : spread === null ? { state: 'info', text: 'Measuring…' }
+                  : steady ? { state: 'ok', text: calMark ? `Steady · ${calMark}` : 'Steady' } : { state: 'warn', text: 'Settling' };
 
           const tracked = commands.find((item) => item.id === lastCommand[sensor.key])
             ?? commands.find((item) => sensorOfParam(item.param) === sensor.key);
@@ -307,39 +326,47 @@ const DashboardCalibrationPage: React.FC = () => {
               </ol>
               {sensor.hint && <p className="-mt-2 text-xs leading-relaxed text-ink-3">{sensor.hint}</p>}
 
-              <form onSubmit={(event) => { event.preventDefault(); void send(sensor.key, 'CAL_CAPTURE'); }} className="space-y-2.5">
-                <label className="field-label !mb-0" htmlFor={`ref-${sensor.key}`}>{sensor.refLabel}{sensor.refUnit ? ` (${sensor.refUnit})` : ''}</label>
-                {sensor.presets.length > 0 && (
-                  <div className="flex flex-wrap gap-1.5">
-                    {sensor.presets.map((preset) => (
-                      <button key={preset} type="button" onClick={() => setReferences((current) => ({ ...current, [sensor.key]: String(preset) }))}
-                        aria-pressed={references[sensor.key] === String(preset)}
-                        className={`btn-secondary btn-sm num ${references[sensor.key] === String(preset) ? '!border-ink !bg-band' : ''}`}>
-                        {preset}
+              {sensor.serialOnly ? (
+                <Notice tone="info" title="Serial Monitor only">
+                  Enter the buffer on the device, for example <span className="num font-semibold">ph 6.86</span>. Dashboard Capture / Reset for pH are disabled on the active water-monitor firmware.
+                </Notice>
+              ) : (
+                <>
+                  <form onSubmit={(event) => { event.preventDefault(); void send(sensor.key, 'CAL_CAPTURE'); }} className="space-y-2.5">
+                    <label className="field-label !mb-0" htmlFor={`ref-${sensor.key}`}>{sensor.refLabel}{sensor.refUnit ? ` (${sensor.refUnit})` : ''}</label>
+                    {sensor.presets.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5">
+                        {sensor.presets.map((preset) => (
+                          <button key={preset} type="button" onClick={() => setReferences((current) => ({ ...current, [sensor.key]: String(preset) }))}
+                            aria-pressed={references[sensor.key] === String(preset)}
+                            className={`btn-secondary btn-sm num ${references[sensor.key] === String(preset) ? '!border-ink !bg-band' : ''}`}>
+                            {preset}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    <div className="flex gap-2">
+                      <input id={`ref-${sensor.key}`} type="number" inputMode="decimal" step="any" min={sensor.min} max={sensor.max}
+                        value={references[sensor.key]} onChange={(event) => setReferences((current) => ({ ...current, [sensor.key]: event.target.value }))}
+                        placeholder={sensor.key === 'orp' ? 'e.g. 225' : sensor.key === 'temp' ? 'e.g. 28.4' : ''} className="field num min-w-0 flex-1" />
+                      <button type="submit" disabled={!deviceId || !fresh || busy} title={!fresh ? 'Device must report live readings before a capture.' : !steady && live ? 'Wait until the probe shows Steady for a cleaner capture.' : undefined} className="btn-primary h-10 shrink-0">
+                        {busy ? 'Capturing…' : 'Capture point'}
                       </button>
-                    ))}
+                    </div>
+                    {live && !steady && input != null && <p className="text-xs text-ink-3">Wait for Steady before capturing when you can — the device still accepts a capture while settling.</p>}
+                  </form>
+
+                  <div aria-live="polite" className="min-h-[1.25rem]">
+                    {outcome && <StateMark state={outcome.state}>{outcome.text}</StateMark>}
                   </div>
-                )}
-                <div className="flex gap-2">
-                  <input id={`ref-${sensor.key}`} type="number" inputMode="decimal" step="any" min={sensor.min} max={sensor.max}
-                    value={references[sensor.key]} onChange={(event) => setReferences((current) => ({ ...current, [sensor.key]: event.target.value }))}
-                    placeholder={sensor.key === 'orp' ? 'e.g. 225' : sensor.key === 'temp' ? 'e.g. 28.4' : ''} className="field num min-w-0 flex-1" />
-                  <button type="submit" disabled={!deviceId || !fresh || busy} title={!fresh ? 'Device must report live readings before a capture.' : !steady && live ? 'Wait until the probe shows Steady for a cleaner capture.' : undefined} className="btn-primary h-10 shrink-0">
-                    {busy ? 'Capturing…' : 'Capture point'}
-                  </button>
-                </div>
-                {live && !steady && input != null && <p className="text-xs text-ink-3">Wait for Steady before capturing when you can — the device still accepts a capture while settling.</p>}
-              </form>
 
-              <div aria-live="polite" className="min-h-[1.25rem]">
-                {outcome && <StateMark state={outcome.state}>{outcome.text}</StateMark>}
-              </div>
-
-              <div className="mt-auto flex flex-wrap gap-1 border-t border-line-soft pt-3">
-                <button type="button" disabled={!deviceId || !fresh || busy} onClick={() => void send(sensor.key, 'CAL_STATUS')} className="btn-quiet btn-sm">Read saved calibration</button>
-                <button type="button" disabled={!deviceId || !fresh || busy} onClick={() => void send(sensor.key, 'CAL_CLEAR')} className="btn-quiet btn-sm">Clear points</button>
-                <button type="button" disabled={!deviceId || !fresh || busy} onClick={() => void send(sensor.key, 'CAL_RESET')} className="btn-quiet btn-sm !text-alarm hover:!bg-alarm-bg">Reset to default</button>
-              </div>
+                  <div className="mt-auto flex flex-wrap gap-1 border-t border-line-soft pt-3">
+                    <button type="button" disabled={!deviceId || !fresh || busy} onClick={() => void send(sensor.key, 'CAL_STATUS')} className="btn-quiet btn-sm">Read saved calibration</button>
+                    <button type="button" disabled={!deviceId || !fresh || busy} onClick={() => void send(sensor.key, 'CAL_CLEAR')} className="btn-quiet btn-sm">Clear points</button>
+                    <button type="button" disabled={!deviceId || !fresh || busy} onClick={() => void send(sensor.key, 'CAL_RESET')} className="btn-quiet btn-sm !text-alarm hover:!bg-alarm-bg">Reset to default</button>
+                  </div>
+                </>
+              )}
             </Panel>
           );
         })}

@@ -109,7 +109,7 @@ const DashboardOverviewPage: React.FC = () => {
             ? { label: `Reported, ${humanize(latestReading.sensorHealth.ph.health)}`, state: 'warn' }
             : getStatus('ph', reportedPh, isQualified('ph'), true))
         : live && (latestReading?.sensorHealth?.ph?.communication || latestReading?.sensorHealth?.ph?.rawAdc != null)
-          ? { label: 'Calibration required — capture buffer standards', state: 'trust' }
+          ? { label: 'Calibration required — Serial: ph <buffer>', state: 'trust' }
           : getStatus('ph', null, false, false),
     },
     {
@@ -168,7 +168,16 @@ const DashboardOverviewPage: React.FC = () => {
     if (alertNames.length) nextSteps.unshift({ text: `${alertNames.join(' and ')} ${alertNames.length > 1 ? 'are' : 'is'} in Alert. Check the tank.`, ...(staffSession ? {} : { to: '/dashboard/thresholds', cta: 'Thresholds' }) });
     else if (warningNames.length) nextSteps.unshift({ text: `${warningNames.join(' and ')} ${warningNames.length > 1 ? 'are' : 'is'} in Warning.`, ...(staffSession ? {} : { to: '/dashboard/thresholds', cta: 'Thresholds' }) });
     const uncalibrated = (['temperature', 'ph'] as const).filter((name) => latestReading.sensorHealth?.[name] && !isCalibrated(name));
-    if (uncalibrated.length) nextSteps.push({ text: `Calibrate the ${uncalibrated.map((name) => name === 'ph' ? 'pH' : 'temperature').join(' and ')} probe${uncalibrated.length > 1 ? 's' : ''} so readings can be classified and the NH₃ fraction estimated.`, ...(staffSession ? {} : { to: '/dashboard/calibration', cta: 'Calibrate' }) });
+    if (uncalibrated.length) {
+      const names = uncalibrated.map((name) => name === 'ph' ? 'pH' : 'temperature');
+      const onlyPh = uncalibrated.length === 1 && uncalibrated[0] === 'ph';
+      nextSteps.push({
+        text: onlyPh
+          ? 'Calibrate the pH probe from the ESP32 Serial Monitor (for example ph 6.86) so readings can be classified and the NH₃ fraction estimated.'
+          : `Calibrate the ${names.join(' and ')} probe${uncalibrated.length > 1 ? 's' : ''} so readings can be classified and the NH₃ fraction estimated. pH uses Serial Monitor (ph <buffer>); temperature uses the Calibration tab.`,
+        ...(staffSession || onlyPh ? {} : { to: '/dashboard/calibration', cta: 'Calibrate' }),
+      });
+    }
     const silent = [latestReading.orp == null ? 'ORP' : null, readings[4].value == null ? 'tank level' : null].filter(Boolean);
     if (silent.length) nextSteps.push({ text: `${silent.join(' and ')} ${silent.length > 1 ? 'sensors are' : 'sensor is'} not reporting.` });
     if (riskAssessment?.status === 'AVAILABLE' && (riskAssessment.level === 'High' || riskAssessment.level === 'Extreme')) {

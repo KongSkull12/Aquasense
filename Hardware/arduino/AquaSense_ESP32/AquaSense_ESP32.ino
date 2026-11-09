@@ -162,7 +162,7 @@ struct Calibration {
   float turbSlope, turbOffset;   // NTU per volt, NTU (linear in sensor voltage)
 };
 const Calibration DEFAULT_CAL = {
-  -5.70f, 21.34f,                // provisional PH-4502C; replace with two buffer captures
+  -5.70f, 21.34f,                // provisional PH-4502C; replace with three buffer captures
   0.0f, 0.0f,                    // SEN0165: OFFSET 0 until zero/reference calibration
   0.0f, 0.0f,                    // AstroC: uncalibrated until certified standards are captured
 };
@@ -170,7 +170,7 @@ Calibration cal = DEFAULT_CAL;
 const float TURB_MAX_NTU = 1000.0;   // AstroC-class modules commonly claim ~0–1000 NTU (unverified)
 const char* const CAL_NVS_KEY = "cal2";
 const char* const CAL_VER_KEY = "calVer";
-const uint8_t CAL_FORMULA_VERSION = 3;   // 3 = SEN0165 ORP + linear AstroC turbidity
+const uint8_t CAL_FORMULA_VERSION = 4;   // 4 = three-point pH fit; corrected pH temperature handling
 
 // Analog front-end: 5 V modules into ESP32 ADC. Divider ratios are UNVERIFIED
 // until measured. ratio = Vsensor / Vadc = (Rtop + Rbot) / Rbot when sensing
@@ -185,6 +185,19 @@ struct AnalogFrontEnd {
 const AnalogFrontEnd DEFAULT_AFE = { 1.0f, 1.0f, 1.0f, 5.00f };
 AnalogFrontEnd afe = DEFAULT_AFE;
 const char* const AFE_NVS_KEY = "afe1";
+// Explicit Serial "afe ph|orp|turb <ratio>" marks the channel commissioned.
+// Default ratio 1.0 alone is not enough — that blocked accidental calibration
+// before resistors were measured. Ratio 1.0 is allowed once commissioned
+// (direct PO→GPIO with no divider, after you confirm the pin stays ≤ ~3.3 V).
+struct AfeCommission {
+  uint8_t ph;
+  uint8_t orp;
+  uint8_t turb;
+  uint8_t reserved;
+};
+const AfeCommission DEFAULT_AFE_COMMISSION = { 0, 0, 0, 0 };
+AfeCommission afeOk = DEFAULT_AFE_COMMISSION;
+const char* const AFE_OK_NVS_KEY = "afeOk1";
 bool phUserCalibrated = false;
 bool orpUserCalibrated = false;
 bool turbUserCalibrated = false;
@@ -694,13 +707,13 @@ float orpFromSensorVoltage(float sensorVolts) {
 }
 
 float phFromSensorVoltage(float sensorVolts) {
-  if (!isfinite(sensorVolts) || !isfinite(cal.phSlope)) return NAN;
-  // cal.phSlope is pH/V at ~25 °C. Electrode mV/pH ∝ T, so pH/V ∝ 1/T.
-  float slope = cal.phSlope;
-  if (tempS.connected && isfinite(tempS.value) && tempS.value > -5.0f && tempS.value < 60.0f) {
-    slope = cal.phSlope * (298.15f / (tempS.value + 273.15f));
-  }
-  return sensorVolts * slope + cal.phOffset;
+  if (!isfinite(sensorVolts) || !isfinite(cal.phSlope) || !isfinite(cal.phOffset)) return NAN;
+  // Use the calibrated linear fit as captured. Do not scale the slope with
+  // temperature while holding the intercept fixed: that shifts every buffer
+  // away from its calibrated reference. Proper Nernst compensation needs a
+  // stored voltage/pH anchor and calibration temperature, which this legacy
+  // NVS structure does not contain.
+  return sensorVolts * cal.phSlope + cal.phOffset;
 }
 
 AnalogDiag sampleADC(int pin, float dividerRatio, int samples = 11) {
@@ -784,7 +797,7 @@ void readAnalogSensors() {
     // Do not silently clamp into 0–14; out-of-range stays visible as OUT_OF_RANGE.
   }
   // Provisional factory pH coefficients are not treated as a completed calibration.
-  phS.quality = classifyAnalog(phS, 15.0f, phUserCalibrated,
+  phS.quality = classifyAnalog(phS, 15.0f, phUserCalibrated && afeOk.ph,
                                isfinite(phS.value) && phS.value >= 0.0f && phS.value <= 14.0f);
   delay(2);
 
@@ -800,7 +813,7 @@ void readAnalogSensors() {
     const float v = isfinite(turbS.diag.filteredVoltage) ? turbS.diag.filteredVoltage : turbS.diag.sensorVoltage;
     turbS.value = turbidityFromSensorVoltage(v);
   }
-  const bool turbCal = turbUserCalibrated && cal.turbSlope != 0.0f;
+  const bool turbCal = turbUserCalibrated && cal.turbSlope != 0.0f && afeOk.turb;
   turbS.quality = classifyAnalog(turbS, 25.0f, turbCal,
                                  isfinite(turbS.value) && turbS.value >= 0.0f && turbS.value <= TURB_MAX_NTU);
   delay(2);
@@ -812,7 +825,7 @@ void readAnalogSensors() {
     const float v = isfinite(orpS.diag.filteredVoltage) ? orpS.diag.filteredVoltage : orpS.diag.sensorVoltage;
     orpS.value = orpFromSensorVoltage(v);
   }
-  orpS.quality = classifyAnalog(orpS, 20.0f, orpUserCalibrated,
+  orpS.quality = classifyAnalog(orpS, 20.0f, orpUserCalibrated && afeOk.orp,
                                 isfinite(orpS.value) && orpS.value >= -2000.0f && orpS.value <= 2000.0f);
 }
 
@@ -1366,19 +1379,29 @@ void loadAnalogFrontEnd() {
   if (!(afe.orpDivider >= 1.0f && afe.orpDivider <= 10.0f)) afe.orpDivider = DEFAULT_AFE.orpDivider;
   if (!(afe.turbDivider >= 1.0f && afe.turbDivider <= 10.0f)) afe.turbDivider = DEFAULT_AFE.turbDivider;
   if (!(afe.orpModuleSupplyV >= 4.5f && afe.orpModuleSupplyV <= 5.5f)) afe.orpModuleSupplyV = DEFAULT_AFE.orpModuleSupplyV;
+  if (prefs.getBytesLength(AFE_OK_NVS_KEY) == sizeof(AfeCommission)) {
+    prefs.getBytes(AFE_OK_NVS_KEY, &afeOk, sizeof(afeOk));
+  }
+  // Legacy: a non-default saved ratio means the channel was already commissioned.
+  if (!afeOk.ph && fabsf(afe.phDivider - DEFAULT_AFE.phDivider) > 0.0001f) afeOk.ph = 1;
+  if (!afeOk.orp && fabsf(afe.orpDivider - DEFAULT_AFE.orpDivider) > 0.0001f) afeOk.orp = 1;
+  if (!afeOk.turb && fabsf(afe.turbDivider - DEFAULT_AFE.turbDivider) > 0.0001f) afeOk.turb = 1;
 }
 
 void saveAnalogFrontEnd() {
   prefs.putBytes(AFE_NVS_KEY, &afe, sizeof(afe));
+  prefs.putBytes(AFE_OK_NVS_KEY, &afeOk, sizeof(afeOk));
 }
 
 void printAnalogFrontEnd() {
-  Serial.println("---- analog front-end (UNVERIFIED until measured) ----");
-  Serial.printf("pH divider   : %.3f  (Vsensor = Vadc * ratio)\n", afe.phDivider);
-  Serial.printf("ORP divider  : %.3f\n", afe.orpDivider);
-  Serial.printf("Turb divider : %.3f\n", afe.turbDivider);
+  Serial.println("---- analog front-end ----");
+  Serial.printf("pH divider   : %.3f  %s  (Vsensor = Vadc * ratio)\n",
+                afe.phDivider, afeOk.ph ? "[set]" : "[NOT SET — run: afe ph <ratio>]");
+  Serial.printf("ORP divider  : %.3f  %s\n", afe.orpDivider, afeOk.orp ? "[set]" : "[NOT SET]");
+  Serial.printf("Turb divider : %.3f  %s\n", afe.turbDivider, afeOk.turb ? "[set]" : "[NOT SET]");
   Serial.printf("ORP Vmodule  : %.3f V (SEN0165 supply; DFRobot wants ~5.00 V)\n", afe.orpModuleSupplyV);
-  Serial.println("WARNING: 5 V module outputs can damage ESP32 ADC inputs without a verified divider or level shift.");
+  Serial.println("Set measured ratios before calibration: afe ph|orp|turb <ratio> (1.0–10.0).");
+  Serial.println("Ratio = (Rtop + Rbottom) / Rbottom; measure resistors. Use 1.0 only if PO wires straight to the GPIO and stays under ~3.3 V.");
 }
 
 void printTankCalibration() {
@@ -1407,7 +1430,7 @@ void loadCalibration() {
   }
 
   const uint8_t ver = prefs.getUChar(CAL_VER_KEY, 0);
-  if (ver < CAL_FORMULA_VERSION) {
+  if (ver < 3) {
     // Migrate off the old linear ORP model (slope ≈ 1333 mV/V, offset ≈ -2000)
     // and the SEN0189 turbidity polynomial wrapper.
     if (fabsf(cal.orpSlope - 1333.33f) < 80.0f || fabsf(cal.orpOffset + 2000.0f) < 50.0f) {
@@ -1433,6 +1456,10 @@ void loadCalibration() {
     prefs.putBytes(CAL_NVS_KEY, &cal, sizeof(cal));
     prefs.putUChar(CAL_VER_KEY, CAL_FORMULA_VERSION);
   }
+
+  // Formula v4 changes runtime pH compensation/calibration policy but does not
+  // change the Calibration struct layout or invalidate a valid v3 voltage fit.
+  prefs.putUChar(CAL_VER_KEY, CAL_FORMULA_VERSION);
 
   // Prefer explicit flags; fall back to coefficient heuristics for older flash.
   phUserCalibrated = prefs.getBool("phCal", false)
@@ -1625,27 +1652,50 @@ void serviceBenchPump() {
   }
 }
 
-// Average ~3 s of reconstructed sensor voltages; refuse if still drifting.
+// Set by captureInput on failure so callers can return a stable dashboard code.
+const char* captureRejectCode = nullptr;
+
+// Average ~3 s of reconstructed sensor voltages; refuse if still drifting or at a rail.
 bool captureInput(int pin, float dividerRatio, float maxSpread, float& mean) {
+  captureRejectCode = nullptr;
   const int n = 30;
-  float sum = 0, lo = 1e9f, hi = -1e9f;
+  float sum = 0, adcSum = 0, lo = 1e9f, hi = -1e9f;
+  int clipHits = 0, rawLo = 4095, rawHi = 0;
   Serial.print("Sampling 3 s, keep the probe still");
   for (int i = 0; i < n; i++) {
     const AnalogDiag d = sampleADC(pin, dividerRatio);
     const float x = d.sensorVoltage;
-    sum += x; lo = min(lo, x); hi = max(hi, x);
+    sum += x; adcSum += d.voltage; lo = min(lo, x); hi = max(hi, x);
+    rawLo = min(rawLo, d.rawAdc); rawHi = max(rawHi, d.rawAdc);
+    if (d.clipped > 0 || d.rawAdc <= 0 || d.rawAdc >= 4095) clipHits++;
     if (i % 6 == 0) Serial.print('.');
     mqtt.loop();
     delay(80);
   }
   mean = sum / n;
+  const float meanAdc = adcSum / n;
   const float spread = hi - lo;
-  Serial.printf(" mean Vsensor=%.4f V  spread %.4f V\n", mean, spread);
+  Serial.printf(" mean Vsensor=%.4f V  Vadc=%.4f V  spread %.4f V  raw %d..%d\n",
+                mean, meanAdc, spread, rawLo, rawHi);
+  if (clipHits >= n / 3 || rawLo <= 5 || rawHi >= 4090 || meanAdc >= 3.15f || meanAdc <= 0.05f) {
+    Serial.println("ADC at a rail or open. Check sensor wiring, module power/GND, and any divider.");
+    captureRejectCode = "rejected_adc_saturated";
+    return false;
+  }
   if (spread > maxSpread) {
     Serial.printf("Not steady (spread above %.3f V). Wait for the reading to settle and try again.\n", maxSpread);
+    captureRejectCode = "rejected_not_steady";
     return false;
   }
   return true;
+}
+
+// True when a new capture voltage is too close to a voltage already stored.
+bool voltageAlreadyCaptured(const float* xs, uint8_t count, float mean, float minDelta) {
+  for (uint8_t i = 0; i < count; i++) {
+    if (fabsf(xs[i] - mean) < minDelta) return true;
+  }
+  return false;
 }
 
 // DS18B20 version: average 5 uncorrected conversions (~4 s); false if one fails or they drift.
@@ -1714,41 +1764,75 @@ void calibrate(const String& sensor, float reference, char* result, size_t resul
   const TempCalibration previousTemp = tempCal;
 
   if (sensor == "ph") {
+    if (!afeOk.ph || !(afe.phDivider >= 1.0f && afe.phDivider <= 10.0f)) {
+      Serial.println("Calibration blocked: enter the measured divider ratio first using afe ph <ratio>.");
+      setResult(result, resultSize, "rejected_divider_ratio_unset"); return;
+    }
     if (reference < 0 || reference > 14) { Serial.println("pH buffer must be 0-14."); setResult(result, resultSize, "rejected_out_of_range"); return; }
-    if (!phS.connected) Serial.println("Warning: pH PO input currently looks disconnected.");
+    if (!phS.connected) {
+      Serial.println("pH PO input looks disconnected (ADC near rail or open). Fix wiring before capturing.");
+      setResult(result, resultSize, "rejected_disconnected"); return;
+    }
+    // These three buffers span the working pH range and reduce sensitivity
+    // to noise/non-linearity compared with a two-point fit.
+    const bool supportedBuffer =
+      fabsf(reference - 4.01f) <= 0.08f ||
+      fabsf(reference - 6.86f) <= 0.08f ||
+      fabsf(reference - 9.18f) <= 0.08f;
+    if (!supportedBuffer) {
+      Serial.println("Use the supported pH buffers: 4.01, 6.86, or 9.18.");
+      setResult(result, resultSize, "rejected_unsupported_buffer"); return;
+    }
     // PH-4502C: use PO analog only. Spread limit ~20 mV at the reconstructed sensor node.
-    if (!captureInput(PH_PIN, afe.phDivider, 0.02f, mean)) { setResult(result, resultSize, "rejected_not_steady"); return; }
+    if (!captureInput(PH_PIN, afe.phDivider, 0.02f, mean)) {
+      setResult(result, resultSize, captureRejectCode ? captureRejectCode : "rejected_not_steady");
+      return;
+    }
+    if (voltageAlreadyCaptured(phPtX, phPts, mean, 0.05f)) {
+      Serial.println("This buffer produced almost the same voltage as a point already captured. Probe may be stuck, dry, or miswired.");
+      setResult(result, resultSize, "rejected_same_input"); return;
+    }
     phPts = points = addPoint(phPtX, phPtY, phPts, mean, reference, 0.05f);
-    Serial.printf("Recorded pH %.2f at Vsensor %.4f V (%u point%s)\n", reference, mean, phPts, phPts > 1 ? "s" : "");
-    if (phPts < 2) {
-      Calibration trial = cal;
-      trial.phOffset = reference - trial.phSlope * mean;
-      cal = trial;
-      phUserCalibrated = true;
-      saveCalibration();
-      Serial.println("Offset saved from this buffer (provisional slope kept). Rinse and capture a second buffer (e.g. ph 4.01) to fit the slope.");
-      printCalibration();
-      if (result) snprintf(result, resultSize, "saved n=1 slope=%.5f offset=%.4f", cal.phSlope, cal.phOffset);
+    Serial.printf("Recorded pH %.2f at Vsensor %.4f V (%u/3 buffers)\n", reference, mean, phPts);
+    if (phPts < 3) {
+      Serial.println("Point recorded only in RAM. Capture all three distinct buffers (4.01, 6.86, 9.18); existing saved calibration remains active.");
+      if (result) snprintf(result, resultSize, "recorded n=%u need=3", phPts);
       return;
     }
     float slope, offset;
     if (inputRange(phPtX, phPts) < 0.05f || !fitLine(phPtX, phPtY, phPts, slope, offset)) {
-      Serial.println("Buffers gave almost the same voltage: check the probe and buffers.");
+      Serial.println("Buffers gave almost the same voltage: check probe, wiring, divider ratio, and buffers.");
+      phPts = 0;
       setResult(result, resultSize, "rejected_same_input"); return;
     }
     const float mvPerPh = 1000.0f / fabsf(slope);
-    // Glass electrode theoretical ~59 mV/pH at 25 °C; allow board gain / aging span.
-    if (mvPerPh < 30 || mvPerPh > 400) {
-      Serial.printf("Rejected: %.1f mV per pH is not plausible. Previous calibration kept.\n", mvPerPh);
-      cal = previous;
+    if (!isfinite(slope) || !isfinite(offset) || mvPerPh < 30.0f || mvPerPh > 400.0f) {
+      Serial.printf("Rejected: %.1f mV per pH is implausible. Previous calibration kept.\n", mvPerPh);
       setResult(result, resultSize, "rejected_implausible_slope"); return;
     }
-    cal.phSlope = slope; cal.phOffset = offset; phUserCalibrated = true;
+    // The 3-point fit must predict each captured buffer reasonably closely.
+    float maxResidual = 0.0f;
+    for (uint8_t i = 0; i < phPts; ++i) {
+      maxResidual = max(maxResidual, fabsf((slope * phPtX[i] + offset) - phPtY[i]));
+    }
+    if (maxResidual > 0.35f) {
+      Serial.printf("Rejected: 3-point pH fit residual %.3f pH exceeds 0.35. Check probe cleanliness and buffer freshness.\n", maxResidual);
+      setResult(result, resultSize, "rejected_poor_fit"); return;
+    }
+    cal.phSlope = slope;
+    cal.phOffset = offset;
+    phUserCalibrated = true;
   } else if (sensor == "orp") {
     // SEN0165: circuit equation is fixed; calibration adjusts OFFSET only.
     // Do NOT press the board zero button while the ORP probe is connected.
+    if (!afeOk.orp || !(afe.orpDivider >= 1.0f && afe.orpDivider <= 10.0f)) {
+      Serial.println("Calibration blocked: enter the measured divider ratio first using afe orp <ratio>.");
+      setResult(result, resultSize, "rejected_divider_ratio_unset"); return;
+    }
     if (reference < -2000 || reference > 2000) { Serial.println("ORP standard must be -2000..2000 mV."); setResult(result, resultSize, "rejected_out_of_range"); return; }
-    if (!captureInput(ORP_PIN, afe.orpDivider, 0.025f, mean)) { setResult(result, resultSize, "rejected_not_steady"); return; }
+    if (!captureInput(ORP_PIN, afe.orpDivider, 0.025f, mean)) {
+      setResult(result, resultSize, captureRejectCode ? captureRejectCode : "rejected_not_steady"); return;
+    }
     orpPts = points = addPoint(orpPtX, orpPtY, orpPts, mean, reference, 5.0f);
     const float circuit = 400.0f * afe.orpModuleSupplyV - 1000.0f * mean;   // before OFFSET
     const float newOffset = circuit - reference;
@@ -1765,14 +1849,24 @@ void calibrate(const String& sensor, float reference, char* result, size_t resul
     orpUserCalibrated = true;
   } else if (sensor == "turb") {
     // AstroC: fit NTU = slope * Vsensor + offset from certified standards only.
+    if (!afeOk.turb || !(afe.turbDivider >= 1.0f && afe.turbDivider <= 10.0f)) {
+      Serial.println("Calibration blocked: enter the measured divider ratio first using afe turb <ratio>.");
+      setResult(result, resultSize, "rejected_divider_ratio_unset"); return;
+    }
     if (reference < 0 || reference > TURB_MAX_NTU) {
       Serial.printf("Turbidity standard must be 0-%.0f NTU for this module class.\n", TURB_MAX_NTU);
       setResult(result, resultSize, "rejected_out_of_range"); return;
     }
-    if (!captureInput(TURB_PIN, afe.turbDivider, 0.05f, mean)) { setResult(result, resultSize, "rejected_not_steady"); return; }
+    if (!captureInput(TURB_PIN, afe.turbDivider, 0.05f, mean)) {
+      setResult(result, resultSize, captureRejectCode ? captureRejectCode : "rejected_not_steady"); return;
+    }
     if (mean < 0.10f) {
       Serial.println("Turbidity sensor voltage is too low. Check 5 V/3.3 V power, Analog mode, wiring to GPIO34, and divider.");
       setResult(result, resultSize, "rejected_turb_voltage_low"); return;
+    }
+    if (voltageAlreadyCaptured(turbPtX, turbPts, mean, 0.05f)) {
+      Serial.println("This standard produced almost the same voltage as a point already captured.");
+      setResult(result, resultSize, "rejected_same_input"); return;
     }
     turbPts = points = addPoint(turbPtX, turbPtY, turbPts, mean, reference, 0.5f);
     Serial.printf("Recorded %.1f NTU at Vsensor %.4f V (%u point%s)\n", reference, mean, turbPts, turbPts > 1 ? "s" : "");
@@ -1788,12 +1882,17 @@ void calibrate(const String& sensor, float reference, char* result, size_t resul
       setResult(result, resultSize, "rejected_same_input"); return;
     }
     // Optical turbidity: voltage usually falls as NTU rises => slope typically negative.
-    if (!isfinite(slope) || fabsf(slope) < 1e-4f) {
+    if (!isfinite(slope) || !isfinite(offset) || fabsf(slope) < 1e-4f) {
       Serial.println("Rejected: turbidity slope is not usable. Previous calibration kept.");
-      cal = previous;
       setResult(result, resultSize, "rejected_implausible_slope"); return;
     }
-    if (slope > 0) Serial.println("Note: fitted slope is positive. Confirm standards and that higher NTU lowers voltage for this module.");
+    if (slope > 0) Serial.println("Warning: positive turbidity slope. Confirm sensor response and that standards were not swapped.");
+    // For the specified 0 and 100 NTU standards this fit is a two-point
+    // interpolation; retain a finite-range guard to catch corrupt values.
+    if (fabsf(slope) > 5000.0f || fabsf(offset) > 5000.0f) {
+      Serial.println("Rejected: turbidity fit is outside safe numeric bounds.");
+      setResult(result, resultSize, "rejected_implausible_slope"); return;
+    }
     cal.turbSlope = slope; cal.turbOffset = offset; turbUserCalibrated = true;
   } else if (sensor == "temp") {
     if (reference < -10 || reference > 60) { Serial.println("Reference temperature must be -10 to 60 C."); setResult(result, resultSize, "rejected_out_of_range"); return; }
@@ -1862,12 +1961,29 @@ bool clearPoints(const String& sensor) {
 bool runTankCalibrationCommand(const char* action, const String& rest, char* result, size_t resultSize) {
   if (!strcmp(action, "CAL_CAPTURE")) {
     if (rest == "empty") {
-      if (!ultraS.connected || !isfinite(ultraS.value)) { setResult(result, resultSize, "rejected_no_ultrasonic"); return true; }
-      tankCal.mountHeightCm = ultraS.value;
+      // Take five fresh echoes instead of trusting one cached loop sample.
+      float sum = 0.0f, lo = 1e6f, hi = -1e6f;
+      uint8_t good = 0;
+      for (uint8_t i = 0; i < 5; ++i) {
+        digitalWrite(ULTRASONIC_TRIG, LOW); delayMicroseconds(2);
+        digitalWrite(ULTRASONIC_TRIG, HIGH); delayMicroseconds(10);
+        digitalWrite(ULTRASONIC_TRIG, LOW);
+        const unsigned long duration = pulseIn(ULTRASONIC_ECHO, HIGH, 30000);
+        const float d = duration * 0.0343f / 2.0f;
+        if (duration > 0 && d >= 20.0f && d <= 800.0f) {
+          sum += d; lo = min(lo, d); hi = max(hi, d); ++good;
+        }
+        delay(70);
+      }
+      if (good < 4 || (hi - lo) > 1.5f) {
+        Serial.printf("Tank capture rejected: valid=%u/5, spread=%.2f cm. Keep the tank empty and sensor still.\n", good, good ? hi-lo : 999.0f);
+        setResult(result, resultSize, "rejected_not_steady"); return true;
+      }
+      tankCal.mountHeightCm = sum / good;
       saveTankCalibration();
-      Serial.printf("Tank mount height saved: %.2f cm\n", tankCal.mountHeightCm);
+      Serial.printf("Tank mount height saved from %u readings: %.2f cm\n", good, tankCal.mountHeightCm);
       printTankCalibration();
-      snprintf(result, resultSize, "saved n=1 slope=%.5f offset=%.4f", tankCal.mountHeightCm, tankCal.targetDepthCm);
+      snprintf(result, resultSize, "saved n=%u slope=%.5f offset=%.4f", good, tankCal.mountHeightCm, tankCal.targetDepthCm);
       return true;
     }
     if (rest.startsWith("target:")) {
@@ -1960,22 +2076,45 @@ void handleSerialCommand(String line) {
     if (rest.startsWith("ph ")) {
       const float r = rest.substring(3).toFloat();
       if (!(r >= 1.0f && r <= 10.0f)) { Serial.println("Divider ratio must be 1.0–10.0 (measured)."); return; }
-      afe.phDivider = r; saveAnalogFrontEnd(); printAnalogFrontEnd(); return;
+      if (fabsf(r - afe.phDivider) > 0.0001f) {
+        afe.phDivider = r; cal.phSlope = DEFAULT_CAL.phSlope; cal.phOffset = DEFAULT_CAL.phOffset;
+        phUserCalibrated = false; phPts = 0; saveCalibration();
+        Serial.println("pH calibration invalidated because its divider ratio changed.");
+      }
+      afeOk.ph = 1;
+      saveAnalogFrontEnd(); printAnalogFrontEnd(); return;
     }
     if (rest.startsWith("orp ")) {
       const float r = rest.substring(4).toFloat();
       if (!(r >= 1.0f && r <= 10.0f)) { Serial.println("Divider ratio must be 1.0–10.0 (measured)."); return; }
-      afe.orpDivider = r; saveAnalogFrontEnd(); printAnalogFrontEnd(); return;
+      if (fabsf(r - afe.orpDivider) > 0.0001f) {
+        afe.orpDivider = r; cal.orpOffset = DEFAULT_CAL.orpOffset;
+        orpUserCalibrated = false; orpPts = 0; saveCalibration();
+        Serial.println("ORP calibration invalidated because its divider ratio changed.");
+      }
+      afeOk.orp = 1;
+      saveAnalogFrontEnd(); printAnalogFrontEnd(); return;
     }
     if (rest.startsWith("turb ")) {
       const float r = rest.substring(5).toFloat();
       if (!(r >= 1.0f && r <= 10.0f)) { Serial.println("Divider ratio must be 1.0–10.0 (measured)."); return; }
-      afe.turbDivider = r; saveAnalogFrontEnd(); printAnalogFrontEnd(); return;
+      if (fabsf(r - afe.turbDivider) > 0.0001f) {
+        afe.turbDivider = r; cal.turbSlope = DEFAULT_CAL.turbSlope; cal.turbOffset = DEFAULT_CAL.turbOffset;
+        turbUserCalibrated = false; turbPts = 0; saveCalibration();
+        Serial.println("Turbidity calibration invalidated because its divider ratio changed.");
+      }
+      afeOk.turb = 1;
+      saveAnalogFrontEnd(); printAnalogFrontEnd(); return;
     }
     if (rest.startsWith("orp-vmod ")) {
       const float v = rest.substring(9).toFloat();
       if (!(v >= 4.5f && v <= 5.5f)) { Serial.println("ORP module supply must be 4.5–5.5 V (measure it)."); return; }
-      afe.orpModuleSupplyV = v; saveAnalogFrontEnd(); printAnalogFrontEnd(); return;
+      if (fabsf(v - afe.orpModuleSupplyV) > 0.001f) {
+        afe.orpModuleSupplyV = v; cal.orpOffset = DEFAULT_CAL.orpOffset;
+        orpUserCalibrated = false; orpPts = 0; saveCalibration();
+        Serial.println("ORP calibration invalidated because the module supply value changed.");
+      }
+      saveAnalogFrontEnd(); printAnalogFrontEnd(); return;
     }
     Serial.println("Use: afe | afe ph|orp|turb <ratio> | afe orp-vmod <volts>");
     return;
@@ -1983,6 +2122,10 @@ void handleSerialCommand(String line) {
   if (cmd == "orp" && rest == "zero") {
     // Manufacturer-style zero OFFSET from the circuit reading. Probe must be
     // disconnected from the BNC; do not press the board button with probe attached.
+    if (!afeOk.orp || !(afe.orpDivider >= 1.0f && afe.orpDivider <= 10.0f)) {
+      Serial.println("ORP zero blocked: enter the measured ratio first using afe orp <ratio>.");
+      return;
+    }
     float mean = 0;
     if (!captureInput(ORP_PIN, afe.orpDivider, 0.025f, mean)) return;
     const float circuit = 400.0f * afe.orpModuleSupplyV - 1000.0f * mean;

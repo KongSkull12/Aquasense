@@ -37,6 +37,8 @@ struct SensorReadings {
     AnalogDiagnostics phDiagnostics;
     AnalogDiagnostics turbidityDiagnostics;
     AnalogDiagnostics orpDiagnostics;
-    // A future commissioned profile must explicitly supply this evidence.
+    // True after a successful Serial `ph <buffer>` calibration saved in NVS.
+    bool phCalibrated = false;
+    // Legacy whole-frame flag; prefer per-sensor phCalibrated for pH.
     bool calibrated = false;
 };

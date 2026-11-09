@@ -312,6 +312,7 @@ bool MqttManager::publishReadings(const SensorReadings& reading) {
                   false, reading.phDiagnostics);
         addSensor("ph", reading.phConnected, reading.phValid, reading.ph,
                   isfinite(reading.ph), reading.phDiagnostics.sampledAtMs, true, reading.phDiagnostics);
+        sensors["ph"]["calibrated"] = reading.phCalibrated;
         addSensor("orp", reading.orpConnected, reading.orpValid, reading.orpMv,
                   isfinite(reading.orpMv), reading.orpDiagnostics.sampledAtMs, true, reading.orpDiagnostics);
 

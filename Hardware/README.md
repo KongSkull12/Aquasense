@@ -44,7 +44,7 @@ logs or screenshots.
 
 | Hardware | ESP32 GPIO | Firmware behavior |
 | --- | ---: | --- |
-| pH analog output | 35 | Formula-based estimate; verify coefficients and signal conditioning |
+| pH analog output | 35 | Program2-style trimmed ADC average; `pH = -5.70×V + offset`. Calibrate from Serial (`ph <buffer>`), not the dashboard Calibration tab |
 | Turbidity analog output | 34 | Formula-based NTU estimate; validate against reference samples |
 | ORP analog output | 32 | ORP mV estimate; this is not dissolved oxygen |
 | DS18B20 data | 4 | Temperature via OneWire |
@@ -59,6 +59,30 @@ or buzzers.
 The conversion coefficients and sensor connection windows are firmware
 settings, not proof of calibration. ORP is not a dissolved-oxygen measurement;
 the current backend frame does not include an ultrasonic tank-level reading.
+
+## pH Serial calibration
+
+Open the Serial Monitor at **115200** baud after flashing `water-monitor`.
+
+1. Put the cleaned probe in a known buffer (for example 6.86 or 7.00).
+2. Watch `pH Value:` and `V=` until the reading is steady.
+3. Type the buffer value and press Enter:
+
+```text
+ph 6.86
+```
+
+The firmware recomputes `calibration_value` (offset) from the current voltage
+using `offset = buffer - (-5.70 × V)`, saves it in NVS, and the LCD / MQTT pH
+reading uses that offset immediately.
+
+Other commands:
+
+```text
+ph status
+ph reset
+help
+```
 
 ## Local configuration
 

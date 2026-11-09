@@ -50,7 +50,11 @@ class SensorReadingService {
       const validationNow=Date.now();
       const sensorHealth=Object.fromEntries(SENSOR_NAMES.map(name=>[name,this.validator.validate(deviceId,name,
         payload[name], payload.sensorTimestamps?.[name] ?? this.sensorTimestamp(payload.sensors?.[name],validationNow,timestamp),payload.sensors?.[name],validationNow,name==='turbidity'?unit:undefined,
-        { commissioned: name !== 'temperature' && commissioned.has(name as CalibratedSensor) })])) as unknown as ExtendedHealthSummary;
+        { commissioned: name !== 'temperature' && (
+          // Active water-monitor firmware commissions pH via Serial `ph <buffer>` and reports it on the signed frame.
+          (name === 'ph' && payload.sensors?.ph?.calibrated === true) ||
+          commissioned.has(name as CalibratedSensor)
+        ) })])) as unknown as ExtendedHealthSummary;
       const ultrasonic = this.readUltrasonic(payload, validationNow);
       if (ultrasonic) sensorHealth.ultrasonic = ultrasonic;
       const speciation=ammoniaSpeciation(sensorHealth,payload.tan,payload.waterType ?? 'freshwater',validationNow);
