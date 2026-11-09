@@ -35,7 +35,7 @@ const SENSORS: Array<{
   {
     key: 'turb', health: 'turbidity', title: 'Turbidity', input: 'voltage', inputUnit: 'V', steadyWithin: 0.03,
     refLabel: 'Standard', refUnit: 'NTU', min: 0, max: 3000, presets: [0],
-    steps: ['Power the module from 5 V and set its switch to Analog (A).', 'Put the sensor in clear water, wait for Steady (~2–3 V or higher), and capture 0 NTU.', 'Put it in a known standard (e.g. 100 NTU), wait, and capture that value.'],
+    steps: ['Power the SEN0189 module from 5 V, set its switch to Analog (A), and connect its output to GPIO34 through the 10k/20k divider.', 'Put the sensor in clean water, wait for Steady, and capture 0 NTU. One point is enough to start.', 'For better accuracy, put it in a known standard (e.g. 100 NTU), wait, and capture that value.'],
     hint: 'If voltage stays near 0 V, the sensor is not reaching the ESP32 — check 5 V power, the A/D switch, and GPIO34 wiring.',
   },
   {

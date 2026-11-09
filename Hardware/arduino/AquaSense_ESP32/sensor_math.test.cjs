@@ -19,9 +19,14 @@ function phFromSensorVoltage(sensorVolts, slope25, offset, tempC = null) {
   return sensorVolts * slope + offset;
 }
 
-function turbidityFromSensorVoltage(sensorVolts, slope, offset) {
-  if (!slope) return null;
-  return slope * sensorVolts + offset;
+/** DFRobot SEN0189 curve; pinned to the top of range below 2.5 V. */
+function turbidityCurve(sensorVolts) {
+  if (sensorVolts < 2.5) return 3000;
+  return Math.min(3000, -1120.4 * sensorVolts ** 2 + 5742.3 * sensorVolts - 4352.9);
+}
+
+function turbidityFromSensorVoltage(sensorVolts, gain = 1, offset = 0) {
+  return Math.max(0, gain * turbidityCurve(sensorVolts) + offset);
 }
 
 test('SEN0165: mid-scale ~2.5 V module out near 0 mV before offset', () => {
@@ -70,16 +75,35 @@ test('pH two-point fit recovers slope and offset', () => {
   assert.ok(Math.abs(offset - 21.34) < 1e-6);
 });
 
-test('AstroC turbidity: uncalibrated slope yields no NTU', () => {
-  assert.equal(turbidityFromSensorVoltage(2.5, 0, 0), null);
+test('SEN0189 turbidity: curve spans clear water to very dirty', () => {
+  assert.ok(Math.abs(turbidityFromSensorVoltage(4.2)) < 2);
+  assert.ok(Math.abs(turbidityFromSensorVoltage(2.5) - 3000) < 2);
 });
 
-test('AstroC turbidity: linear voltage model', () => {
-  // Example fit only — not a manufacturer curve.
-  const slope = -400; // NTU per volt
-  const offset = 1200;
-  assert.equal(turbidityFromSensorVoltage(3.0, slope, offset), 0);
-  assert.equal(turbidityFromSensorVoltage(2.0, slope, offset), 400);
+test('SEN0189 turbidity: dirtier water always reads higher', () => {
+  let previous = -Infinity;
+  for (let volts = 4.2; volts >= 2.0; volts -= 0.01) {
+    const ntu = turbidityFromSensorVoltage(volts);
+    assert.ok(ntu >= previous - 1e-6, `not monotonic at ${volts}`);
+    previous = ntu;
+  }
+});
+
+test('SEN0189 turbidity: cleaner than the reference reads 0, not negative', () => {
+  assert.equal(turbidityFromSensorVoltage(4.45), 0);
+});
+
+test('SEN0189 turbidity: one clean-water point zeroes the reading there', () => {
+  const clear = 3.9;
+  const offset = 0 - turbidityCurve(clear);
+  assert.ok(Math.abs(turbidityFromSensorVoltage(clear, 1, offset)) < 1e-6);
+  assert.ok(turbidityFromSensorVoltage(3.5, 1, offset) > 0);
+});
+
+test('SEN0189 turbidity: divider reconstructs the sensor voltage safely', () => {
+  const pin = (4.5 * 20) / (10 + 20);
+  assert.ok(pin <= 3.15);
+  assert.ok(Math.abs(pin * 1.5 - 4.5) < 1e-9);
 });
 
 console.log('sensor_math tests finished');

@@ -151,27 +151,27 @@ const uint32_t FEED_ON_MAX_MS   = 60000;
 // ORP (SEN0165):      ORP_mV = 400*Vmodule - 1000*Vsensor - orpOffset
 //   Manufacturer circuit equation (wiki SEN0165). orpSlope is unused (kept for
 //   NVS layout compatibility with cal2). orpOffset is the DFRobot OFFSET.
-// Turbidity (AstroC): NTU = turbSlope * Vsensor + turbOffset
-//   No manufacturer NTU curve has been confirmed for AstroC. Do NOT use the
-//   DFRobot SEN0189 polynomial. turbSlope == 0 means not calibrated.
+// Turbidity (DFRobot SEN0189): NTU = turbSlope * curve(Vsensor) + turbOffset
+//   curve() is the manufacturer polynomial, valid from 2.5 V (very dirty) to about
+//   4.2 V (clear). turbSlope is a gain and turbOffset an NTU correction on top of it.
 // Saved under "cal2" (same struct size). calVer NVS tracks formula migrations.
 
 struct Calibration {
   float phSlope, phOffset;       // pH per volt, pH
   float orpSlope, orpOffset;     // orpSlope unused (SEN0165); orpOffset = OFFSET mV
-  float turbSlope, turbOffset;   // NTU per volt, NTU (linear in sensor voltage)
+  float turbSlope, turbOffset;   // gain, NTU (applied to the SEN0189 curve)
 };
 const Calibration DEFAULT_CAL = {
   -5.70f, 21.34f,                // provisional PH-4502C; replace with three buffer captures
   0.0f, 0.0f,                    // SEN0165: OFFSET 0 until zero/reference calibration
-  0.0f, 0.0f,                    // AstroC: uncalibrated until certified standards are captured
+  1.0f, 0.0f,                    // SEN0189: manufacturer curve until a reference is captured
 };
 Calibration cal = DEFAULT_CAL;
-const float TURB_MAX_NTU = 1000.0;   // AstroC-class modules commonly claim ~0–1000 NTU (unverified)
-const float TURB_ZERO_TOLERANCE_NTU = 10.0;   // noise just below the 0 NTU point still reads as 0
+const float TURB_MAX_NTU = 3000.0;      // top of the SEN0189 curve
+const float TURB_CURVE_MIN_V = 2.5f;    // the polynomial turns back on itself below this voltage
 const char* const CAL_NVS_KEY = "cal2";
 const char* const CAL_VER_KEY = "calVer";
-const uint8_t CAL_FORMULA_VERSION = 4;   // 4 = three-point pH fit; corrected pH temperature handling
+const uint8_t CAL_FORMULA_VERSION = 5;   // 4 = three-point pH fit; 5 = SEN0189 turbidity curve
 
 // Analog front-end: 5 V modules into ESP32 ADC. Divider ratios are UNVERIFIED
 // until measured. ratio = Vsensor / Vadc = (Rtop + Rbot) / Rbot when sensing
@@ -692,11 +692,19 @@ const char* qualityName(SensorQuality q) {
   }
 }
 
-// AstroC / similar: linear voltage→NTU after certified multi-point calibration.
-// Returns NAN when uncalibrated or out of the validated voltage span.
+// DFRobot SEN0189 curve at 25 C. Left unclamped above 4.2 V so calibration can
+// still tell very clear samples apart; below 2.5 V it is pinned to the top of range.
+float turbidityCurveNtu(float sensorVolts) {
+  if (!isfinite(sensorVolts)) return NAN;
+  if (sensorVolts < TURB_CURVE_MIN_V) return TURB_MAX_NTU;
+  return min(TURB_MAX_NTU, -1120.4f * sensorVolts * sensorVolts + 5742.3f * sensorVolts - 4352.9f);
+}
+
+// Calibrated NTU. Anything below zero is simply cleaner than the 0 NTU reference.
 float turbidityFromSensorVoltage(float sensorVolts) {
-  if (!isfinite(sensorVolts) || !(cal.turbSlope != 0.0f)) return NAN;
-  return cal.turbSlope * sensorVolts + cal.turbOffset;
+  const float curve = turbidityCurveNtu(sensorVolts);
+  if (!isfinite(curve)) return NAN;
+  return max(0.0f, cal.turbSlope * curve + cal.turbOffset);
 }
 
 // DFRobot SEN0165 Gravity Analog ORP Meter circuit equation (wiki sample,
@@ -803,8 +811,8 @@ void readAnalogSensors() {
   delay(2);
 
   turbS.diag = sampleADC(TURB_PIN, afe.turbDivider); turbS.sampledAtMs = millis();
-  // AstroC-class modules: powered analog output is typically well above a few hundred mV.
-  // Exact idle voltage is UNVERIFIED; treat extreme rails as disconnect/saturation.
+  // SEN0189 analog output is 0–4.5 V, so through the divider it stays under 3.15 V.
+  // A pin at either rail means no signal, or the module's switch is on D.
   const bool turbOk = isfinite(turbS.diag.voltage)
     && turbS.diag.voltage >= 0.15f && turbS.diag.voltage <= 3.15f
     && (turbS.diag.maximum - turbS.diag.minimum) <= STABILITY_MAX_DEV;
@@ -812,12 +820,9 @@ void readAnalogSensors() {
   if (turbS.connected) {
     pushFiltered(turbS, turbS.diag.sensorVoltage);
     const float v = isfinite(turbS.diag.filteredVoltage) ? turbS.diag.filteredVoltage : turbS.diag.sensorVoltage;
-    float ntu = turbidityFromSensorVoltage(v);
-    // Clear water sits on the 0 NTU calibration point, so noise can dip just below it.
-    if (isfinite(ntu) && ntu < 0.0f && ntu >= -TURB_ZERO_TOLERANCE_NTU) ntu = 0.0f;
-    turbS.value = ntu;
+    turbS.value = turbidityFromSensorVoltage(v);
   }
-  const bool turbCal = turbUserCalibrated && cal.turbSlope != 0.0f && afeOk.turb;
+  const bool turbCal = turbUserCalibrated && afeOk.turb;
   turbS.quality = classifyAnalog(turbS, 25.0f, turbCal,
                                  isfinite(turbS.value) && turbS.value >= 0.0f && turbS.value <= TURB_MAX_NTU);
   delay(2);
@@ -1435,30 +1440,24 @@ void loadCalibration() {
 
   const uint8_t ver = prefs.getUChar(CAL_VER_KEY, 0);
   if (ver < 3) {
-    // Migrate off the old linear ORP model (slope ≈ 1333 mV/V, offset ≈ -2000)
-    // and the SEN0189 turbidity polynomial wrapper.
+    // Migrate off the old linear ORP model (slope ≈ 1333 mV/V, offset ≈ -2000).
     if (fabsf(cal.orpSlope - 1333.33f) < 80.0f || fabsf(cal.orpOffset + 2000.0f) < 50.0f) {
       Serial.println("[CAL] Migrating ORP to SEN0165 circuit equation; previous ORP cal cleared.");
       cal.orpSlope = 0.0f;
       cal.orpOffset = 0.0f;
       orpUserCalibrated = false;
     }
-    // Old default turbSlope=1 meant "trust SEN0189 curve". That curve is not
-    // used for AstroC; require a fresh voltage→NTU calibration.
-    if (fabsf(cal.turbSlope - 1.0f) < 0.05f && fabsf(cal.turbOffset) < 0.05f) {
-      Serial.println("[CAL] Turbidity SEN0189 curve removed for AstroC; capture certified standards.");
-      cal.turbSlope = 0.0f;
-      cal.turbOffset = 0.0f;
-      turbUserCalibrated = false;
-    } else if (cal.turbSlope != 0.0f) {
-      // Prior turb fit was against the SEN0189 curve units — not transferable.
-      Serial.println("[CAL] Previous turbidity fit targeted SEN0189 curve units; recalibrate AstroC on voltage.");
-      cal.turbSlope = 0.0f;
-      cal.turbOffset = 0.0f;
-      turbUserCalibrated = false;
-    }
     prefs.putBytes(CAL_NVS_KEY, &cal, sizeof(cal));
     prefs.putUChar(CAL_VER_KEY, CAL_FORMULA_VERSION);
+  }
+
+  if (ver < 5) {
+    // v5 moves turbidity to the SEN0189 curve; a fit for the previous sensor does not carry over.
+    cal.turbSlope = DEFAULT_CAL.turbSlope;
+    cal.turbOffset = DEFAULT_CAL.turbOffset;
+    prefs.putBytes(CAL_NVS_KEY, &cal, sizeof(cal));
+    prefs.putBool("turbCal", false);
+    Serial.println("[CAL] Turbidity now uses the SEN0189 curve. Capture clean water to calibrate.");
   }
 
   // Formula v4 changes runtime pH compensation/calibration policy but does not
@@ -1470,7 +1469,7 @@ void loadCalibration() {
     || (fabsf(cal.phSlope - DEFAULT_CAL.phSlope) > 0.01f)
     || (fabsf(cal.phOffset - DEFAULT_CAL.phOffset) > 0.05f);
   orpUserCalibrated = prefs.getBool("orpCal", false) || fabsf(cal.orpOffset) > 0.5f;
-  turbUserCalibrated = prefs.getBool("turbCal", false) || cal.turbSlope != 0.0f;
+  turbUserCalibrated = prefs.getBool("turbCal", false);
   loadTankCalibration();
 }
 
@@ -1490,12 +1489,8 @@ void printCalibration() {
                 phUserCalibrated ? "user" : "factory/provisional");
   Serial.printf("ORP  : SEN0165  ORP=400*Vmod-1000*Vs-OFFSET  OFFSET=%.2f mV  Vmod=%.3f V  [%s]\n",
                 cal.orpOffset, afe.orpModuleSupplyV, orpUserCalibrated ? "user" : "factory");
-  if (cal.turbSlope != 0.0f) {
-    Serial.printf("Turb : NTU = %.4f * Vsensor + %.3f   [%s]\n", cal.turbSlope, cal.turbOffset,
-                  turbUserCalibrated ? "user" : "factory");
-  } else {
-    Serial.println("Turb : NOT CALIBRATED (AstroC has no verified manufacturer NTU curve)");
-  }
+  Serial.printf("Turb : SEN0189  NTU = %.4f * curve(Vs) + %.3f   [%s]\n", cal.turbSlope, cal.turbOffset,
+                turbUserCalibrated ? "user" : "manufacturer curve, not calibrated");
   Serial.printf("Temp : slope %.4f   offset %.3f C   (optional; DS18B20 is factory calibrated)\n", tempCal.slope, tempCal.offset);
   Serial.printf("Captured points: pH %u, ORP %u, turbidity %u, temperature %u\n", phPts, orpPts, turbPts, tempPts);
   printAnalogFrontEnd();
@@ -1555,7 +1550,7 @@ void printHelp() {
   Serial.println("ph <buffer>           PH-4502C PO: capture all three: ph 4.01, ph 6.86, ph 9.18");
   Serial.println("orp <mV>              SEN0165: set OFFSET from a known ORP standard (user supplies mV)");
   Serial.println("orp zero              SEN0165 zero OFFSET from current circuit reading (probe disconnected)");
-  Serial.println("turb <NTU>            AstroC: certified standard; need two distinct points for slope");
+  Serial.println("turb <NTU>            SEN0189: turb 0 in clean water; a second standard also fits the gain");
   Serial.println("temp <C>              optional DS18B20 match to a trusted thermometer");
   Serial.println("clear ph|orp|turb|temp           forget captured points (keeps saved calibration)");
   Serial.println("reset ph|orp|turb|temp|tank|all  restore factory defaults and save");
@@ -1865,7 +1860,7 @@ void calibrate(const String& sensor, float reference, char* result, size_t resul
     cal.orpOffset = newOffset;
     orpUserCalibrated = true;
   } else if (sensor == "turb") {
-    // AstroC: fit NTU = slope * Vsensor + offset from certified standards only.
+    // SEN0189: one reference corrects the offset; two or more also fit the gain.
     if (!afeOk.turb || !(afe.turbDivider >= 1.0f && afe.turbDivider <= 10.0f)) {
       Serial.println("Calibration blocked: enter the measured divider ratio first using afe turb <ratio>.");
       setResult(result, resultSize, "rejected_divider_ratio_unset"); return;
@@ -1878,37 +1873,35 @@ void calibrate(const String& sensor, float reference, char* result, size_t resul
       setResult(result, resultSize, captureRejectCode ? captureRejectCode : "rejected_not_steady"); return;
     }
     if (mean < 0.10f) {
-      Serial.println("Turbidity sensor voltage is too low. Check 5 V/3.3 V power, Analog mode, wiring to GPIO34, and divider.");
+      Serial.println("Turbidity sensor voltage is too low. Check 5 V power, the A/D switch, wiring to GPIO34, and the divider.");
       setResult(result, resultSize, "rejected_turb_voltage_low"); return;
     }
-    if (voltageAlreadyCaptured(turbPtX, turbPtY, turbPts, mean, reference, 0.5f, 0.05f)) {
+    if (mean < TURB_CURVE_MIN_V) {
+      Serial.printf("Sensor voltage %.3f V is below the %.1f V limit of the SEN0189 curve. Use cleaner water and check the divider ratio.\n", mean, TURB_CURVE_MIN_V);
+      setResult(result, resultSize, "rejected_turb_curve"); return;
+    }
+    // Near clear water the curve moves about 37 NTU per 10 mV, so 0 and 100 NTU sit only ~30 mV apart.
+    if (voltageAlreadyCaptured(turbPtX, turbPtY, turbPts, mean, reference, 0.5f, 0.015f)) {
       Serial.println("This standard produced almost the same voltage as a point already captured.");
       setResult(result, resultSize, "rejected_same_input"); return;
     }
     turbPts = points = addPoint(turbPtX, turbPtY, turbPts, mean, reference, 0.5f);
     Serial.printf("Recorded %.1f NTU at Vsensor %.4f V (%u point%s)\n", reference, mean, turbPts, turbPts > 1 ? "s" : "");
-    if (turbPts < 2) {
-      Serial.println("Need a second certified standard before a slope can be fitted. Previous calibration kept.");
-      if (result) snprintf(result, resultSize, "recorded n=1 x=%.4f", mean);
-      return;
-    }
-    float slope, offset;
-    if (inputRange(turbPtX, turbPts) < 0.05f || !fitLine(turbPtX, turbPtY, turbPts, slope, offset)) {
-      Serial.println("Standards gave almost the same voltage. Previous calibration kept.");
-      cal = previous;
-      setResult(result, resultSize, "rejected_same_input"); return;
-    }
-    // Optical turbidity: voltage usually falls as NTU rises => slope typically negative.
-    if (!isfinite(slope) || !isfinite(offset) || fabsf(slope) < 1e-4f) {
-      Serial.println("Rejected: turbidity slope is not usable. Previous calibration kept.");
-      setResult(result, resultSize, "rejected_implausible_slope"); return;
-    }
-    if (slope > 0) Serial.println("Warning: positive turbidity slope. Confirm sensor response and that standards were not swapped.");
-    // For the specified 0 and 100 NTU standards this fit is a two-point
-    // interpolation; retain a finite-range guard to catch corrupt values.
-    if (fabsf(slope) > 5000.0f || fabsf(offset) > 5000.0f) {
-      Serial.println("Rejected: turbidity fit is outside safe numeric bounds.");
-      setResult(result, resultSize, "rejected_implausible_slope"); return;
+    float slope = cal.turbSlope, offset = reference - cal.turbSlope * turbidityCurveNtu(mean);
+    if (turbPts >= 2) {
+      float curveNtu[3];
+      for (uint8_t i = 0; i < turbPts; i++) curveNtu[i] = turbidityCurveNtu(turbPtX[i]);
+      if (inputRange(turbPtX, turbPts) < 0.015f || !fitLine(curveNtu, turbPtY, turbPts, slope, offset)) {
+        Serial.println("Standards gave almost the same voltage. Previous calibration kept.");
+        setResult(result, resultSize, "rejected_same_input"); return;
+      }
+      // Dirtier water raises both the curve and the reference, so the gain must be positive.
+      if (!isfinite(slope) || !isfinite(offset) || slope < 0.05f || slope > 20.0f || fabsf(offset) > 5000.0f) {
+        Serial.println("Rejected: turbidity fit is not plausible. Check that the standards were not swapped. Previous calibration kept.");
+        setResult(result, resultSize, "rejected_implausible_slope"); return;
+      }
+    } else {
+      Serial.println("Offset corrected. A second known standard also fits the gain.");
     }
     cal.turbSlope = slope; cal.turbOffset = offset; turbUserCalibrated = true;
   } else if (sensor == "temp") {

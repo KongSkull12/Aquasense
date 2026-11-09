@@ -90,7 +90,7 @@ Results are saved in flash (`cal2` + `calVer`).
 | --- | --- | --- |
 | pH | PH-4502C **PO** analog (not DO) on GPIO35 | `watch` → capture all three buffers, rinsing between them: `ph 4.01`, `ph 6.86`, `ph 9.18`. The fit saves after the third. |
 | ORP | DFRobot SEN0165 on GPIO32 | Circuit: `ORP = 400*Vmod − 1000*Vsensor − OFFSET`. Use `orp <mV>` with the printed standard, or `orp zero` with the **probe disconnected**. Never press the board cal button while the probe is attached. |
-| Turbidity | AstroC-class analog on GPIO34 | **No SEN0189 NTU polynomial.** Capture two certified standards: `turb <NTU>` then another. Linear fit on sensor voltage. |
+| Turbidity | DFRobot SEN0189 (switch on **A**, 5 V power) on GPIO34 through a 10k/20k divider, `afe turb 1.5` | `watch` → `turb 0` in clean water corrects the offset. A known standard such as `turb 100` also fits the gain. |
 | Tank depth | Ultrasonic | `tank empty` then `tank target 3`. Depth = mount − distance. |
 
 Also: `status` / `cal show`, `afe` (divider ratios — **measure before setting**), `watch`.
