@@ -12,6 +12,8 @@ const severityRank: Record<AlertSeverity, number> = {
 class CooldownService {
   private readonly standardCooldownMinutes = 15;
   private readonly emergencyCooldownMinutes = 5;
+  private readonly testRetryMs = 60 * 1000;
+  private readonly testUncertainRetryMs = 5 * 60 * 1000;
 
   async shouldSendSms(deviceId: string, category: string, severity: AlertSeverity, transaction?: Transaction): Promise<boolean> {
     const latestLog = await smsLogService.getLatestLog(deviceId, category, transaction);
@@ -19,8 +21,16 @@ class CooldownService {
       return true;
     }
 
+    const uncertain = ['pending', 'retrying', 'unknown'].includes(latestLog.deliveryStatus || '');
+
+    // A test is requested by a person, so an unconfirmed result expires instead of
+    // blocking every later test. Nothing reconciles an 'unknown' reservation.
+    if (category === 'SMS_TEST') {
+      return Date.now() - latestLog.sentAt.getTime() >= (uncertain ? this.testUncertainRetryMs : this.testRetryMs);
+    }
+
     // Pending or uncertain submissions require reconciliation, never a blind retry.
-    if (['pending', 'retrying', 'unknown'].includes(latestLog.deliveryStatus || '')) return false;
+    if (uncertain) return false;
     if (!latestLog.success) return Date.now() - latestLog.sentAt.getTime() >= 60000;
 
     const cooldownMinutes = severity === 'EMERGENCY' ? this.emergencyCooldownMinutes : this.standardCooldownMinutes;

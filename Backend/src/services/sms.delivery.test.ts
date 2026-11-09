@@ -144,6 +144,18 @@ test('pending and uncertain submissions stay blocked; recent failures back off',
   read.mock.mockImplementation(async () => ({ success: false, deliveryStatus: 'rejected', sentAt: new Date() }));
   assert.equal(await cooldownService.shouldSendSms('device', 'category', 'EMERGENCY'), false);
 });
+test('a manual test is only delayed while real alerts stay blocked', async () => {
+  const ago = (ms: number) => new Date(Date.now() - ms);
+  const read = mock.method(smsLogService, 'getLatestLog', async () => ({ success: false, deliveryStatus: 'unknown', sentAt: ago(60000) }));
+  assert.equal(await cooldownService.shouldSendSms('sms-test', 'SMS_TEST', 'INFO'), false);
+  read.mock.mockImplementation(async () => ({ success: false, deliveryStatus: 'unknown', sentAt: ago(300000) }));
+  assert.equal(await cooldownService.shouldSendSms('sms-test', 'SMS_TEST', 'INFO'), true);
+  assert.equal(await cooldownService.shouldSendSms('device', 'WATER_ALERT', 'INFO'), false);
+  read.mock.mockImplementation(async () => ({ success: true, deliveryStatus: 'sent', sentAt: ago(30000), severity: 'INFO' }));
+  assert.equal(await cooldownService.shouldSendSms('sms-test', 'SMS_TEST', 'INFO'), false);
+  read.mock.mockImplementation(async () => ({ success: true, deliveryStatus: 'sent', sentAt: ago(60000), severity: 'INFO' }));
+  assert.equal(await cooldownService.shouldSendSms('sms-test', 'SMS_TEST', 'INFO'), true);
+});
 test('pending log becomes sent and linked alert gets send timestamp', async () => {
   mock.method(SmsLog, 'findAll', async () => [{ id: 'log-test', retryCount: 0, providerResponse: JSON.stringify({ deliveryStatus: 'pending', referenceId: 'msg_test', alertIds: ['alert-test'] }) }]);
   mock.method(smsService, 'getStatus', async () => smsResult('sent', 0, { referenceId: 'msg_test' }));
