@@ -168,6 +168,7 @@ const Calibration DEFAULT_CAL = {
 };
 Calibration cal = DEFAULT_CAL;
 const float TURB_MAX_NTU = 1000.0;   // AstroC-class modules commonly claim ~0–1000 NTU (unverified)
+const float TURB_ZERO_TOLERANCE_NTU = 10.0;   // noise just below the 0 NTU point still reads as 0
 const char* const CAL_NVS_KEY = "cal2";
 const char* const CAL_VER_KEY = "calVer";
 const uint8_t CAL_FORMULA_VERSION = 4;   // 4 = three-point pH fit; corrected pH temperature handling
@@ -811,7 +812,10 @@ void readAnalogSensors() {
   if (turbS.connected) {
     pushFiltered(turbS, turbS.diag.sensorVoltage);
     const float v = isfinite(turbS.diag.filteredVoltage) ? turbS.diag.filteredVoltage : turbS.diag.sensorVoltage;
-    turbS.value = turbidityFromSensorVoltage(v);
+    float ntu = turbidityFromSensorVoltage(v);
+    // Clear water sits on the 0 NTU calibration point, so noise can dip just below it.
+    if (isfinite(ntu) && ntu < 0.0f && ntu >= -TURB_ZERO_TOLERANCE_NTU) ntu = 0.0f;
+    turbS.value = ntu;
   }
   const bool turbCal = turbUserCalibrated && cal.turbSlope != 0.0f && afeOk.turb;
   turbS.quality = classifyAnalog(turbS, 25.0f, turbCal,
@@ -910,7 +914,7 @@ bool publishFrame() {
     const bool publishable = s.connected && isfinite(s.value) && s.sampledAtMs != 0
       && s.quality != SQ_DISCONNECTED && s.quality != SQ_ADC_SATURATED
       && s.quality != SQ_SENSOR_ERROR;
-    const bool usable = publishable && s.quality != SQ_CALIBRATION_REQUIRED;
+    const bool usable = publishable && s.quality != SQ_CALIBRATION_REQUIRED && s.quality != SQ_OUT_OF_RANGE;
     JsonObject o = sensors.createNestedObject(name);
     o["connected"] = s.connected;
     o["valid"] = usable;
@@ -1515,6 +1519,16 @@ void printWatchLine() {
   Serial.printf("TEMP raw=%.2f -> %s C\n", tempRawC, tempS.connected ? String(tempS.value, 2).c_str() : "--");
 }
 
+// Plain-language wiring hints for the two faults that no calibration can correct.
+void printSignalHints() {
+  if (phS.sampledAtMs && phS.diag.rawAdc > PH_CONNECT_MAX) {
+    Serial.println("[pH] PO is near the top of its range. Short the BNC and turn the offset trimmer until Vs reads about 2.50 V; check module 5 V and GND.");
+  }
+  if (turbS.sampledAtMs && turbS.diag.rawAdc <= 5) {
+    Serial.println("[TURB] GPIO34 is at 0 V, so the sensor output is not reaching the pin. Check the signal wire, breadboard row and any A/D switch.");
+  }
+}
+
 void printStatus() {
   Serial.println("==== AquaSense status ====");
   Serial.printf("WiFi %s  MQTT %s  uptime %lu ms\n",
@@ -1528,6 +1542,7 @@ void printStatus() {
                 turbS.connected && isfinite(turbS.value) ? String(turbS.value, 1).c_str() : "--");
   Serial.printf("TEMP connected=%d value=%s raw=%.2f\n", tempS.connected,
                 tempS.connected && isfinite(tempS.value) ? String(tempS.value, 2).c_str() : "--", tempRawC);
+  printSignalHints();
   printCalibration();
 }
 
@@ -1537,7 +1552,7 @@ void printHelp() {
   Serial.println("watch                 toggle live ADC / voltage / engineering diagnostics");
   Serial.println("status | cal show     ESP32, sensors, calibration, front-end, MQTT");
   Serial.println("show                  same as cal show");
-  Serial.println("ph <buffer>           PH-4502C PO: e.g. ph 7.00 then ph 4.01 (two-point slope)");
+  Serial.println("ph <buffer>           PH-4502C PO: capture all three: ph 4.01, ph 6.86, ph 9.18");
   Serial.println("orp <mV>              SEN0165: set OFFSET from a known ORP standard (user supplies mV)");
   Serial.println("orp zero              SEN0165 zero OFFSET from current circuit reading (probe disconnected)");
   Serial.println("turb <NTU>            AstroC: certified standard; need two distinct points for slope");
@@ -1690,9 +1705,11 @@ bool captureInput(int pin, float dividerRatio, float maxSpread, float& mean) {
   return true;
 }
 
-// True when a new capture voltage is too close to a voltage already stored.
-bool voltageAlreadyCaptured(const float* xs, uint8_t count, float mean, float minDelta) {
+// True when a new capture voltage is too close to a stored point for a different
+// reference. A point for the same reference is skipped so it can be recaptured.
+bool voltageAlreadyCaptured(const float* xs, const float* ys, uint8_t count, float mean, float reference, float sameRef, float minDelta) {
   for (uint8_t i = 0; i < count; i++) {
+    if (fabsf(ys[i] - reference) <= sameRef) continue;
     if (fabsf(xs[i] - mean) < minDelta) return true;
   }
   return false;
@@ -1788,7 +1805,7 @@ void calibrate(const String& sensor, float reference, char* result, size_t resul
       setResult(result, resultSize, captureRejectCode ? captureRejectCode : "rejected_not_steady");
       return;
     }
-    if (voltageAlreadyCaptured(phPtX, phPts, mean, 0.05f)) {
+    if (voltageAlreadyCaptured(phPtX, phPtY, phPts, mean, reference, 0.05f, 0.05f)) {
       Serial.println("This buffer produced almost the same voltage as a point already captured. Probe may be stuck, dry, or miswired.");
       setResult(result, resultSize, "rejected_same_input"); return;
     }
@@ -1864,7 +1881,7 @@ void calibrate(const String& sensor, float reference, char* result, size_t resul
       Serial.println("Turbidity sensor voltage is too low. Check 5 V/3.3 V power, Analog mode, wiring to GPIO34, and divider.");
       setResult(result, resultSize, "rejected_turb_voltage_low"); return;
     }
-    if (voltageAlreadyCaptured(turbPtX, turbPts, mean, 0.05f)) {
+    if (voltageAlreadyCaptured(turbPtX, turbPtY, turbPts, mean, reference, 0.5f, 0.05f)) {
       Serial.println("This standard produced almost the same voltage as a point already captured.");
       setResult(result, resultSize, "rejected_same_input"); return;
     }
@@ -2139,7 +2156,7 @@ void handleSerialCommand(String line) {
   }
   if (cmd == "ph" || cmd == "orp" || cmd == "turb" || cmd == "temp") {
     if (!rest.length()) {
-      Serial.printf("Give the reference value, e.g. %s\n", cmd == "ph" ? "ph 7.00" : cmd == "orp" ? "orp 225" : cmd == "turb" ? "turb 100" : "temp 28.4");
+      Serial.printf("Give the reference value, e.g. %s\n", cmd == "ph" ? "ph 6.86" : cmd == "orp" ? "orp 225" : cmd == "turb" ? "turb 100" : "temp 28.4");
       return;
     }
     calibrate(cmd, rest.toFloat(), nullptr, 0);
