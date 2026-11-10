@@ -230,6 +230,11 @@ const char* const TANK_NVS_KEY = "tank1";
 float tankDepthCm = NAN;
 bool fillToTargetActive = false;
 
+// Water-quality alarm types (used by the buzzer section below).
+struct ThresholdBand { float alertMin, normalMin, normalMax, alertMax; };
+struct ThresholdBandSet { ThresholdBand temperature, ph, turbidity, waterDepth; };
+enum AlarmLevel : uint8_t { ALARM_NORMAL = 0, ALARM_WARNING = 1, ALARM_ALERT = 2 };
+
 bool tankMountCalibrated() { return isfinite(tankCal.mountHeightCm) && tankCal.mountHeightCm >= 20.0f && tankCal.mountHeightCm <= 800.0f; }
 bool tankTargetConfigured() { return isfinite(tankCal.targetDepthCm) && tankCal.targetDepthCm > 0.0f && tankCal.targetDepthCm <= 200.0f; }
 void loadTankCalibration();
@@ -639,14 +644,148 @@ void updateAerator() {
   else if (tempS.value <= AERATOR_OFF_BELOW_C && aeratorOn) setRelay(RELAY_AERATOR_PIN, false, aeratorOn);
 }
 
+// ---- Water-quality alarm -------------------------------------------------
+// Uses the same Normal / Warning / Alert limits as the dashboard Thresholds
+// page. The backend sends the saved limits with each heartbeat and the last
+// copy is kept in NVS, so the alarm also works without Wi-Fi. NAN = no limit.
+// ThresholdBand, ThresholdBandSet and AlarmLevel are declared near the tank
+// calibration types so the Arduino-generated prototypes can see them.
+// Keep in step with DEFAULT_THRESHOLD_BANDS in Backend/src/services/thresholdBands.ts.
+const ThresholdBandSet DEFAULT_THRESHOLD_BANDS = {
+  { 15.0f, 26.0f, 29.0f, 32.0f },   // temperature, C
+  {  6.0f,  7.0f,  8.5f,  8.5f },   // pH
+  {   NAN,   NAN, 70.0f, 100.0f },  // turbidity, NTU (upper limits only)
+  {  2.0f,  2.7f,  3.3f,  4.0f },   // water depth, cm
+};
+ThresholdBandSet thresholdBands = DEFAULT_THRESHOLD_BANDS;
+const char* const BANDS_NVS_KEY = "bands1";
+
+const uint8_t ALARM_CONFIRM_READS = 5;   // ~5 s at one read per second: one noisy sample never beeps
+AlarmLevel alarmLevel = ALARM_NORMAL;      // confirmed level; this drives the buzzer
+AlarmLevel alarmCandidate = ALARM_NORMAL;
+uint8_t alarmCandidateCount = 0;
+uint32_t alarmPatternStart = 0;
+bool alarmEnabled = true;                  // 'alarm off' silences it until 'alarm on' or a reboot
+char alarmReason[40] = "";
+
+const char* alarmLevelName(AlarmLevel level) {
+  return level == ALARM_ALERT ? "ALERT" : level == ALARM_WARNING ? "WARNING" : "NORMAL";
+}
+
+AlarmLevel classifyBand(float value, const ThresholdBand& b) {
+  if (!isfinite(value)) return ALARM_NORMAL;
+  if (isfinite(b.alertMin) && value < b.alertMin) return ALARM_ALERT;
+  if (isfinite(b.alertMax) && value > b.alertMax) return ALARM_ALERT;
+  if (isfinite(b.normalMin) && value < b.normalMin) return ALARM_WARNING;
+  if (isfinite(b.normalMax) && value > b.normalMax) return ALARM_WARNING;
+  return ALARM_NORMAL;
+}
+
+// Same ordering rules the backend enforces before it saves a band.
+bool thresholdBandValid(const ThresholdBand& b, bool highOnly) {
+  if (!isfinite(b.normalMax) || !isfinite(b.alertMax) || b.normalMax > b.alertMax) return false;
+  if (highOnly) return isnan(b.alertMin) && isnan(b.normalMin);
+  return isfinite(b.alertMin) && isfinite(b.normalMin)
+    && b.alertMin < b.normalMin && b.normalMin <= b.normalMax && b.alertMin < b.alertMax;
+}
+
+bool thresholdBandsValid(const ThresholdBandSet& set) {
+  return thresholdBandValid(set.temperature, false) && thresholdBandValid(set.ph, false)
+    && thresholdBandValid(set.turbidity, true) && thresholdBandValid(set.waterDepth, false);
+}
+
+void loadThresholdBands() {
+  ThresholdBandSet stored;
+  if (prefs.getBytesLength(BANDS_NVS_KEY) == sizeof(stored)
+      && prefs.getBytes(BANDS_NVS_KEY, &stored, sizeof(stored)) == sizeof(stored)
+      && thresholdBandsValid(stored)) {
+    thresholdBands = stored;
+  } else {
+    thresholdBands = DEFAULT_THRESHOLD_BANDS;
+  }
+}
+
+void printThresholdBands() {
+  auto row = [](const char* name, const ThresholdBand& b) {
+    Serial.printf("  %-11s alert <%s | normal %s..%s | alert >%s\n", name,
+                  isfinite(b.alertMin) ? String(b.alertMin, 2).c_str() : "--",
+                  isfinite(b.normalMin) ? String(b.normalMin, 2).c_str() : "--",
+                  String(b.normalMax, 2).c_str(), String(b.alertMax, 2).c_str());
+  };
+  row("temperature", thresholdBands.temperature);
+  row("pH", thresholdBands.ph);
+  row("turbidity", thresholdBands.turbidity);
+  row("depth", thresholdBands.waterDepth);
+}
+
+// Reads one band from the backend's JSON. A missing number becomes NAN (no limit).
+void readThresholdBand(JsonVariantConst json, ThresholdBand& out) {
+  auto num = [&](const char* key) -> float {
+    JsonVariantConst v = json[key];
+    return (v.is<float>() || v.is<long>()) ? v.as<float>() : NAN;
+  };
+  out = { num("alertMin"), num("normalMin"), num("normalMax"), num("alertMax") };
+}
+
+// Applies limits from the heartbeat reply. Invalid or missing limits keep the current copy.
+void applyThresholdBands(JsonVariantConst json) {
+  if (!json.is<JsonObjectConst>()) return;
+  ThresholdBandSet next;
+  readThresholdBand(json["temperature"], next.temperature);
+  readThresholdBand(json["ph"], next.ph);
+  readThresholdBand(json["turbidity"], next.turbidity);
+  readThresholdBand(json["waterDepth"], next.waterDepth);
+  if (!thresholdBandsValid(next)) { Serial.println("[ALARM] ignored invalid thresholds from the server"); return; }
+  if (!memcmp(&next, &thresholdBands, sizeof(next))) return;
+  thresholdBands = next;
+  prefs.putBytes(BANDS_NVS_KEY, &thresholdBands, sizeof(thresholdBands));
+  Serial.println("[ALARM] thresholds updated from the dashboard:");
+  printThresholdBands();
+}
+
+// Called after each sensor read. Like the dashboard, only trusted readings count:
+// pH and turbidity must be calibrated and stable, depth needs the empty-tub step.
+void evaluateWaterAlarm() {
+  AlarmLevel worst = ALARM_NORMAL;
+  char reason[sizeof(alarmReason)] = "";
+  auto check = [&](const char* name, float value, const ThresholdBand& band) {
+    const AlarmLevel level = classifyBand(value, band);
+    if (level > worst) { worst = level; snprintf(reason, sizeof(reason), "%s %.2f", name, value); }
+  };
+  if (tempS.connected && isfinite(tempS.value)) check("temperature", tempS.value, thresholdBands.temperature);
+  if (phS.quality == SQ_STABLE) check("pH", phS.value, thresholdBands.ph);
+  if (turbS.quality == SQ_STABLE) check("turbidity", turbS.value, thresholdBands.turbidity);
+  // The level is meant to drop and rise during a water exchange, so depth is not judged then.
+  if (isfinite(tankDepthCm) && !waterBusy() && !fillOn && !drainOn) check("depth", tankDepthCm, thresholdBands.waterDepth);
+
+  if (worst == alarmCandidate) { if (alarmCandidateCount < 255) alarmCandidateCount++; }
+  else { alarmCandidate = worst; alarmCandidateCount = 1; }
+  if (alarmCandidateCount >= ALARM_CONFIRM_READS && alarmLevel != alarmCandidate) {
+    alarmLevel = alarmCandidate;
+    alarmPatternStart = millis();   // start the new pattern at its first beep
+    Serial.printf("[ALARM] %s%s%s\n", alarmLevelName(alarmLevel), reason[0] ? ": " : "", reason);
+  }
+  if (worst == alarmLevel) strlcpy(alarmReason, reason, sizeof(alarmReason));
+}
+
 bool buzzerSounding() { return buzzerManual || !strcmp(waterPhase, "FAULT"); }
 
 void updateBuzzer() {
-  if (!buzzerSounding()) { buzzerQuiet(); return; }
-  // The buzzer has its own tone. Fault: fast beeps. Manual: slow beeps.
-  const bool fault = !strcmp(waterPhase, "FAULT");
-  const uint32_t period = fault ? 400 : 1000, onFor = fault ? 200 : 150;
-  buzzerSet((millis() % period) < onFor);
+  if (buzzerSounding()) {
+    // The buzzer has its own tone. Fault: fast beeps. Manual: slow beeps.
+    const bool fault = !strcmp(waterPhase, "FAULT");
+    const uint32_t period = fault ? 400 : 1000, onFor = fault ? 200 : 150;
+    buzzerSet((millis() % period) < onFor);
+    return;
+  }
+  // Water alarm: Alert = 3 beeps, Warning = 2 beeps, then a pause, repeated
+  // until every trusted reading is back in its normal range.
+  const uint8_t beeps = !alarmEnabled ? 0 : alarmLevel == ALARM_ALERT ? 3 : alarmLevel == ALARM_WARNING ? 2 : 0;
+  if (!beeps) { buzzerQuiet(); return; }
+  const uint32_t BEEP_MS = 150, GAP_MS = 150, PAUSE_MS = 1200;
+  const uint32_t burst = beeps * (BEEP_MS + GAP_MS);
+  const uint32_t t = (millis() - alarmPatternStart) % (burst + PAUSE_MS);
+  buzzerSet(t < burst && (t % (BEEP_MS + GAP_MS)) < BEEP_MS);
 }
 
 
@@ -881,6 +1020,7 @@ void readSensors() {
   readTemperature();
   readUltrasonic();
   evaluateWaterAutomation();
+  evaluateWaterAlarm();
 }
 
 
@@ -1329,7 +1469,13 @@ void sendStateHeartbeat() {
   fillState(doc.createNestedObject("state"));
   String body, response;
   serializeJson(doc, body);
-  httpPost("/hardware/device/sync", body, response);
+  if (!httpPost("/hardware/device/sync", body, response)) return;
+  // The reply carries the dashboard's saved thresholds for the buzzer alarm.
+  StaticJsonDocument<64> filter;
+  filter["data"]["thresholdBands"] = true;
+  DynamicJsonDocument reply(1024);
+  if (deserializeJson(reply, response, DeserializationOption::Filter(filter))) return;
+  applyThresholdBands(reply["data"]["thresholdBands"]);
 }
 
 void checkSchedules() {
@@ -1572,6 +1718,9 @@ void printHelp() {
   Serial.println("feed                   run one feed cycle locally (no dashboard needed)");
   Serial.println("selftest               run the boot self-test now (relays, servo, buzzer)");
   Serial.println("selftest on|off        run it at every power-up or not (saved)");
+  Serial.println("==== Water alarm (buzzer) ====");
+  Serial.println("alarm                  show Normal/Warning/Alert state and the limits in use");
+  Serial.println("alarm off|on           silence / restore the beeps (off lasts until a restart)");
 }
 
 // Bench pump test: auto-off so a pump can never be left running from the console.
@@ -2243,6 +2392,20 @@ void handleSerialCommand(String line) {
     Serial.printf("Feed cycle: %d -> %d -> %d degrees.\n", SERVO_CLOSED_DEG, SERVO_OPEN_DEG, SERVO_CLOSED_DEG);
     return;
   }
+  if (cmd == "alarm") {
+    if (rest == "on" || rest == "off") {
+      alarmEnabled = rest == "on";
+      alarmPatternStart = millis();
+      Serial.printf("Water alarm beeps %s%s.\n", alarmEnabled ? "ON" : "OFF",
+                    alarmEnabled ? "" : " until 'alarm on' or a restart");
+      return;
+    }
+    Serial.printf("Water alarm: %s%s%s, beeps %s\n", alarmLevelName(alarmLevel),
+                  alarmReason[0] ? " (" : "", alarmReason[0] ? (String(alarmReason) + ")").c_str() : "",
+                  alarmEnabled ? "on" : "OFF");
+    printThresholdBands();
+    return;
+  }
   if (cmd == "selftest") {
     if (rest == "on" || rest == "off") {
       selfTestEnabled = rest == "on";
@@ -2532,6 +2695,7 @@ void setup() {
   loadSchedules();
   loadCalibration();
   printCalibration();
+  loadThresholdBands();
   Serial.println("Type 'help' for sensor calibration commands.");
 
   snprintf(bootId, sizeof(bootId), "esp-%08lx", (unsigned long)esp_random());

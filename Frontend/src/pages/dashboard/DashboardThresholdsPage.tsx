@@ -250,7 +250,7 @@ const DashboardThresholdsPage: React.FC = () => {
           {pending ? 'Saving…' : 'Save thresholds'}
         </button>
         <p className="max-w-3xl text-xs leading-relaxed text-ink-3">
-          Saving updates the marks on Overview, Parameters, and Water change. SMS alerts use their own built-in limits, so a change here does not change a text. ORP, tank level, and the NH₃ fraction have no limits here. Dissolved oxygen is not measured on this station.
+          Saving updates the marks on Overview, Parameters, and Water change. The station buzzer uses the same limits within about a minute: 3 beeps on repeat for an Alert, 2 for a Warning, until readings are normal again. SMS alerts use their own built-in limits, so a change here does not change a text. ORP, tank level, and the NH₃ fraction have no limits here. Dissolved oxygen is not measured on this station.
         </p>
       </div>
 

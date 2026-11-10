@@ -5,6 +5,7 @@ import { feedingService } from './feedingService';
 import { COMMAND_TTL_MS, DEVICE_ONLINE_MS, type HardwareAction, type HardwareState, type CommandReceipt, type SignedHardwareAck } from './hardwareProtocol';
 import { withHardwareDeviceLock, DeviceStopPendingError } from './hardwareControlLock';
 import { noteCalibrationResult } from './deviceCalibration';
+import { loadThresholdBands } from './thresholdBands';
 import type { Transaction } from 'sequelize';
 
 const WATER_START_ACTIONS: HardwareAction[] = ['FILL', 'DRAIN', 'WATER_EXCHANGE', 'FILL_TO_TARGET', 'AUTOMATION_ON'];
@@ -70,9 +71,10 @@ export const hardwareService = {
     // commands and their acknowledgments use the signed MQTT path.
     void receipt;
     await HardwareDeviceState.upsert({ deviceId, state, receivedAt: new Date() });
-    const schedules = await feedingService.listSchedules(userId);
+    const [schedules, thresholdBands] = await Promise.all([feedingService.listSchedules(userId), loadThresholdBands()]);
+    // thresholdBands drive the device buzzer (Alert: 3 beeps, Warning: 2), matching the dashboard marks.
     return { command: null, schedules: schedules.filter(s => s.enabled).slice(0, 20).map(s => ({ id: s.id, date: s.date, time: s.time })),
-      timezone: 'Asia/Manila', serverTimeIso: new Date().toISOString() };
+      timezone: 'Asia/Manila', serverTimeIso: new Date().toISOString(), thresholdBands };
   },
 
   async expirePendingCommands(): Promise<void> {

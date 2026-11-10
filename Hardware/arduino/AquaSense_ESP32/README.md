@@ -113,6 +113,18 @@ Safety behaviour built in: fill and drain never run together; every pump run is 
 the aerator keeps its state through a network blip; a fault sounds the buzzer until
 "Clear fault" is sent.
 
+## Water alarm (buzzer)
+
+The buzzer follows the limits saved on the dashboard Thresholds page. The backend sends
+them with each heartbeat and the board keeps the last copy, so it also works offline.
+An **Alert** plays 3 beeps on repeat, a **Warning** plays 2 beeps on repeat, and the beeps
+stop once every reading is normal again. A level must hold for about 5 s before it
+changes, so a single noisy sample never beeps. Only trusted readings count: temperature,
+pH and turbidity when calibrated and stable, and water depth after the empty-tub step
+(depth is skipped while a water exchange runs). A fault or the manual buzzer takes
+priority. In the Serial Monitor, `alarm` shows the state and limits, and `alarm off`
+silences the beeps until `alarm on` or a restart (useful while calibrating in buffers).
+
 ## Honest limits
 
 - Sensor conversions use the calibration saved on the device. The dashboard classifies
