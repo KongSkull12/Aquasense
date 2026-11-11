@@ -843,8 +843,53 @@ void evaluateWaterAlarm() {
   if (worst == alarmLevel) strlcpy(alarmReason, reason, sizeof(alarmReason));
 }
 
-// Automatic partial exchange (policy at the top of the file). Runs after
-// evaluateWaterAlarm() on every sensor read.
+// Automation needs either the exchange setup (volume + flows) or a calibrated
+// tank depth for the low-water fill; each part skips itself when it lacks its own.
+bool automationPossible() {
+  return exchangeCommissioned() || (tankMountCalibrated() && tankTargetConfigured());
+}
+
+// Low water (depth below the Thresholds normal range, Warning or Alert) is fixed
+// by filling to the calibrated target depth, never by draining.
+const uint32_t AUTO_FILL_CONFIRM_READS = 60;               // ~1 min below normal first
+const uint32_t AUTO_FILL_GAP_MS = 30UL * 60UL * 1000UL;    // at most one automatic fill per 30 min
+uint32_t lowDepthReads = 0;
+uint32_t lastAutoFillAt = 0;
+bool autoFillEverRan = false;
+
+// Returns true when it started (or is waiting to start) a low-water fill, so the
+// exchange below does not drain a tank that is already low.
+bool evaluateLowWaterFill(uint32_t now) {
+  const float normalMin = thresholdBands.waterDepth.normalMin;
+  const bool depthKnown = tankMountCalibrated() && tankTargetConfigured() && isfinite(tankDepthCm) && isfinite(normalMin);
+  const bool low = depthKnown && tankDepthCm < normalMin;
+  if (!low) { lowDepthReads = 0; return false; }
+  if (lowDepthReads < AUTO_FILL_CONFIRM_READS) lowDepthReads++;
+  if (lowDepthReads < AUTO_FILL_CONFIRM_READS) return true;
+  if (autoFillEverRan && now - lastAutoFillAt < AUTO_FILL_GAP_MS) return true;
+
+  static uint32_t lastFillSkipLogAt = 0;
+  const float stopAt = tankCal.targetDepthCm - (isfinite(tankCal.stopHysteresisCm) ? tankCal.stopHysteresisCm : 0.2f);
+  if (stopAt <= normalMin) {
+    if (!lastFillSkipLogAt || now - lastFillSkipLogAt >= 600000UL) {
+      lastFillSkipLogAt = now | 1;
+      Serial.printf("[WATER] low-water fill skipped: target %.2f cm is not above the normal minimum %.2f cm\n",
+                    tankCal.targetDepthCm, normalMin);
+    }
+    return true;
+  }
+  lastAutoFillAt = now;
+  autoFillEverRan = true;
+  lowDepthReads = 0;
+  Serial.printf("[WATER] %s: water depth %.2f cm is below normal (%.2f cm): filling to target %.2f cm\n",
+                classifyBand(tankDepthCm, thresholdBands.waterDepth) == ALARM_ALERT ? "CRITICAL" : "WARNING",
+                tankDepthCm, normalMin, tankCal.targetDepthCm);
+  startFillToTarget(PUMP_HARD_MAX_MS);   // stops at target, on a bad echo, or at the 10 min ceiling
+  return true;
+}
+
+// Automatic water policy. Runs after evaluateWaterAlarm() on every sensor read:
+// first a low-water fill, then the partial exchange for water quality.
 void evaluateWaterAutomation() {
   // Confirm the water-quality level over ~1 min so a short spike never pumps.
   if (qualityLevelNow == ALARM_NORMAL) { outOfRangeSamples = 0; exchangeLevel = ALARM_NORMAL; }
@@ -853,13 +898,16 @@ void evaluateWaterAutomation() {
     exchangeLevel = qualityLevelNow;
   }
 
-  if (!waterAutomation || exchangeLevel == ALARM_NORMAL) return;
+  if (!waterAutomation) return;
   if (!relaysEnabled || waterBusy() || fillOn || drainOn || !strcmp(waterPhase, "FAULT")) return;
   // Pumps start only while the dashboard can see them and stop them.
   if (WiFi.status() != WL_CONNECTED || !mqtt.connected()) return;
 
-  const bool critical = exchangeLevel == ALARM_ALERT;
   const uint32_t now = millis();
+  if (evaluateLowWaterFill(now)) return;
+  if (exchangeLevel == ALARM_NORMAL) return;
+
+  const bool critical = exchangeLevel == ALARM_ALERT;
   if (autoExchangeEverRan && now - lastAutoExchangeAt < (critical ? CRITICAL_EXCHANGE_GAP_MS : WARNING_EXCHANGE_GAP_MS)) return;
   if (exchangeWindowOpen && now - exchangeWindowStart >= 24UL * 3600UL * 1000UL) {
     exchangeWindowOpen = false;
@@ -1429,7 +1477,7 @@ const char* executeCommand(const PendingCommand& c) {
 
   if (a == "AUTOMATION_ON") {
     if (relayGate()) return relayGate();
-    if (!exchangeCommissioned()) return "rejected_water_policy_not_configured";
+    if (!automationPossible()) return "rejected_water_policy_not_configured";
     waterAutomation = true; return "accepted";
   }
   if (a == "AUTOMATION_OFF") { waterAutomation = false; return "accepted"; }
@@ -2544,7 +2592,7 @@ void handleSerialCommand(String line) {
     const String what = sp < 0 ? rest : rest.substring(0, sp);
     const String arg = sp < 0 ? "" : rest.substring(sp + 1);
     if (what == "on" || what == "off") {
-      if (what == "on" && !exchangeCommissioned()) { Serial.println("Set volume, drain and fill first."); return; }
+      if (what == "on" && !automationPossible()) { Serial.println("Calibrate the tank depth (empty + target), or set volume, drain and fill first."); return; }
       if (what == "on" && !relaysEnabled) { Serial.println("Relays are disabled. Check them with 'relay test', then 'relay enable'."); return; }
       waterAutomation = what == "on";
       Serial.printf("Automatic water exchange %s.\n", waterAutomation ? "ON" : "off");
@@ -2885,7 +2933,7 @@ void setup() {
   printCalibration();
   loadThresholdBands();
   loadExchangeSetup();
-  waterAutomation = automationSaved = prefs.getBool("autoX", false) && exchangeCommissioned();
+  waterAutomation = automationSaved = prefs.getBool("autoX", false) && automationPossible();
   if (waterAutomation) Serial.println("[WATER] automatic water exchange is ON");
   Serial.println("Type 'help' for sensor calibration commands.");
 

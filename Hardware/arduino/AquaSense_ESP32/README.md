@@ -136,8 +136,10 @@ uses the Thresholds level for temperature, pH and turbidity, confirmed for about
 | Warning | 5% | Partial exchange, at most every 6 h |
 | Critical | 10% | Partial exchange at most every 2 h, aerator on until it recovers; the backend sends the SMS |
 
-Never more than 30% in 24 h. Low water depth never starts a drain, and pumps start only
-while Wi-Fi and MQTT are up. Run times come from measured values, set once in the Serial
+Low water comes first: when the depth stays below the Thresholds normal range for about
+1 minute, the board fills to the calibrated target depth (at most every 30 min) and never
+drains. This part needs only the tank depth calibration. Never more than 30% exchanged in
+24 h, and pumps start only while Wi-Fi and MQTT are up. Run times come from measured values, set once in the Serial
 Monitor: `exchange volume <litres>`, `exchange drain <L/min>`, `exchange fill <L/min>`
 (measure each pump as in `Hardware/docs/backend-control.md`). `exchange` shows the run
 times. Each pump run must fit 1 s to 10 min. Stop pumps, All off, or a fault turn it off.

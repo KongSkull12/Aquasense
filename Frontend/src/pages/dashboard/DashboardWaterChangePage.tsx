@@ -321,6 +321,7 @@ const WaterChangePage: React.FC = () => {
               <tr><td className="py-2 pr-3"><StateMark state="ok">Normal</StateMark></td><td className="num px-3 py-2 text-right">0%</td><td className="py-2 pl-3 text-ink-2">No draining; keep monitoring</td></tr>
               <tr><td className="py-2 pr-3"><StateMark state="warn">Warning</StateMark></td><td className="num px-3 py-2 text-right">5%</td><td className="py-2 pl-3 text-ink-2">Partial exchange, then keep monitoring (at most every 6 h)</td></tr>
               <tr><td className="py-2 pr-3"><StateMark state="alarm">Critical</StateMark></td><td className="num px-3 py-2 text-right">10%</td><td className="py-2 pl-3 text-ink-2">Urgent partial exchange (at most every 2 h), aerator on, SMS alert</td></tr>
+              <tr><td className="py-2 pr-3"><StateMark state="warn">Low water</StateMark></td><td className="num px-3 py-2 text-right">—</td><td className="py-2 pl-3 text-ink-2">Depth below the Thresholds normal range: fill to the target depth first (at most every 30 min), never drain</td></tr>
             </tbody>
           </table>
         </div>
@@ -330,7 +331,7 @@ const WaterChangePage: React.FC = () => {
             : <button type="button" disabled={!deviceId || pending || !fresh} title={!fresh ? offlineReason : undefined} onClick={() => void command('AUTOMATION_ON')} className="btn-primary">Turn on automatic exchange</button>}
         </div>
         <p className="text-[13px] leading-relaxed text-ink-3">
-          Never more than 30% of the water in 24 hours. Low water depth never starts a drain, and pumps only start while the device is online. Before turning this on, set the tank volume and the measured pump flows in the ESP32 Serial Monitor: <span className="num">exchange volume &lt;litres&gt;</span>, <span className="num">exchange drain &lt;L/min&gt;</span>, <span className="num">exchange fill &lt;L/min&gt;</span>. Stop pumps turns automation off.
+          Never more than 30% of the water in 24 hours. Low water is filled to the target depth before any exchange, and pumps only start while the device is online. The low-water fill needs the tank depth calibration (Calibration → Tank). The partial exchange also needs the tank volume and the measured pump flows, set in the ESP32 Serial Monitor: <span className="num">exchange volume &lt;litres&gt;</span>, <span className="num">exchange drain &lt;L/min&gt;</span>, <span className="num">exchange fill &lt;L/min&gt;</span>. Stop pumps turns automation off.
         </p>
       </div>
     </Panel>
@@ -355,7 +356,7 @@ const WaterChangePage: React.FC = () => {
         ))}
       </div>
       <p className="mt-3 text-[13px] leading-relaxed text-ink-3">
-        Device target is {targetDepthCm.toFixed(1)} cm{tank?.targetDepthCm != null ? '' : ' (from Thresholds Normal midpoint until the device reports a calibrated target)'}. Fill to target never starts on its own — you press the button. The pump stops at the device target depth, on a bad echo, or at the 10-minute safety ceiling.
+        Device target is {targetDepthCm.toFixed(1)} cm{tank?.targetDepthCm != null ? '' : ' (from Thresholds Normal midpoint until the device reports a calibrated target)'}. With automatic exchange on, the device fills to target by itself when the depth stays below the Thresholds normal range for about a minute; otherwise press Fill to target. The pump stops at the device target depth, on a bad echo, or at the 10-minute safety ceiling.
       </p>
     </Panel>
 

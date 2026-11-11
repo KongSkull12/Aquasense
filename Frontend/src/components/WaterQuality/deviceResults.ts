@@ -4,7 +4,7 @@ const deviceResultText: Record<string, string> = {
   accepted: 'Accepted by the device',
   rejected_relays_not_commissioned: 'Relays are disabled on the device. In the ESP32 Serial Monitor, check them with "relay test", then type "relay enable".',
   rejected_exchange_not_commissioned: 'Water exchange runtimes are not set in the firmware yet (EXCHANGE_DRAIN_MS and EXCHANGE_FILL_MS).',
-  rejected_water_policy_not_configured: 'Set the tank volume and measured pump flows first. In the ESP32 Serial Monitor type "exchange volume <litres>", "exchange drain <L/min>" and "exchange fill <L/min>".',
+  rejected_water_policy_not_configured: 'Calibrate the tank depth first (Calibration → Tank: capture empty, set target), or set the tank volume and measured pump flows in the ESP32 Serial Monitor ("exchange volume <litres>", "exchange drain <L/min>", "exchange fill <L/min>").',
   rejected_aerator_policy_not_configured: 'Automatic aerator mode is not configured in the firmware (AERATOR_POLICY_CONFIGURED).',
   rejected_water_busy: 'A pump run or cooldown is already in progress. Wait for the water phase to return to Idle.',
   rejected_fault_latched: 'A water fault is latched on the device. Clear the fault before running the pumps.',
