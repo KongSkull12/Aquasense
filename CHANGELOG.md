@@ -13,6 +13,42 @@ The running version is shown in the dashboard sidebar (App = frontend, API = bac
 3. Commit, tag and push: `git tag vX.Y.Z && git push kongskull main --tags`.
    Vercel and Render redeploy `main` automatically.
 
+## [1.5.0] - 2026-11-11
+
+### Added
+- Water alarm buzzer: an Alert plays 3 beeps on repeat and a Warning 2 beeps on repeat until
+  every trusted reading is normal again. It uses the dashboard Thresholds, which the backend now
+  sends in the hardware sync reply; the board keeps the last copy so it works offline. Serial
+  Monitor: `alarm`, `alarm off|on`.
+- Automatic partial water exchange by water condition: Normal 0%, Warning 5% (at most every 6 h),
+  Critical 10% (at most every 2 h) with the aerator held on until the water recovers; the backend
+  SMS covers Critical. Never more than 30% in 24 h, never drains when depth is already low, and
+  pumps start only while online. Set the tank volume and measured pump flows with
+  `exchange volume|drain|fill`. Water change page: on/off control and the policy table.
+- DFRobot SEN0189 turbidity sensor support (manufacturer curve, one- or two-point correction).
+- Simpler Thresholds page: normal range first, alert limits behind "Change alert limits",
+  recommended values and inline validation.
+
+### Changed
+- Feeder commands (Feed now, Feeder on/off) are dropped within 1 minute when the device is off:
+  they expire after 60 s instead of 120 s, the backend cancels pending ones as soon as the device
+  stops reporting, and the firmware refuses any feed command sent before its last power-up.
+- pH uses Serial Monitor buffer calibration (`ph 4.01|6.86|9.18`) with trimmed ADC averaging.
+- Automatic exchange stays on across restarts, network drops and manual pump runs; Stop pumps,
+  All off or a fault turn it off.
+
+### Fixed
+- Sensor calibration: recapturing the same reference, out-of-range readings counted as usable,
+  and divider hints in `status`.
+- SMS: an unconfirmed test no longer blocks later tests (retry after 60 s, or 5 min if uncertain).
+- Provisional pH is published while calibration is pending; probe sensors are typed separately
+  from tank calibration on the Calibration page.
+
+### Upgrade notes
+- Flash the new firmware (app-only `.ino.bin`). The SEN0189 change clears only the old turbidity
+  calibration: capture clear water as 0 NTU afterwards. Set `exchange volume|drain|fill` before
+  turning on automatic exchange.
+
 ## [1.4.0] - 2026-11-03
 
 ### Added
