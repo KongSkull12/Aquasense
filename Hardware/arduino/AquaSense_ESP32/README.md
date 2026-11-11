@@ -125,6 +125,23 @@ pH and turbidity when calibrated and stable, and water depth after the empty-tub
 priority. In the Serial Monitor, `alarm` shows the state and limits, and `alarm off`
 silences the beeps until `alarm on` or a restart (useful while calibrating in buffers).
 
+## Automatic water exchange
+
+When automatic exchange is on (dashboard Water change page, or `exchange on`), the board
+uses the Thresholds level for temperature, pH and turbidity, confirmed for about 1 minute:
+
+| Water condition | Water replaced | Response |
+|---|---|---|
+| Normal | 0% | No draining, keep monitoring |
+| Warning | 5% | Partial exchange, at most every 6 h |
+| Critical | 10% | Partial exchange at most every 2 h, aerator on until it recovers; the backend sends the SMS |
+
+Never more than 30% in 24 h. Low water depth never starts a drain, and pumps start only
+while Wi-Fi and MQTT are up. Run times come from measured values, set once in the Serial
+Monitor: `exchange volume <litres>`, `exchange drain <L/min>`, `exchange fill <L/min>`
+(measure each pump as in `Hardware/docs/backend-control.md`). `exchange` shows the run
+times. Each pump run must fit 1 s to 10 min. Stop pumps, All off, or a fault turn it off.
+
 ## Honest limits
 
 - Sensor conversions use the calibration saved on the device. The dashboard classifies
