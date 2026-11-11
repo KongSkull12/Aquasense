@@ -13,6 +13,13 @@ The running version is shown in the dashboard sidebar (App = frontend, API = bac
 3. Commit, tag and push: `git tag vX.Y.Z && git push kongskull main --tags`.
    Vercel and Render redeploy `main` automatically.
 
+## [1.8.0] - 2026-11-11
+
+### Added
+- Staff accounts can control the aerator: the Aerator page is in their menu and the server
+  accepts `AERATOR_ON`, `AERATOR_OFF` and `AERATOR_AUTO` from them. Automatic water exchange,
+  thresholds, calibration, SMS and settings stay owner-only; viewers are unchanged.
+
 ## [1.7.0] - 2026-11-11
 
 ### Added
