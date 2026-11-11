@@ -373,7 +373,7 @@ bool signatureMatches(const char* message, const char* signature) {
 // feeder firmware: hand-rolled LEDC code compiled and reported success on
 // this board but the horn never moved, while ESP32Servo moves it. attach(pin)
 // uses 544-2400 us, the range SERVO_CLOSED_DEG / SERVO_OPEN_DEG were tuned
-// against. After each move the signal is switched off (detach) once the horn
+// against. After each move the pulses are switched off (release) once the horn
 // has arrived, so the servo stops instead of buzzing or creeping between commands.
 Servo feederServo;
 const uint32_t SERVO_HOLD_MS = 1500;   // time for the horn to reach a new angle
@@ -390,6 +390,9 @@ void buzzerSet(bool on) {
 
 void buzzerQuiet() { buzzerSet(false); }
 
+// The servo channel is attached once and then kept: between moves the pulses are
+// paused (release) instead of detaching, so a dashboard move uses exactly the same
+// path as the boot self-test, which moves the servo reliably.
 bool attachServo() {
   if (feederServo.attached()) return true;
   feederServo.setPeriodHertz(50);
@@ -399,9 +402,31 @@ bool attachServo() {
   return true;
 }
 
+// The boot self-test runs before Wi-Fi starts. Wi-Fi transmit bursts add current
+// peaks that can starve a servo sharing the same 5 V supply, so transmit power is
+// lowered while the horn moves and restored when the pulses stop.
+bool servoWifiLowered = false;
+wifi_power_t servoSavedTxPower = WIFI_POWER_19_5dBm;
+
+void lowerWifiForServo() {
+  if (servoWifiLowered || WiFi.getMode() == WIFI_OFF) return;
+  servoSavedTxPower = WiFi.getTxPower();
+  WiFi.setTxPower(WIFI_POWER_7dBm);
+  servoWifiLowered = true;
+}
+
+void restoreWifiAfterServo() {
+  if (!servoWifiLowered) return;
+  servoWifiLowered = false;
+  if (WiFi.getMode() != WIFI_OFF) WiFi.setTxPower(servoSavedTxPower);
+}
+
 bool servoAngle(int degrees) {
-  if (!attachServo()) return false;
-  feederServo.write(constrain(degrees, 0, 180));
+  lowerWifiForServo();
+  if (!attachServo()) { restoreWifiAfterServo(); return false; }
+  const int angle = constrain(degrees, 0, 180);
+  feederServo.write(angle);
+  Serial.printf("[SERVO] -> %d degrees (%d us pulse)\n", angle, feederServo.readMicroseconds());
   servoReleaseAt = millis() + SERVO_HOLD_MS;
   if (servoReleaseAt == 0) servoReleaseAt = 1;
   return true;
@@ -409,8 +434,9 @@ bool servoAngle(int degrees) {
 
 void servoRelease() {
   servoReleaseAt = 0;
+  restoreWifiAfterServo();
   if (!feederServo.attached()) return;
-  feederServo.detach();
+  feederServo.release();   // pulses off, channel kept: no re-attach before the next move
   Serial.println("[SERVO] signal off (servo stopped)");
 }
 
