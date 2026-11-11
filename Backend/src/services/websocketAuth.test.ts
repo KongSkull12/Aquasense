@@ -2,6 +2,7 @@ import test, { mock, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { tokenService } from '../utils/tokenService';
 import { getSessionTokenFromCookieHeader, resolveSocketDeviceScope, resolveSocketSession } from '../websocket/waterQualityWS';
+import { mockDeviceAccess } from './deviceAccessTestDoubles';
 
 afterEach(() => mock.restoreAll());
 
@@ -25,6 +26,12 @@ test('Socket.IO history and live-data scope includes only active devices owned b
     ? [{ deviceId: 'device-a', isActive: true }, { deviceId: 'device-old', isActive: false }]
     : [{ deviceId: 'device-b', isActive: true }];
   assert.deepEqual(await resolveSocketDeviceScope({ userId: 'owner-a', role: 'farmer' }, listDevices), ['device-a']);
+  // Guests go through deviceAccess (a viewer may belong to an owner); one without an owner sees its own active devices.
+  mockDeviceAccess([{ id: 'owner-b', role: 'guest' }], [
+    { deviceId: 'device-b', userId: 'owner-b', isActive: true },
+    { deviceId: 'device-b-old', userId: 'owner-b', isActive: false },
+    { deviceId: 'device-a', userId: 'owner-a', isActive: true },
+  ]);
   assert.deepEqual(await resolveSocketDeviceScope({ userId: 'owner-b', role: 'guest' }, listDevices), ['device-b']);
   assert.equal(await resolveSocketDeviceScope({ userId: 'admin', role: 'admin' }, listDevices), undefined);
 });

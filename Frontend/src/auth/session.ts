@@ -17,6 +17,13 @@ const STAFF_PATHS = new Set([
   '/dashboard/alerts',
 ]);
 
+/** Viewer accounts (stored as `guest`) see readings and alerts only. */
+const VIEWER_PATHS = new Set([
+  '/dashboard/overview',
+  '/dashboard/parameters',
+  '/dashboard/alerts',
+]);
+
 export const readSessionUser = (): SessionUser | null => {
   try {
     const raw = localStorage.getItem('user');
@@ -31,11 +38,20 @@ export const readUserRole = (): UserRole => readSessionUser()?.role || 'farmer';
 
 export const isStaffRole = (role: UserRole = readUserRole()): boolean => role === 'staff';
 
+export const isViewerRole = (role: UserRole = readUserRole()): boolean => role === 'guest';
+
+/** Staff and viewer accounts belong to a farm owner and see a reduced dashboard. */
+export const isSubAccountRole = (role: UserRole = readUserRole()): boolean => role === 'staff' || role === 'guest';
+
 export const isAdminRole = (role: UserRole = readUserRole()): boolean => role === 'admin';
 
+/** Farm owners (admin or farmer) can create staff and viewer accounts. */
+export const canManageSubAccounts = (role: UserRole = readUserRole()): boolean => role === 'admin' || role === 'farmer';
+
 export const canAccessDashboardPath = (pathname: string, role: UserRole = readUserRole()): boolean => {
-  if (role !== 'staff') return true;
-  return [...STAFF_PATHS].some((path) => pathname === path || pathname.startsWith(`${path}/`));
+  const allowed = role === 'staff' ? STAFF_PATHS : role === 'guest' ? VIEWER_PATHS : null;
+  if (!allowed) return true;
+  return [...allowed].some((path) => pathname === path || pathname.startsWith(`${path}/`));
 };
 
 export const staffHomePath = '/dashboard/overview';

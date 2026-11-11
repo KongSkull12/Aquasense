@@ -123,6 +123,8 @@ export const createStaffSchema = z.object({
   fullName: z.string().trim().min(1).max(255),
   email: z.string().trim().email().max(255),
   password: z.string().min(12).max(256),
+  /** 'viewer' is read-only; omitted means 'staff' for older dashboards. */
+  access: z.enum(['staff', 'viewer']).optional(),
 }).strict();
 
 const finiteNumber = z.number().finite();

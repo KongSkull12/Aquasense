@@ -5,7 +5,10 @@ import type { UserRole } from './userRoles';
 const activeDevices = (where: { userId?: string }): Promise<Device[]> =>
   Device.findAll({ where: { ...where, isActive: true }, order: [['createdAt', 'DESC']] });
 
-/** Devices this account may see and operate. Staff inherit the employer's tank. */
+/**
+ * Devices this account may see and operate. Staff and viewers inherit the
+ * employer's tank; a viewer's routes stay read-only.
+ */
 export const listAccessibleDevices = async (userId: string, role?: UserRole): Promise<Device[]> => {
   const user = await User.findByPk(userId);
   if (!user) return [];
@@ -15,7 +18,8 @@ export const listAccessibleDevices = async (userId: string, role?: UserRole): Pr
     return activeDevices({});
   }
 
-  if (effectiveRole === 'staff') {
+  // A guest without an employer keeps the old behaviour: only its own devices.
+  if (effectiveRole === 'staff' || (effectiveRole === 'guest' && user.employerUserId)) {
     if (!user.employerUserId) return [];
     const employer = await User.findByPk(user.employerUserId);
     if (!employer) return [];

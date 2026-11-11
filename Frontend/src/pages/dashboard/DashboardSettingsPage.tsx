@@ -3,7 +3,7 @@ import { DeviceManagement } from '../../components/WaterQuality/DeviceManagement
 import { StaffAccountsPanel } from '../../components/WaterQuality/StaffAccountsPanel';
 import { DashboardProfile, getDashboardProfile, saveDashboardProfile } from '../../components/WaterQuality/dashboardProfile';
 import { KeyValues, PageHead, Panel, StateMark } from '../../components/WaterQuality/Console';
-import { isAdminRole } from '../../auth/session';
+import { canManageSubAccounts } from '../../auth/session';
 import { apiClient } from '../../services/apiClient';
 
 const fields: Array<{ key: keyof DashboardProfile; label: string; wide?: boolean; hint?: string; type?: string }> = [
@@ -17,12 +17,12 @@ const fields: Array<{ key: keyof DashboardProfile; label: string; wide?: boolean
 const DashboardSettingsPage: React.FC = () => {
   const [profile, setProfile] = useState<DashboardProfile>(getDashboardProfile);
   const [saved, setSaved] = useState(false);
-  const [showStaffPanel, setShowStaffPanel] = useState(isAdminRole);
+  const [showStaffPanel, setShowStaffPanel] = useState(canManageSubAccounts);
 
   useEffect(() => {
     let active = true;
     void apiClient.verifyAuth().then((ok) => {
-      if (active && ok) setShowStaffPanel(isAdminRole());
+      if (active && ok) setShowStaffPanel(canManageSubAccounts());
     });
     return () => { active = false; };
   }, []);

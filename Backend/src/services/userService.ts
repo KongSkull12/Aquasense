@@ -5,7 +5,8 @@
 import bcryptjs from 'bcryptjs';
 import { logger } from '../utils/logger';
 import { User as UserModel } from '../database/models/User';
-import type { UserRole } from './userRoles';
+import { Op } from 'sequelize';
+import { canManageSubAccounts, SUB_ACCOUNT_ROLES, type SubAccountRole, type UserRole } from './userRoles';
 
 export interface User {
   id: string;
@@ -73,15 +74,25 @@ class UserService {
     }
   }
 
-  /** Admin creates a staff account that shares the admin tank devices. */
-  async createStaffAccount(employerUserId: string, fullName: string, email: string, password: string): Promise<User> {
+  /**
+   * An admin or farmer creates a staff or viewer account that shares their tank
+   * devices. Viewers are stored as the read-only `guest` role.
+   */
+  async createStaffAccount(
+    employerUserId: string,
+    fullName: string,
+    email: string,
+    password: string,
+    role: SubAccountRole = 'staff',
+  ): Promise<User> {
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(email)) throw new Error('Invalid email format');
     validatePasswordStrength(password);
+    if (!SUB_ACCOUNT_ROLES.includes(role)) throw new Error('Invalid account type');
 
     const employer = await UserModel.findByPk(employerUserId);
-    if (!employer || employer.role !== 'admin') {
-      throw new Error('Only an admin can create staff accounts');
+    if (!employer || !canManageSubAccounts(employer.role)) {
+      throw new Error('Only the farm owner can create staff or viewer accounts');
     }
 
     const existingUser = await UserModel.findOne({ where: { email: email.toLowerCase() } });
@@ -91,24 +102,24 @@ class UserService {
     const user = await UserModel.create({
       fullName: fullName.trim(),
       email: email.toLowerCase(),
-      role: 'staff',
+      role,
       employerUserId,
       passwordHash,
     });
-    logger.info('Staff account created', { id: user.id, email: user.email, employerUserId });
+    logger.info('Sub-account created', { id: user.id, email: user.email, role, employerUserId });
     return this.mapUserModel(user);
   }
 
   async listStaffForEmployer(employerUserId: string): Promise<User[]> {
     const rows = await UserModel.findAll({
-      where: { employerUserId, role: 'staff' },
+      where: { employerUserId, role: { [Op.in]: SUB_ACCOUNT_ROLES } },
       order: [['createdAt', 'DESC']],
     });
     return rows.map((row) => this.mapUserModel(row));
   }
 
   async removeStaffAccount(employerUserId: string, staffUserId: string): Promise<boolean> {
-    const staff = await UserModel.findOne({ where: { id: staffUserId, employerUserId, role: 'staff' } });
+    const staff = await UserModel.findOne({ where: { id: staffUserId, employerUserId, role: { [Op.in]: SUB_ACCOUNT_ROLES } } });
     if (!staff) return false;
     await staff.destroy();
     logger.info('Staff account removed', { staffUserId, employerUserId });

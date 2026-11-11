@@ -45,8 +45,9 @@ export const resolveSocketDeviceScope = async (
   listDevices: (userId: string) => Promise<Array<{ deviceId: string; isActive: boolean }>>,
 ): Promise<string[] | undefined> => {
   if (session.role === 'admin') return undefined;
-  if (session.role === 'staff') {
-    return (await listAccessibleDevices(session.userId, 'staff')).map(device => device.deviceId);
+  // Staff and viewers (guest) see the employer's tank; deviceAccess resolves it.
+  if (session.role === 'staff' || session.role === 'guest') {
+    return (await listAccessibleDevices(session.userId, session.role)).map(device => device.deviceId);
   }
   return (await listDevices(session.userId)).filter(device => device.isActive).map(device => device.deviceId);
 };
@@ -170,8 +171,8 @@ class WaterQualityWebSocketServer {
 
   private async sessionCanSeeDevice(session: SocketSession, deviceUserId: string, deviceId: string): Promise<boolean> {
     if (session.role === 'admin' || session.userId === deviceUserId) return true;
-    if (session.role !== 'staff') return false;
-    const allowed = await listAccessibleDevices(session.userId, 'staff');
+    if (session.role !== 'staff' && session.role !== 'guest') return false;
+    const allowed = await listAccessibleDevices(session.userId, session.role);
     return allowed.some((item) => item.deviceId === deviceId);
   }
 

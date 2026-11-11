@@ -26,7 +26,7 @@ const controls = [
 ];
 
 const platform = [
-  { title: 'Accounts and roles', text: 'JWT sign-in with admin, farmer, staff (view, feed, water change), and read-only guest roles.' },
+  { title: 'Accounts and roles', text: 'JWT sign-in for farm owners, plus staff (view, feed, water change) and read-only viewer accounts the owner creates.' },
   { title: 'Device keys', text: 'Each ESP32 is registered to an account and authenticates its own requests.' },
   { title: 'Any screen', text: 'The dashboard works on phones at the tank and on desktop at the office.' },
   { title: 'History', text: 'Readings are stored in PostgreSQL for trends and statistics.' },

@@ -4,7 +4,7 @@ import { DashboardIcon } from './DashboardUi';
 import { getDashboardProfile } from './dashboardProfile';
 import { apiClient } from '../../services/apiClient';
 import { API_BASE_URL } from '../../config/runtime';
-import { canAccessDashboardPath, isStaffRole, readSessionUser, readUserRole, staffHomePath } from '../../auth/session';
+import { canAccessDashboardPath, isSubAccountRole, readSessionUser, readUserRole, staffHomePath } from '../../auth/session';
 import logo from '../../assets/images/AquaSense_Logo.png';
 
 type NavIcon = Parameters<typeof DashboardIcon>[0]['name'];
@@ -47,7 +47,7 @@ export const DashboardLayout: React.FC = () => {
   const navItems = allNavItems.filter((item) => canAccessDashboardPath(item.to, role));
 
   useEffect(() => {
-    if (isStaffRole(role) && !canAccessDashboardPath(location.pathname, role)) {
+    if (isSubAccountRole(role) && !canAccessDashboardPath(location.pathname, role)) {
       navigate(staffHomePath, { replace: true });
     }
   }, [location.pathname, navigate, role]);

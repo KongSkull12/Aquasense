@@ -38,7 +38,7 @@ router.get('/readings/latest', authenticateToken, requireRole(['admin', 'farmer'
 router.get('/readings', authenticateToken, requireRole(['admin', 'farmer', 'staff', 'guest']), validateQuery(timeRangeQuerySchema), getReadingsByTimeRange); // Get by time range
 router.post('/ammonia/calculate', authenticateToken, requireRole(['admin', 'farmer']), validateBody(ammoniaCalculationSchema), calculateAmmoniaSpeciation);
 router.post('/tan-measurements', authenticateToken, requireRole(['admin', 'farmer']), validateBody(tanMeasurementEntrySchema), createTanMeasurement);
-router.get('/tan-measurements', authenticateToken, requireRole(['admin', 'farmer', 'staff']), validateQuery(tanMeasurementQuerySchema), getTanMeasurements);
+router.get('/tan-measurements', authenticateToken, requireRole(['admin', 'farmer', 'staff', 'guest']), validateQuery(tanMeasurementQuerySchema), getTanMeasurements);
 router.get('/ingest-status', authenticateToken, requireRole(['admin', 'farmer']), getIngestStatus); // ESP32 ingest status
 
 // Statistics endpoint

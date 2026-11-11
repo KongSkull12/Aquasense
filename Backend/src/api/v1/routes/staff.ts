@@ -5,8 +5,8 @@ import { createStaffAccount, listStaffAccounts, removeStaffAccount } from '../co
 
 const router = Router();
 
-router.get('/staff', authenticateToken, requireRole(['admin']), listStaffAccounts);
-router.post('/staff', authenticateToken, requireRole(['admin']), validateBody(createStaffSchema), createStaffAccount);
-router.delete('/staff/:id', authenticateToken, requireRole(['admin']), validateParams(idParamSchema), removeStaffAccount);
+router.get('/staff', authenticateToken, requireRole(['admin', 'farmer']), listStaffAccounts);
+router.post('/staff', authenticateToken, requireRole(['admin', 'farmer']), validateBody(createStaffSchema), createStaffAccount);
+router.delete('/staff/:id', authenticateToken, requireRole(['admin', 'farmer']), validateParams(idParamSchema), removeStaffAccount);
 
 export default router;

@@ -6,7 +6,7 @@ import { isReadingLive, LIVE_READING_MS } from '../../components/WaterQuality/se
 import { BandChart, BandKey, ChartPanel, KeyValues, MetaItem, Notice, PageHead, Panel, StateMark, type MarkState } from '../../components/WaterQuality/Console';
 import { bandLabel, classifyBand, formatNormalBand, type BandKey as LimitKey } from '../../components/WaterQuality/thresholdBands';
 import { RiskAssessmentPanel } from '../../components/WaterQuality/RiskAssessmentPanel';
-import { isStaffRole } from '../../auth/session';
+import { isSubAccountRole, isViewerRole } from '../../auth/session';
 
 type Status = { label: string; state: MarkState };
 type NextStep = { text: string; to?: string; cta?: string };
@@ -32,7 +32,8 @@ const nextFeed = (schedules: Array<{ date: string | null; time: string; enabled:
 const DashboardOverviewPage: React.FC = () => {
   const { isConnected, latestReading, chartData, riskAssessment, thresholdBands, error, activeAlerts, feedingSchedules } = useDashboardData();
   const [profile, setProfile] = useState(getDashboardProfile());
-  const staffSession = isStaffRole();
+  const staffSession = isSubAccountRole();
+  const viewerSession = isViewerRole();
 
   useEffect(() => {
     const refreshProfile = () => setProfile(getDashboardProfile());
@@ -293,7 +294,7 @@ const DashboardOverviewPage: React.FC = () => {
         </section>
 
         <aside className="flex min-w-0 flex-col gap-4" aria-label="Feeding and risk assessment">
-          <Panel title="Feeding" actions={<Link to="/dashboard/feeding" className="link text-[13px]">Open feeding</Link>}>
+          <Panel title="Feeding" actions={viewerSession ? undefined : <Link to="/dashboard/feeding" className="link text-[13px]">Open feeding</Link>}>
             {upcomingFeed ? (
               <div className="mb-4">
                 <p className="text-xs text-ink-3">Next feed</p>
