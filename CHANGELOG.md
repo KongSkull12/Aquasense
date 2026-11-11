@@ -13,6 +13,25 @@ The running version is shown in the dashboard sidebar (App = frontend, API = bac
 3. Commit, tag and push: `git tag vX.Y.Z && git push kongskull main --tags`.
    Vercel and Render redeploy `main` automatically.
 
+## [1.6.0] - 2026-11-11
+
+### Added
+- Automatic low-water fill: with automatic exchange on, a water depth that stays below the
+  Thresholds normal range for about 1 minute (Warning or Alert) is filled to the calibrated
+  target depth, at most every 30 min, and never drained. It runs before any water-quality
+  exchange, so a pH or turbidity exchange is no longer blocked by a tank that is already low.
+
+### Changed
+- Automatic exchange can be turned on with only the tank depth calibrated (empty + target).
+  The partial exchange still needs `exchange volume|drain|fill`; without it only the
+  low-water fill runs.
+- Water change page: the policy table shows the low-water step; Calibration and device-result
+  texts describe the automatic fill.
+
+### Upgrade notes
+- Flash the new firmware (app-only `.ino.bin`), then turn automatic exchange on from the Water
+  change page. Relay pins are unchanged (aerator 25, fill 26, drain 27).
+
 ## [1.5.1] - 2026-11-11
 
 ### Fixed
