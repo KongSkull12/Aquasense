@@ -1331,6 +1331,7 @@ void onMqttMessage(char* topic, uint8_t* payload, unsigned int length) {
     strlcpy(slot.action, action, sizeof(slot.action));
     slot.durationMs = durationMs;
     strlcpy(slot.param, param, sizeof(slot.param));
+    slot.expiresAt = expiresAt;
     Serial.printf("[CMD] queued %s %s%s%s\n", source, action, param[0] ? " " : "", param);
     return;
   }
@@ -1339,10 +1340,27 @@ void onMqttMessage(char* topic, uint8_t* payload, unsigned int length) {
 
 const char* relayGate() { return relaysEnabled ? nullptr : "rejected_relays_not_commissioned"; }
 
+// Feeder (servo) commands live 60 s on the backend (FEEDING_COMMAND_TTL_MS).
+const uint64_t FEED_COMMAND_TTL_MS = 60000;
+const uint64_t FEED_BOOT_TOLERANCE_MS = 2000;   // allows for small clock differences
+
+// A feed must never run late or survive a power cycle: refuse one that was sent
+// before this boot (the device was off) or that is past its 60 s life.
+const char* feedCommandStale(const PendingCommand& c) {
+  const uint64_t now = epochMillis();
+  if (!now || c.expiresAt <= now) return "rejected_expired";
+  const uint64_t issuedAt = c.expiresAt > FEED_COMMAND_TTL_MS ? c.expiresAt - FEED_COMMAND_TTL_MS : 0;
+  if (now - issuedAt > FEED_COMMAND_TTL_MS) return "rejected_expired";
+  const uint64_t bootedAt = now - millis();
+  if (issuedAt + FEED_BOOT_TOLERANCE_MS < bootedAt) return "rejected_device_restarted";
+  return nullptr;
+}
+
 const char* executeCommand(const PendingCommand& c) {
   const bool feeding = !strcmp(c.source, "feeding");
   const String a = c.action;
   if (feeding) {
+    if (const char* stale = feedCommandStale(c)) return stale;
     if (a == "TRIGGER") {
       if (feederBusy()) return "rejected_feeder_busy";
       return feederTrigger() ? "accepted" : "rejected_servo_pwm";

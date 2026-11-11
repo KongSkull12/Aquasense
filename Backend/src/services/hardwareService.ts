@@ -2,7 +2,7 @@ import { Op } from 'sequelize';
 import { HardwareCommand, HardwareDeviceState } from '../database/models/HardwareControl';
 import { FeedingCommand } from '../database/models/FeedingCommand';
 import { feedingService } from './feedingService';
-import { COMMAND_TTL_MS, DEVICE_ONLINE_MS, type HardwareAction, type HardwareState, type CommandReceipt, type SignedHardwareAck } from './hardwareProtocol';
+import { COMMAND_TTL_MS, DEVICE_ONLINE_MS, FEEDING_COMMAND_TTL_MS, type HardwareAction, type HardwareState, type CommandReceipt, type SignedHardwareAck } from './hardwareProtocol';
 import { withHardwareDeviceLock, DeviceStopPendingError } from './hardwareControlLock';
 import { noteCalibrationResult } from './deviceCalibration';
 import { loadThresholdBands } from './thresholdBands';
@@ -82,7 +82,20 @@ export const hardwareService = {
     await HardwareCommand.update({ status: 'EXPIRED', result: 'expired_before_delivery' },
       { where: { status: 'PENDING', expiresAt: { [Op.lte]: now } } });
     await FeedingCommand.update({ status: 'ACKED', metadata: { deviceResult: 'expired_before_delivery' } },
-      { where: { status: 'PENDING', source: 'MANUAL', createdAt: { [Op.lt]: new Date(now.getTime() - COMMAND_TTL_MS) } } });
+      { where: { status: 'PENDING', source: 'MANUAL', createdAt: { [Op.lt]: new Date(now.getTime() - FEEDING_COMMAND_TTL_MS) } } });
+  },
+
+  /** Cancels pending manual feeder commands for a device that has stopped reporting. */
+  async cancelFeedingForOfflineDevice(deviceId: string): Promise<number> {
+    const [count] = await FeedingCommand.update({ status: 'ACKED', metadata: { deviceResult: 'cancelled_device_offline' } },
+      { where: { deviceId, status: 'PENDING', source: 'MANUAL' } });
+    return count;
+  },
+
+  /** True when the device sent a heartbeat or signed ack within DEVICE_ONLINE_MS. */
+  async isDeviceReporting(deviceId: string): Promise<boolean> {
+    const reported = await HardwareDeviceState.findByPk(deviceId);
+    return !!reported && Date.now() - reported.receivedAt.getTime() <= DEVICE_ONLINE_MS;
   },
 
   async acceptMqttAck(userId: string, ack: SignedHardwareAck): Promise<boolean> {

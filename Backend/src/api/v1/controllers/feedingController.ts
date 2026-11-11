@@ -10,6 +10,7 @@ import type { DeviceAuthenticatedRequest } from '../../../middleware/deviceAuthM
 import { auditLogService } from '../../../services/auditLog.service';
 import { mqttService } from '../../../services/mqttService';
 import { hardwareService } from '../../../services/hardwareService';
+import { FEEDING_COMMAND_TTL_MS } from '../../../services/hardwareProtocol';
 import { config } from '../../../config/config';
 
 const DEFAULT_DEVICE_ID = config.feeding.deviceId;
@@ -127,7 +128,7 @@ export const triggerManualCommand = async (req: AuthenticatedRequest, res: Respo
       ...(req.userRole === 'staff' ? { staffUserId: req.userId } : {}),
     });
     const published = await mqttService.dispatchHardwareCommand({ id: command.id, deviceId, source: 'feeding', action,
-      expiresAt: new Date(command.createdAt.getTime() + 120_000) });
+      expiresAt: new Date(command.createdAt.getTime() + FEEDING_COMMAND_TTL_MS) });
     if (!published) {
       await feedingService.discardUnpublishedManualCommand(ownerUserId, deviceId, command.id);
       sendError(res, 503, 'Feeder command was not sent; the MQTT publish was not accepted. No retry was queued');

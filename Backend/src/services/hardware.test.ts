@@ -494,3 +494,36 @@ test('manual feeding removes the pending row when MQTT rejects a publish after t
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
   }
 });
+
+test('pending feeder commands are cancelled when the device is off and expire after 1 minute', async () => {
+  const service = new MQTTService();
+  const now = Date.now();
+  const rows = [
+    { id: 'fresh-on', userId: 'owner', deviceId: 'on-board', action: 'TRIGGER', createdAt: new Date(now - 10_000) },
+    { id: 'old-on', userId: 'owner', deviceId: 'on-board', action: 'TRIGGER', createdAt: new Date(now - 61_000) },
+    { id: 'fresh-off', userId: 'owner', deviceId: 'off-board', action: 'TRIGGER', createdAt: new Date(now - 5_000) },
+  ];
+  mock.method(MQTTService.prototype, 'isActuatorCommandChannelConnected', () => true);
+  mock.method(MQTTService.prototype, 'isTelemetryDeviceOnline', () => false);
+  mock.method(HardwareCommand, 'findAll', async () => []);
+  mock.method(FeedingCommand, 'findAll', async () => rows);
+  mock.method(deviceService, 'verifyOwnership', async () => true);
+  mock.method(hardwareService, 'isDeviceReporting', async (deviceId: string) => deviceId === 'on-board');
+  const cancel = mock.method(hardwareService, 'cancelFeedingForOfflineDevice', async () => 1);
+  mock.method(hardwareService, 'expirePendingCommands', async () => undefined);
+  const dispatch = mock.method(MQTTService.prototype, 'dispatchHardwareCommand', async () => true);
+  await (service as unknown as { redeliverPendingActuatorCommands(): Promise<void> }).redeliverPendingActuatorCommands();
+  assert.deepEqual(dispatch.mock.calls.map((call) => (call.arguments[0] as { id: string }).id), ['fresh-on']);
+  const sent = dispatch.mock.calls[0].arguments[0] as { expiresAt: Date };
+  assert.equal(sent.expiresAt.getTime(), rows[0].createdAt.getTime() + 60_000);
+  assert.deepEqual(cancel.mock.calls.map((call) => call.arguments[0]), ['off-board']);
+});
+
+test('expiring manual feeder commands uses the 1 minute feeder TTL', async () => {
+  const feedUpdate = mock.method(FeedingCommand, 'update', async () => [1]);
+  mock.method(HardwareCommand, 'update', async () => [0]);
+  const before = Date.now();
+  await hardwareService.expirePendingCommands();
+  const cutoff = ((feedUpdate.mock.calls[0].arguments[1] as any).where.createdAt[Op.lt] as Date).getTime();
+  assert.ok(cutoff >= before - 60_000 - 50 && cutoff <= Date.now() - 60_000 + 50);
+});

@@ -45,4 +45,5 @@ struct PendingCommand {
   char id[37]; char source[10]; char action[24];
   uint32_t durationMs;
   char param[25];   // calibration commands only, e.g. "ph:6.86"
+  uint64_t expiresAt = 0;   // signed UTC ms; feeder commands are re-checked just before they run
 };

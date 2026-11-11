@@ -12,6 +12,9 @@ export const calibrationActions: readonly HardwareAction[] = ['CAL_CAPTURE', 'CA
 const calibrationSensorParam = /^(ph|orp|turb|temp|tank)$/;
 const calibrationCaptureParam = /^(?:(?:ph|orp|turb|temp):-?\d{1,4}(?:\.\d{1,3})?|tank:empty|tank:target:\d{1,3}(?:\.\d{1,3})?)$/;
 export const COMMAND_TTL_MS = 120_000;
+// Feeder (servo) commands: cancelled if the device has not run them within 1 minute.
+// Keep aligned with firmware FEED_COMMAND_TTL_MS.
+export const FEEDING_COMMAND_TTL_MS = 60_000;
 export const DEVICE_ONLINE_MS = 45_000;
 export const MAX_PUMP_RUNTIME_MS = 600_000; // Keep aligned with firmware PUMP_HARD_MAX_MS (10 min).
 const deviceId = z.string().trim().min(1).max(120);

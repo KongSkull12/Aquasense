@@ -15,7 +15,7 @@ import { config as appConfig } from '../config/config';
 import { HardwareCommand } from '../database/models/HardwareControl';
 import { FeedingCommand } from '../database/models/FeedingCommand';
 import { deviceService } from './device.service';
-import { ackCanonical, commandCanonical, parseSignedAck, signCanonical, verifyCanonical } from './hardwareProtocol';
+import { ackCanonical, commandCanonical, FEEDING_COMMAND_TTL_MS, parseSignedAck, signCanonical, verifyCanonical } from './hardwareProtocol';
 import { hardwareService } from './hardwareService';
 
 interface MQTTConfig {
@@ -382,9 +382,21 @@ export class MQTTService {
         await this.dispatchHardwareCommand({ id: command.id, deviceId: command.deviceId, source: 'hardware', action: command.action,
           durationMs: command.durationMs ?? undefined, param: command.param ?? undefined, expiresAt: command.expiresAt });
       }
+      const offlineChecked = new Map<string, boolean>();
       for (const command of feeding) {
-        const expiresAt = command.createdAt.getTime() + 120_000;
+        const expiresAt = command.createdAt.getTime() + FEEDING_COMMAND_TTL_MS;
         if (expiresAt <= now || !(await deviceService.verifyOwnership(command.userId, command.deviceId))) continue;
+        // A feeder command never waits for a device that switched off: cancel it instead.
+        if (!offlineChecked.has(command.deviceId)) {
+          const reporting = this.isTelemetryDeviceOnline(command.deviceId)
+            || await hardwareService.isDeviceReporting(command.deviceId);
+          offlineChecked.set(command.deviceId, !reporting);
+          if (!reporting) {
+            const cancelled = await hardwareService.cancelFeedingForOfflineDevice(command.deviceId);
+            if (cancelled) logger.warn('Cancelled feeder commands for an offline device', { deviceId: command.deviceId, cancelled });
+          }
+        }
+        if (offlineChecked.get(command.deviceId)) continue;
         await this.dispatchHardwareCommand({ id: command.id, deviceId: command.deviceId, source: 'feeding', action: command.action,
           expiresAt: new Date(expiresAt) });
       }
