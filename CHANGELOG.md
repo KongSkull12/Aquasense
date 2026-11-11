@@ -13,6 +13,20 @@ The running version is shown in the dashboard sidebar (App = frontend, API = bac
 3. Commit, tag and push: `git tag vX.Y.Z && git push kongskull main --tags`.
    Vercel and Render redeploy `main` automatically.
 
+## [1.7.0] - 2026-11-11
+
+### Added
+- Viewer accounts: a farm owner creates read-only sign-ins from Settings → Staff and viewer
+  accounts (choose **Viewer**). A viewer sees only Overview, Parameters and Alerts & logs for the
+  owner's tank, live updates included. Every feed, pump, aerator, threshold, calibration, alert
+  action and settings route rejects them on the server, not only in the menu. Viewers are stored
+  as the existing `guest` role, so no database migration is needed.
+
+### Changed
+- Farmer accounts can now create and remove staff and viewer accounts, not only admins.
+  `POST /api/v1/staff` takes an optional `access: "staff" | "viewer"` (default `staff`).
+- Viewers and staff can read TAN measurements; viewers can read the feeding schedule list.
+
 ## [1.6.0] - 2026-11-11
 
 ### Added
