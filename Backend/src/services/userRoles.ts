@@ -2,8 +2,11 @@ export type UserRole = 'admin' | 'farmer' | 'staff' | 'guest';
 
 export const USER_ROLES: UserRole[] = ['admin', 'farmer', 'staff', 'guest'];
 
-/** Staff may view readings and run feed / drain / fill only. */
-export const STAFF_HARDWARE_ACTIONS = new Set(['DRAIN', 'FILL', 'WATER_EXCHANGE', 'FILL_TO_TARGET', 'WATER_STOP']);
+/** Staff may view readings, feed, drain / fill, and switch the aerator only. */
+export const STAFF_HARDWARE_ACTIONS = new Set([
+  'DRAIN', 'FILL', 'WATER_EXCHANGE', 'FILL_TO_TARGET', 'WATER_STOP',
+  'AERATOR_ON', 'AERATOR_OFF', 'AERATOR_AUTO',
+]);
 
 /**
  * Accounts an owner creates for others. A viewer is stored as the read-only

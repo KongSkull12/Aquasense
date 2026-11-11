@@ -9,13 +9,16 @@ import { mockDeviceAccess, type TestDevice, type TestUser } from './deviceAccess
 
 afterEach(() => { mock.restoreAll(); });
 
-test('staff hardware allow-list covers drain, fill, fill-to-target, exchange, and stop only', () => {
+test('staff hardware allow-list covers drain, fill, fill-to-target, exchange, stop, and the aerator only', () => {
   assert.equal(STAFF_HARDWARE_ACTIONS.has('DRAIN'), true);
   assert.equal(STAFF_HARDWARE_ACTIONS.has('FILL'), true);
   assert.equal(STAFF_HARDWARE_ACTIONS.has('FILL_TO_TARGET'), true);
   assert.equal(STAFF_HARDWARE_ACTIONS.has('WATER_EXCHANGE'), true);
   assert.equal(STAFF_HARDWARE_ACTIONS.has('WATER_STOP'), true);
-  assert.equal(STAFF_HARDWARE_ACTIONS.has('AERATOR_ON'), false);
+  assert.equal(STAFF_HARDWARE_ACTIONS.has('AERATOR_ON'), true);
+  assert.equal(STAFF_HARDWARE_ACTIONS.has('AERATOR_OFF'), true);
+  assert.equal(STAFF_HARDWARE_ACTIONS.has('AERATOR_AUTO'), true);
+  assert.equal(STAFF_HARDWARE_ACTIONS.has('AUTOMATION_ON'), false);
   assert.equal(STAFF_HARDWARE_ACTIONS.has('CAL_PH_MID'), false);
 });
 

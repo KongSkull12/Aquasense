@@ -14,6 +14,7 @@ const STAFF_PATHS = new Set([
   '/dashboard/parameters',
   '/dashboard/feeding',
   '/dashboard/water-change',
+  '/dashboard/aerator',
   '/dashboard/alerts',
 ]);
 

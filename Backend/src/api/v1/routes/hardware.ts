@@ -26,7 +26,7 @@ router.post('/hardware/commands', authenticateToken, requireRole(['admin', 'farm
     const { deviceId, action, durationMs, param } = req.body;
     try {
       if (req.userRole === 'staff' && !STAFF_HARDWARE_ACTIONS.has(String(action))) {
-        sendError(res, 403, 'Staff accounts can only drain, fill, run exchange, or stop the pumps'); return;
+        sendError(res, 403, 'Staff accounts can only drain, fill, run exchange, stop the pumps, or switch the aerator'); return;
       }
       const ownerUserId = req.userId ? await resolveCommandOwnerUserId(req.userId, deviceId, req.userRole) : null;
       if (!req.userId || !ownerUserId) { sendError(res, 403, 'Device is not owned/active'); return; }

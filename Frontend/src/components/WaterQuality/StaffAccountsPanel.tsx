@@ -14,7 +14,7 @@ type Access = 'viewer' | 'staff';
 
 const ACCESS_OPTIONS: Array<{ value: Access; label: string; text: string }> = [
   { value: 'viewer', label: 'Viewer', text: 'Sees readings, charts and alerts only. Cannot feed, run pumps or change anything.' },
-  { value: 'staff', label: 'Staff', text: 'Also feeds and drains or fills the tank. Cannot change thresholds, SMS, calibration or settings.' },
+  { value: 'staff', label: 'Staff', text: 'Also feeds, drains or fills the tank, and switches the aerator. Cannot change thresholds, SMS, calibration or settings.' },
 ];
 
 /** Viewers are stored as the read-only `guest` role. */
@@ -60,7 +60,7 @@ export const StaffAccountsPanel: React.FC = () => {
       setPassword('');
       setMessage(access === 'viewer'
         ? 'Viewer account created. They can sign in and see this farm’s readings and alerts.'
-        : 'Staff account created. They can sign in, see readings, feed, and drain or fill.');
+        : 'Staff account created. They can sign in, see readings, feed, drain or fill, and switch the aerator.');
       await load();
     } catch (cause) {
       setError(getApiErrorMessage(cause, 'Unable to create the account.'));
