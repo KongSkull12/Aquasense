@@ -13,6 +13,19 @@ The running version is shown in the dashboard sidebar (App = frontend, API = bac
 3. Commit, tag and push: `git tag vX.Y.Z && git push kongskull main --tags`.
    Vercel and Render redeploy `main` automatically.
 
+## [1.5.1] - 2026-11-11
+
+### Fixed
+- Feeder servo moved during the boot self-test but not for dashboard buttons. The servo channel
+  is now attached once and kept, with pulses paused between moves instead of detaching, so every
+  move uses the same path as the self-test. Wi-Fi transmit power is lowered while the horn moves
+  (the self-test runs before Wi-Fi starts) and restored afterwards. Each move is logged in the
+  Serial Monitor with its pulse width.
+
+### Upgrade notes
+- Flash the new firmware (app-only `.ino.bin`). If the servo still does not move with Wi-Fi on,
+  power it from its own 5 V 2 A+ supply with a shared GND and a 470–1000 µF 16 V capacitor.
+
 ## [1.5.0] - 2026-11-11
 
 ### Added
