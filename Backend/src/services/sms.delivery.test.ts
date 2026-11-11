@@ -4,7 +4,7 @@ import axios, { AxiosError } from 'axios';
 import type { Request, Response } from 'express';
 import { config } from '../config/config';
 import { logger } from '../utils/logger';
-import { SmsService, smsService, smsResult } from './sms.service';
+import { describeSmsFailure, SmsService, smsService, smsResult, toSemaphoreNumber } from './sms.service';
 import { smsNotificationService } from './smsNotification.service';
 import { smsLogService } from './smsLogService';
 import { cooldownService } from './cooldown.service';
@@ -187,3 +187,105 @@ test('prediction excludes unmeasured oxygen rather than treating it as a real lo
   const prediction = await predictiveAnalyticsService.getWarningCard();
   assert.equal(prediction.latest, null); assert.equal(prediction.analysisStatus, 'INSUFFICIENT_VALID_SENSOR_DATA');
 });
+
+function setupSemaphore(senderName?: string): SmsService {
+  const service = setup();
+  config.sms.provider = 'semaphore';
+  config.sms.apiSecretKey = 'semaphore-unit-key';
+  config.sms.senderId = senderName;
+  return service;
+}
+const semaphoreMessage = (status: string) => ({ status: 200, data: [{ message_id: 12345, recipient: '639171234567', status, sender_name: 'AquaSense' }] });
+
+test('Semaphore: sends a form post with the API key, 63 number and sender name', async () => {
+  const service = setupSemaphore('AquaSense');
+  const post = mock.method(axios, 'post', async () => semaphoreMessage('Pending'));
+  const result = await service.sendSms(phone, message);
+  assert.equal(post.mock.callCount(), 1);
+  const [url, body, options] = post.mock.calls[0].arguments as unknown as [string, string, { headers: Record<string, string> }];
+  assert.equal(url, 'https://api.semaphore.co/api/v4/messages');
+  const form = new URLSearchParams(body);
+  assert.equal(form.get('apikey'), 'semaphore-unit-key');
+  assert.equal(form.get('number'), '639171234567');
+  assert.equal(form.get('message'), message);
+  assert.equal(form.get('sendername'), 'AquaSense');
+  assert.equal(options.headers['Content-Type'], 'application/x-www-form-urlencoded');
+  assert.equal(result.status, 'pending');
+  assert.equal(result.accepted, true);
+  assert.equal(result.referenceId, '12345');
+  assert.equal(result.response.includes('semaphore-unit-key'), false);
+});
+
+test('Semaphore: without a sender name the account default is used', async () => {
+  const service = setupSemaphore(undefined);
+  const post = mock.method(axios, 'post', async () => semaphoreMessage('Queued'));
+  const result = await service.sendSms(phone, message);
+  const form = new URLSearchParams(post.mock.calls[0].arguments[1] as unknown as string);
+  assert.equal(form.has('sendername'), false);
+  assert.equal(result.status, 'pending');
+});
+
+test('Semaphore: maps Sent, Failed and Refunded statuses', async () => {
+  const service = setupSemaphore('AquaSense');
+  for (const [raw, expected] of [['Sent', 'sent'], ['Failed', 'failed'], ['Refunded', 'failed']] as const) {
+    mock.method(axios, 'post', async () => semaphoreMessage(raw));
+    assert.equal((await service.sendSms(phone, message)).status, expected);
+    mock.restoreAll();
+    mock.method(logger, 'info', () => {});
+  }
+});
+
+test('Semaphore: refuses non-Philippine numbers and messages starting with TEST without calling it', async () => {
+  const service = setupSemaphore('AquaSense');
+  const post = mock.method(axios, 'post', async () => semaphoreMessage('Pending'));
+  assert.equal((await service.sendSms('+14155552671', message)).status, 'rejected');
+  assert.equal((await service.sendSms(phone, 'Test message from AquaSense')).status, 'rejected');
+  assert.equal((await service.sendSms(phone, 'AquaSense test notification.')).status, 'pending');
+  assert.equal(post.mock.callCount(), 1);
+  assert.equal(toSemaphoreNumber('+639171234567'), '639171234567');
+  assert.equal(toSemaphoreNumber('09171234567'), null);
+});
+
+test('Semaphore: a missing API key is reported without calling the provider', async () => {
+  const service = setupSemaphore('AquaSense');
+  config.sms.apiSecretKey = undefined;
+  const post = mock.method(axios, 'post', async () => semaphoreMessage('Pending'));
+  const result = await service.sendSms(phone, message);
+  assert.equal(result.status, 'rejected');
+  assert.match(result.response, /SEMAPHORE_API_KEY/);
+  assert.equal(post.mock.callCount(), 0);
+});
+
+test('Semaphore: field errors are a rejection with a plain explanation, never a resend', async () => {
+  const service = setupSemaphore('NotApproved');
+  const post = mock.method(axios, 'post', async () => ({ status: 200, data: { sendername: ['The selected sendername is invalid.'] } }));
+  const ok = await service.sendSms(phone, message);
+  assert.equal(ok.status, 'rejected');
+  assert.equal(post.mock.callCount(), 1);
+  assert.match(describeSmsFailure([ok]), /Semaphore does not accept that sender name/);
+
+  mock.restoreAll();
+  mock.method(logger, 'warn', () => {});
+  const error = new AxiosError('Rejected', 'ERR_BAD_REQUEST', undefined, undefined, {
+    status: 422, statusText: 'Unprocessable', data: { apikey: ['The apikey is invalid.'] }, headers: {}, config: { headers: {} } as never,
+  });
+  const failing = mock.method(axios, 'post', async () => { throw error; });
+  const rejected = await service.sendSms(phone, message);
+  assert.equal(rejected.status, 'rejected');
+  assert.equal(failing.mock.callCount(), 1);
+  assert.match(describeSmsFailure([rejected]), /SEMAPHORE_API_KEY/);
+});
+
+test('Semaphore: status lookup reads the message by ID and never resubmits', async () => {
+  const service = setupSemaphore('AquaSense');
+  const post = mock.method(axios, 'post', async () => semaphoreMessage('Pending'));
+  const get = mock.method(axios, 'get', async () => semaphoreMessage('Sent'));
+  const result = await service.getStatus('12345');
+  const [url, options] = get.mock.calls[0].arguments as unknown as [string, { params: Record<string, string> }];
+  assert.equal(url, 'https://api.semaphore.co/api/v4/messages/12345');
+  assert.equal(options.params.apikey, 'semaphore-unit-key');
+  assert.equal(result.status, 'sent');
+  assert.equal(post.mock.callCount(), 0);
+  assert.equal(result.response.includes('semaphore-unit-key'), false);
+});
+

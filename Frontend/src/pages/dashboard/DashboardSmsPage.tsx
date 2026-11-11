@@ -18,10 +18,14 @@ const reachesDefaultSender = (phone: string): boolean => {
   return GLOBE_OR_DITO.has(local.slice(0, 4));
 };
 
+type SmsProvider = 'unisms' | 'semaphore';
+
 interface SmsRecipientList {
   enabled: boolean;
   phones: string[];
   saved: boolean;
+  /** Missing on backends before v1.9.0, which always used UniSMS. */
+  provider?: SmsProvider;
 }
 
 interface TestResult {
@@ -39,9 +43,11 @@ const DashboardSmsPage: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [testResults, setTestResults] = useState<TestResult[] | null>(null);
+  const [provider, setProvider] = useState<SmsProvider>('unisms');
 
   const applyList = (list: SmsRecipientList) => {
     setEnabled(list.enabled);
+    setProvider(list.provider === 'semaphore' ? 'semaphore' : 'unisms');
     setPhones(Array.from({ length: SLOTS }, (_, index) => list.phones[index] || ''));
   };
 
@@ -163,9 +169,12 @@ const DashboardSmsPage: React.FC = () => {
             </div>
           </Panel>
           <Notice tone="info" title="Test send">
-            The test goes to every saved number, including while alert texts are off. Save first. A second test soon after may wait on the SMS cooldown. This account sends as Unisoft, which reaches Globe and DITO. Smart, TNT, and Sun numbers are refused.
+            The test goes to every saved number, including while alert texts are off. Save first. A second test soon after may wait on the SMS cooldown.{' '}
+            {provider === 'semaphore'
+              ? 'Texts are sent through Semaphore, under the sender name approved on that account, to Philippine mobile numbers.'
+              : 'This account sends as Unisoft, which reaches Globe and DITO. Smart, TNT, and Sun numbers are refused.'}
           </Notice>
-          {filled && phones.some((phone) => phone.trim() && !reachesDefaultSender(phone)) && (
+          {provider === 'unisms' && filled && phones.some((phone) => phone.trim() && !reachesDefaultSender(phone)) && (
             <Notice tone="warn" title="Network">
               A saved number uses a Smart, TNT, or Sun prefix. Unisoft will refuse it unless that SIM was moved to Globe or DITO.
             </Notice>

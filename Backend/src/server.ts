@@ -190,7 +190,13 @@ const startServer = async (): Promise<void> => {
     setInterval(refreshSmsStatus, 30000).unref();
 
     const app = createApp();
-    if (!config.sms.apiSecretKey || !config.sms.senderId) {
+    if (config.sms.provider === 'semaphore') {
+      if (!config.sms.apiSecretKey) {
+        logger.warn('SMS integration unavailable: configure SEMAPHORE_API_KEY to enable SMS delivery through Semaphore');
+      } else {
+        logger.info('SMS provider: Semaphore', { senderName: config.sms.senderId || 'account default' });
+      }
+    } else if (!config.sms.apiSecretKey || !config.sms.senderId) {
       logger.warn('SMS integration unavailable: configure UNISMS_API_SECRET_KEY and UNISMS_SENDER_ID to enable SMS delivery');
     }
     const PORT = config.server.port;

@@ -17,20 +17,16 @@ const SENSORS: Array<{
   // 'value' when the sensor is digital and reports no separate probe input (DS18B20).
   input: 'voltage' | 'rawAdc' | 'value'; inputUnit: string;
   steadyWithin: number; refLabel: string; refUnit: string; min: number; max: number; presets: number[]; steps: string[]; hint?: string;
-  // Active water-monitor firmware calibrates pH from the ESP32 Serial Monitor, not MQTT CAL_* commands.
-  serialOnly?: boolean;
 }> = [
   {
     key: 'ph', health: 'ph', title: 'pH', input: 'voltage', inputUnit: 'V', steadyWithin: 0.01,
     refLabel: 'Buffer value', refUnit: 'pH', min: 0, max: 14, presets: [6.86, 4.01, 9.18],
-    serialOnly: true,
     steps: [
-      'Open the ESP32 Serial Monitor at 115200 baud (PlatformIO / Arduino IDE).',
-      'Rinse and blot the probe, put it in a known buffer (for example 6.86), and wait until Voltage and pH Value settle.',
-      'Type the buffer value and press Enter, e.g. ph 6.86 — the firmware adjusts calibration_value and saves it in NVS.',
-      'Optional checks: ph status  |  ph reset  |  help',
+      'Rinse and blot the probe, put it in the 6.86 buffer, and wait for Steady (about 1–2 minutes).',
+      'Choose 6.86 and capture. Then do the same with the 4.01 and 9.18 buffers, rinsing between them.',
+      'After the third buffer the device fits the line and saves it. Until then the old calibration stays active.',
     ],
-    hint: 'pH is no longer calibrated from this tab. Use Serial Monitor commands on the device. Formula: pH = -5.70 × V + offset (Program2-style trimmed ADC average on GPIO35).',
+    hint: 'All three buffers are needed (4.01, 6.86, 9.18). If a capture is refused, use Clear points and start again with fresh buffers. Serial Monitor still works too: ph 6.86.',
   },
   {
     key: 'turb', health: 'turbidity', title: 'Turbidity', input: 'voltage', inputUnit: 'V', steadyWithin: 0.03,
@@ -200,7 +196,7 @@ const DashboardCalibrationPage: React.FC = () => {
     <div className="space-y-5">
       <PageHead
         title="Calibration"
-        description="Calibrate turbidity and ORP against reference solutions, optionally temperature against a trusted thermometer, and tank depth from the ultrasonic sensor. pH is calibrated on the ESP32 Serial Monitor (ph <buffer>), not from this tab."
+        description="Calibrate pH against three buffers, turbidity and ORP against reference solutions, optionally temperature against a trusted thermometer, and tank depth from the ultrasonic sensor."
         meta={<MetaItem label="Device"><StateMark state={fresh ? 'ok' : 'off'} className="!text-sm !font-semibold">{fresh ? 'Online' : 'Offline or stale'}</StateMark></MetaItem>}
       />
 
@@ -326,11 +322,6 @@ const DashboardCalibrationPage: React.FC = () => {
               </ol>
               {sensor.hint && <p className="-mt-2 text-xs leading-relaxed text-ink-3">{sensor.hint}</p>}
 
-              {sensor.serialOnly ? (
-                <Notice tone="info" title="Serial Monitor only">
-                  Enter the buffer on the device, for example <span className="num font-semibold">ph 6.86</span>. Dashboard Capture / Reset for pH are disabled on the active water-monitor firmware.
-                </Notice>
-              ) : (
                 <>
                   <form onSubmit={(event) => { event.preventDefault(); void send(sensor.key, 'CAL_CAPTURE'); }} className="space-y-2.5">
                     <label className="field-label !mb-0" htmlFor={`ref-${sensor.key}`}>{sensor.refLabel}{sensor.refUnit ? ` (${sensor.refUnit})` : ''}</label>
@@ -366,7 +357,6 @@ const DashboardCalibrationPage: React.FC = () => {
                     <button type="button" disabled={!deviceId || !fresh || busy} onClick={() => void send(sensor.key, 'CAL_RESET')} className="btn-quiet btn-sm !text-alarm hover:!bg-alarm-bg">Reset to default</button>
                   </div>
                 </>
-              )}
             </Panel>
           );
         })}

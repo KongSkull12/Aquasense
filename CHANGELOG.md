@@ -13,6 +13,34 @@ The running version is shown in the dashboard sidebar (App = frontend, API = bac
 3. Commit, tag and push: `git tag vX.Y.Z && git push kongskull main --tags`.
    Vercel and Render redeploy `main` automatically.
 
+## [1.9.0] - 2026-11-11
+
+### Added
+- Semaphore SMS provider. Set `SMS_PROVIDER=semaphore` and `SEMAPHORE_API_KEY` on the backend
+  (optionally `SEMAPHORE_SENDER_NAME`; blank uses the account's default approved sender name).
+  Alerts, the test SMS, the message log and pending-status checks work the same as with UniSMS.
+  Numbers are sent as `63XXXXXXXXXX`; non-Philippine numbers and messages starting with the word
+  TEST (which Semaphore drops) are refused before sending. Invalid key or sender name errors are
+  explained on the SMS alerts page.
+
+### Changed
+- The SMS alerts page shows which provider is active and only shows the Unisoft network warning
+  when UniSMS is in use. `GET/PUT /api/v1/sms/recipients` now include `provider`.
+
+### Fixed
+- pH could not be calibrated from the dashboard: the Calibration page still marked pH as
+  "Serial Monitor only" although the firmware and backend accept `CAL_CAPTURE ph:<buffer>`.
+  The pH card now has the 6.86 / 4.01 / 9.18 buttons and Capture, Read, Clear and Reset, and
+  shows progress until the third buffer saves the fit. Overview links to it instead of Serial.
+- Relay pins confirmed on the board: aerator GPIO25, fill GPIO26, drain GPIO27 (pressing each
+  button showed which load it switched). A test build with fill/drain/aerator on 25/26/27
+  switched the wrong loads and was not released.
+
+### Upgrade notes
+- UniSMS stays the default; nothing changes until `SMS_PROVIDER=semaphore` is set on Render.
+- Flash the new firmware (app-only `.ino.bin`) with the pumps and aerator unplugged, then check
+  each relay with `relay test`.
+
 ## [1.8.0] - 2026-11-11
 
 ### Added

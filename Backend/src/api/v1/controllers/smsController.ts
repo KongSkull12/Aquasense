@@ -43,7 +43,8 @@ export const getSmsRecipients = async (req: AuthenticatedRequest, res: Response)
       sendError(res, 401, 'Sign in required');
       return;
     }
-    sendSuccess(res, 200, 'SMS recipients', await smsRecipientsForUser(req.userId));
+    // provider lets the SMS page describe the active gateway (no keys are sent).
+    sendSuccess(res, 200, 'SMS recipients', { ...(await smsRecipientsForUser(req.userId)), provider: config.sms.provider });
   } catch (error) {
     logger.error('Failed to load SMS recipients', error);
     sendError(res, 500, 'Failed to load SMS recipients');
@@ -67,7 +68,7 @@ export const saveSmsRecipientsHandler = async (req: AuthenticatedRequest, res: R
       return;
     }
     const saved = await saveSmsRecipients(req.userId, payload.enabled, collected.phones);
-    sendSuccess(res, 200, 'SMS recipients saved', saved);
+    sendSuccess(res, 200, 'SMS recipients saved', { ...saved, provider: config.sms.provider });
   } catch (error) {
     logger.error('Failed to save SMS recipients', error);
     sendError(res, 500, 'Failed to save SMS recipients');

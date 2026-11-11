@@ -76,6 +76,13 @@ const getOptionalCredential = (key: string): string | undefined => {
   return value;
 };
 
+export type SmsProvider = 'unisms' | 'semaphore';
+
+/** SMS_PROVIDER picks the gateway; anything else falls back to UniSMS. */
+const smsProvider: SmsProvider = (getEnv('SMS_PROVIDER', 'unisms') || 'unisms').trim().toLowerCase() === 'semaphore'
+  ? 'semaphore'
+  : 'unisms';
+
 const parseDeviceKeys = (raw?: string): Record<string, string> => {
   if (!raw) {
     return {};
@@ -156,9 +163,11 @@ export const config = {
     allowUnauthenticatedDevelopment: getEnv('ALLOW_UNAUTHENTICATED_DEVICES', 'false') === 'true',
   },
   sms: {
-    provider: 'unisms',
-    apiSecretKey: getOptionalCredential('UNISMS_API_SECRET_KEY'),
-    senderId: getOptionalCredential('UNISMS_SENDER_ID'),
+    provider: smsProvider as SmsProvider,
+    // Key and sender of the selected provider. Semaphore's sender name is optional:
+    // without it, Semaphore uses the account's default approved sender name.
+    apiSecretKey: getOptionalCredential(smsProvider === 'semaphore' ? 'SEMAPHORE_API_KEY' : 'UNISMS_API_SECRET_KEY'),
+    senderId: getOptionalCredential(smsProvider === 'semaphore' ? 'SEMAPHORE_SENDER_NAME' : 'UNISMS_SENDER_ID'),
     maxMessageLength: parseInt(getEnv('SMS_MAX_MESSAGE_LENGTH', '160') || '160', 10),
     failureThreshold: parseInt(getEnv('SMS_FAILURE_THRESHOLD', '5') || '5', 10),
     circuitCooldownMs: parseInt(getEnv('SMS_CIRCUIT_COOLDOWN_MS', '60000') || '60000', 10),
@@ -229,7 +238,7 @@ const configSchema = z.object({
     maxAgeMs: z.number().int().min(60000),
   }),
   sms: z.object({
-    provider: z.literal('unisms'),
+    provider: z.enum(['unisms', 'semaphore']),
     apiSecretKey: z.string().min(1).optional(),
     senderId: z.string().min(1).optional(),
     maxMessageLength: z.number().int().min(1).max(160),

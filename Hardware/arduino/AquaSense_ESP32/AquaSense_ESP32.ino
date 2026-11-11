@@ -81,6 +81,8 @@ const long  LOCAL_UTC_OFFSET_S = 8L * 3600L;               // Asia/Manila, used 
 #define ULTRASONIC_TRIG   14
 #define ULTRASONIC_ECHO   13   // 5 V echo: keep the voltage divider!
 
+// Confirmed on the board (2026-11-12) by pressing each dashboard button:
+// GPIO25 switches the aerator, GPIO26 the fill pump, GPIO27 the drain pump.
 #define RELAY_AERATOR_PIN 25
 #define RELAY_FILL_PIN    26
 #define RELAY_DRAIN_PIN   27

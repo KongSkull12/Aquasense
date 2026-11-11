@@ -110,7 +110,7 @@ const DashboardOverviewPage: React.FC = () => {
             ? { label: `Reported, ${humanize(latestReading.sensorHealth.ph.health)}`, state: 'warn' }
             : getStatus('ph', reportedPh, isQualified('ph'), true))
         : live && (latestReading?.sensorHealth?.ph?.communication || latestReading?.sensorHealth?.ph?.rawAdc != null)
-          ? { label: 'Calibration required — Serial: ph <buffer>', state: 'trust' }
+          ? { label: 'Calibration required', state: 'trust' }
           : getStatus('ph', null, false, false),
     },
     {
@@ -174,9 +174,9 @@ const DashboardOverviewPage: React.FC = () => {
       const onlyPh = uncalibrated.length === 1 && uncalibrated[0] === 'ph';
       nextSteps.push({
         text: onlyPh
-          ? 'Calibrate the pH probe from the ESP32 Serial Monitor (for example ph 6.86) so readings can be classified and the NH₃ fraction estimated.'
-          : `Calibrate the ${names.join(' and ')} probe${uncalibrated.length > 1 ? 's' : ''} so readings can be classified and the NH₃ fraction estimated. pH uses Serial Monitor (ph <buffer>); temperature uses the Calibration tab.`,
-        ...(staffSession || onlyPh ? {} : { to: '/dashboard/calibration', cta: 'Calibrate' }),
+          ? 'Calibrate the pH probe with the 4.01, 6.86 and 9.18 buffers so readings can be classified and the NH₃ fraction estimated.'
+          : `Calibrate the ${names.join(' and ')} probe${uncalibrated.length > 1 ? 's' : ''} so readings can be classified and the NH₃ fraction estimated.`,
+        ...(staffSession ? {} : { to: '/dashboard/calibration', cta: 'Calibrate' }),
       });
     }
     const silent = [latestReading.orp == null ? 'ORP' : null, readings[4].value == null ? 'tank level' : null].filter(Boolean);
