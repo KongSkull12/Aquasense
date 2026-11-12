@@ -13,6 +13,17 @@ The running version is shown in the dashboard sidebar (App = frontend, API = bac
 3. Commit, tag and push: `git tag vX.Y.Z && git push kongskull main --tags`.
    Vercel and Render redeploy `main` automatically.
 
+## [1.9.1] - 2026-11-12
+
+### Fixed
+- Firmware: pH, ORP and turbidity captures no longer refuse a settled probe because of a single
+  ESP32 ADC spike. A capture is now steady when the first and last second agree within the limit
+  and the noise (standard deviation) is below it; the Serial Monitor prints both values.
+
+### Upgrade notes
+- Flash the new firmware. If pH reads far off in a known buffer (e.g. negative in 6.86), press
+  Reset to default on the pH card first, then capture 6.86, 4.01 and 9.18.
+
 ## [1.9.0] - 2026-11-11
 
 ### Added

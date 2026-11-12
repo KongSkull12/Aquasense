@@ -2012,16 +2012,21 @@ void serviceBenchPump() {
 const char* captureRejectCode = nullptr;
 
 // Average ~3 s of reconstructed sensor voltages; refuse if still drifting or at a rail.
+// "Steady" means the first and last second agree within maxSpread and the noise
+// (standard deviation) is below maxSpread. A single min/max spike from the ESP32
+// ADC no longer rejects a probe that is actually settled.
 bool captureInput(int pin, float dividerRatio, float maxSpread, float& mean) {
   captureRejectCode = nullptr;
-  const int n = 30;
-  float sum = 0, adcSum = 0, lo = 1e9f, hi = -1e9f;
+  const int n = 30, third = n / 3;
+  float sum = 0, sumSq = 0, adcSum = 0, lo = 1e9f, hi = -1e9f, headSum = 0, tailSum = 0;
   int clipHits = 0, rawLo = 4095, rawHi = 0;
   Serial.print("Sampling 3 s, keep the probe still");
   for (int i = 0; i < n; i++) {
     const AnalogDiag d = sampleADC(pin, dividerRatio);
     const float x = d.sensorVoltage;
-    sum += x; adcSum += d.voltage; lo = min(lo, x); hi = max(hi, x);
+    sum += x; sumSq += x * x; adcSum += d.voltage; lo = min(lo, x); hi = max(hi, x);
+    if (i < third) headSum += x;
+    if (i >= n - third) tailSum += x;
     rawLo = min(rawLo, d.rawAdc); rawHi = max(rawHi, d.rawAdc);
     if (d.clipped > 0 || d.rawAdc <= 0 || d.rawAdc >= 4095) clipHits++;
     if (i % 6 == 0) Serial.print('.');
@@ -2031,15 +2036,17 @@ bool captureInput(int pin, float dividerRatio, float maxSpread, float& mean) {
   mean = sum / n;
   const float meanAdc = adcSum / n;
   const float spread = hi - lo;
-  Serial.printf(" mean Vsensor=%.4f V  Vadc=%.4f V  spread %.4f V  raw %d..%d\n",
-                mean, meanAdc, spread, rawLo, rawHi);
+  const float drift = fabsf(tailSum / third - headSum / third);
+  const float noise = sqrtf(max(0.0f, sumSq / n - mean * mean));
+  Serial.printf(" mean Vsensor=%.4f V  Vadc=%.4f V  spread %.4f V  drift %.4f V  noise %.4f V  raw %d..%d\n",
+                mean, meanAdc, spread, drift, noise, rawLo, rawHi);
   if (clipHits >= n / 3 || rawLo <= 5 || rawHi >= 4090 || meanAdc >= 3.15f || meanAdc <= 0.05f) {
     Serial.println("ADC at a rail or open. Check sensor wiring, module power/GND, and any divider.");
     captureRejectCode = "rejected_adc_saturated";
     return false;
   }
-  if (spread > maxSpread) {
-    Serial.printf("Not steady (spread above %.3f V). Wait for the reading to settle and try again.\n", maxSpread);
+  if (drift > maxSpread || noise > maxSpread) {
+    Serial.printf("Not steady (drift or noise above %.3f V). Wait for the reading to settle and try again.\n", maxSpread);
     captureRejectCode = "rejected_not_steady";
     return false;
   }
