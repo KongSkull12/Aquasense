@@ -23,9 +23,6 @@ export const hardwareCommandSchema = z.object({ deviceId, action: z.enum(hardwar
   param: z.string().trim().toLowerCase().max(24).optional() }).strict().superRefine((value, context) => {
   const timedPump = ['FILL', 'DRAIN', 'WATER_EXCHANGE'].includes(value.action);
   const fillToTarget = value.action === 'FILL_TO_TARGET';
-  // Automatic water exchange was removed; pumps only run on a manual command.
-  if (value.action === 'AUTOMATION_ON') context.addIssue({ code: z.ZodIssueCode.custom,
-    message: 'Automatic water exchange has been removed. Use Drain, Fill or Run exchange.' });
   if (timedPump && value.durationMs === undefined) context.addIssue({ code: z.ZodIssueCode.custom,
     message: 'durationMs is required only for pump commands (per phase for an exchange)' });
   if (!timedPump && !fillToTarget && value.durationMs !== undefined) context.addIssue({ code: z.ZodIssueCode.custom,

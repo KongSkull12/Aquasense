@@ -125,16 +125,30 @@ pH and turbidity when calibrated and stable, and water depth after the empty-tub
 priority. In the Serial Monitor, `alarm` shows the state and limits, and `alarm off`
 silences the beeps until `alarm on` or a restart (useful while calibrating in buffers).
 
-## Water pumps are manual only
+## Automatic water exchange
 
-Automatic water exchange was removed (v1.9.2). The pumps run only when someone presses
-Drain, Fill, Run exchange or Fill to target on the dashboard, and a new run is refused
-while another run or its 10 s cooldown is active. Water-quality levels still drive the
-buzzer and the SMS alerts. The old `exchange` Serial command now only prints this notice.
+When automatic exchange is on (dashboard Water change page, or `exchange on`), the board
+uses the Thresholds level for temperature, pH and turbidity, confirmed for about 1 minute:
+
+| Water condition | Water replaced | Response |
+|---|---|---|
+| Normal | 0% | No draining, keep monitoring |
+| Warning | 5% | Partial exchange, at most every 6 h |
+| Critical | 10% | Partial exchange at most every 2 h, aerator on until it recovers; the backend sends the SMS |
+
+Low water comes first: when the depth stays below the Thresholds normal range for about
+1 minute, the board fills to the calibrated target depth (at most every 30 min) and never
+drains. This part needs only the tank depth calibration. Never more than 30% exchanged in
+24 h, and pumps start only while Wi-Fi and MQTT are up. Run times come from measured values, set once in the Serial
+Monitor: `exchange volume <litres>`, `exchange drain <L/min>`, `exchange fill <L/min>`
+(measure each pump as in `Hardware/docs/backend-control.md`). `exchange` shows the run
+times. Each pump run must fit 1 s to 10 min. Stop pumps, All off, or a fault turn it off.
 
 From Serial Monitor you can also run the same timed path locally: `drain 30`, `fill 30`,
 `stop`. A brief MQTT blip no longer aborts a pump run; the link must stay down for about
-3 s before pumps stop.
+3 s before pumps stop. While a pump run is active the board also publishes signed MQTT
+state updates so the dashboard unlocks Drain/Fill when the timer ends, even if HTTP
+heartbeat to the LAN backend is down.
 
 ## Honest limits
 

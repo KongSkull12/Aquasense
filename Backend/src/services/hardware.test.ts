@@ -52,9 +52,6 @@ test('pump commands require bounded integer timing; non-pump commands reject tim
   assert.equal(hardwareCommandSchema.safeParse({ deviceId: 'board', action: 'WATER_EXCHANGE', durationMs: 1000 }).success, true);
   assert.equal(hardwareCommandSchema.safeParse({ deviceId: 'board', action: 'ALL_OFF', durationMs: 1000 }).success, false);
   assert.equal(hardwareCommandSchema.safeParse({ deviceId: 'board', action: 'RAW_GPIO', pin: 25 }).success, false);
-  // Automatic water exchange was removed: it can no longer be switched on, only off.
-  assert.equal(hardwareCommandSchema.safeParse({ deviceId: 'board', action: 'AUTOMATION_ON' }).success, false);
-  assert.equal(hardwareCommandSchema.safeParse({ deviceId: 'board', action: 'AUTOMATION_OFF' }).success, true);
   assert.equal(hardwareSyncSchema.safeParse({ deviceId: 'board', state: { ...state, floatWet: true } }).success, false);
   assert.equal(hardwareStateSchema.safeParse({ ...state, waterPhase: 'TRANSITION' }).success, false);
 });
@@ -258,6 +255,17 @@ test('MQTT ACK persists its nested state and acknowledges only the matching scop
   assert.equal(written.deviceId, 'board');
   assert.equal(written.state, state);
   assert.ok(written.receivedAt.getTime() >= before && written.receivedAt.getTime() <= Date.now());
+});
+
+test('MQTT STATE reports update device state without a command row', async () => {
+  const find = mock.method(HardwareCommand, 'findOne', async () => null);
+  const upsert = mock.method(HardwareDeviceState, 'upsert', async () => [state, true]);
+  const idle = { ...state, waterPhase: 'IDLE' as const, drainPump: false, fillPump: false, phaseRemainingMs: 0 };
+  const ack = { v: 1 as const, deviceId: 'board', id, source: 'hardware' as const, action: 'STATE', result: 'state',
+    reportedAt: 123456, state: idle, signature: 'verified-by-mqtt-listener' };
+  assert.equal(await hardwareService.acceptMqttAck('owner', ack), true);
+  assert.equal(find.mock.callCount(), 0);
+  assert.equal(upsert.mock.calls[0].arguments[0]?.state, idle);
 });
 
 test('MQTT actuator publish signs command and explicitly disables retention', async () => {

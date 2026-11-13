@@ -113,6 +113,14 @@ const WaterChangePage: React.FC = () => {
   const state = hardware?.state;
   const activePumpPhase = state?.waterPhase === 'DRAINING' || state?.waterPhase === 'REFILLING'
     || state?.waterPhase === 'SETTLING_AFTER_DRAIN' || state?.waterPhase === 'COOLDOWN';
+  // Device auto-stops pumps; do not keep the UI "busy" on a stale DRAINING ack with no remaining time.
+  const deviceStillRunning = !!state && (
+    state.fillPump === true
+    || state.drainPump === true
+    || (typeof state.phaseRemainingMs === 'number' && state.phaseRemainingMs > 0)
+    || state.waterPhase === 'COOLDOWN'
+    || state.waterPhase === 'SETTLING_AFTER_DRAIN'
+  );
 
   useEffect(() => {
     if (!state) return;
@@ -125,12 +133,18 @@ const WaterChangePage: React.FC = () => {
       });
       return;
     }
-    if (!activePumpPhase || state.waterPhase === 'IDLE' || state.waterPhase === 'COMPLETE' || state.waterPhase === 'FAULT') {
+    if (!activePumpPhase || state.waterPhase === 'IDLE' || state.waterPhase === 'COMPLETE' || state.waterPhase === 'FAULT'
+      || (!deviceStillRunning && (state.waterPhase === 'DRAINING' || state.waterPhase === 'REFILLING'))) {
       setLocalCountdown(null);
     }
-  }, [state?.waterPhase, state?.phaseRemainingMs, state?.fillPump, state?.drainPump, activePumpPhase, trackedCommand?.action]);
+  }, [state?.waterPhase, state?.phaseRemainingMs, state?.fillPump, state?.drainPump, activePumpPhase, deviceStillRunning, trackedCommand?.action]);
 
-  const command = async (action: 'DRAIN' | 'FILL' | 'WATER_EXCHANGE' | 'FILL_TO_TARGET' | 'WATER_STOP') => {
+  useEffect(() => {
+    if (!localCountdown) return;
+    if (localCountdown.endsAt <= nowTick) setLocalCountdown(null);
+  }, [localCountdown, nowTick]);
+
+  const command = async (action: 'DRAIN' | 'FILL' | 'WATER_EXCHANGE' | 'FILL_TO_TARGET' | 'WATER_STOP' | 'AUTOMATION_ON' | 'AUTOMATION_OFF') => {
     if (!deviceId || pending) return;
     const needsDuration = action === 'FILL' || action === 'DRAIN' || action === 'WATER_EXCHANGE';
     const seconds = Number(durationSeconds);
@@ -163,9 +177,9 @@ const WaterChangePage: React.FC = () => {
 
   const fresh = hardware?.online === true && loadedAt !== null && Date.now() - loadedAt < 20000;
   const offlineReason = 'The device must report fresh state before pumps can be started.';
-  // The device refuses a new pump run while one (or its 10 s cooldown) is active, so say so up front.
-  const pumpBusy = fresh && activePumpPhase;
-  const busyReason = 'A pump run or its cooldown is in progress. Press Stop pumps, wait about 10 seconds, then try again.';
+  // Busy only while the device still reports an active run/cooldown. Local countdown is display-only.
+  const pumpBusy = fresh && activePumpPhase && deviceStillRunning;
+  const busyReason = 'A pump run or its cooldown is in progress. Wait for Idle, or press Stop pumps.';
   const pumpCommands = hardware?.commands?.filter((item) => ['FILL', 'DRAIN', 'WATER_EXCHANGE', 'FILL_TO_TARGET', 'WATER_STOP', 'AUTOMATION_ON', 'AUTOMATION_OFF'].includes(item.action)) ?? [];
   const stateText = !hardware || !fresh ? 'Offline or stale' : state?.waterPhase ? humanize(state.waterPhase) : 'Unknown';
   const commandStatus: { text: string; state: MarkState } = !trackedCommand ? { text: 'No command sent in this session', state: 'off' }
@@ -222,16 +236,11 @@ const WaterChangePage: React.FC = () => {
           <KeyValues rows={[
             { label: 'Drain output (logical)', value: fresh && state ? (state.drainPump ? 'On' : 'Off') : 'Unknown' },
             { label: 'Fill output (logical)', value: fresh && state ? (state.fillPump ? 'On' : 'Off') : 'Unknown' },
-            { label: 'Automation', value: state?.automation ? 'On (old firmware): press Stop pumps, then flash the latest' : 'Removed: pumps run only when you press a button' },
+            { label: 'Automation', value: state?.automation ? 'Enabled on device' : 'Disabled on device' },
             { label: 'Last report', value: hardware?.receivedAt ? new Date(hardware.receivedAt).toLocaleString() : 'Not yet reported' },
           ]} />
           {state?.fault && <Notice tone="alarm" title="Device fault">{state.fault}</Notice>}
-          {fresh && state?.drainPump && (
-            <Notice tone="ok" title="Drain relay is ON">
-              The device is driving the drain output. If water is not moving, check the drain pump power lead on relay NO (not NC), the tube, and that the tub still has water to move.
-            </Notice>
-          )}
-          <p className="text-[13px] leading-relaxed text-ink-3">Pumps run only while you hold a command on this page. Predictive risk never starts pumps.</p>
+          <p className="text-[13px] leading-relaxed text-ink-3">The device firmware owns automatic water-change decisions. Predictive risk on this page does not start pumps.</p>
         </div>
       </Panel>
 
@@ -296,10 +305,7 @@ const WaterChangePage: React.FC = () => {
             <button type="button" disabled={!deviceId || pending} onClick={() => void command('WATER_STOP')} className="btn-danger col-span-2">Stop pumps</button>
           </div>
           {!fresh && <Notice tone="info">Drain, fill and exchange stay disabled until the device reports fresh state. Stop is always available.</Notice>}
-          {pumpBusy && <Notice tone="info">{state ? phaseLabel(state.waterPhase, trackedCommand?.action === 'FILL_TO_TARGET') : 'A pump run'} is in progress, so Drain, Fill and Run exchange are paused. {busyReason}</Notice>}
-          {fresh && depthLive && tank!.depthCm! < 1 && (
-            <Notice tone="info">Live depth is under 1 cm. Drain can still switch the relay, but there may be little or no water left to move.</Notice>
-          )}
+          {pumpBusy && <Notice tone="info">{phaseLabel(state?.waterPhase, trackedCommand?.action === 'FILL_TO_TARGET')} in progress. Pumps stop by themselves when the timer ends; then Drain/Fill unlock after cooldown.</Notice>}
           {!depthLive && fresh && <Notice tone="info">Fill to target needs a calibrated mount height (Calibration → Tank) and a live depth reading.</Notice>}
           <div aria-live="polite">
             {pending ? <StateMark state="info">Submitting command…</StateMark> : <StateMark state={commandStatus.state}>{commandStatus.text}</StateMark>}
@@ -312,6 +318,41 @@ const WaterChangePage: React.FC = () => {
         </div>
       </Panel>
     </div>
+
+    <Panel
+      title="Automatic water exchange"
+      id="auto-exchange-heading"
+      description="The device checks temperature, pH and turbidity against your Thresholds. After about a minute outside the normal range it replaces part of the water."
+      actions={<StateMark state={fresh && state?.automation ? 'ok' : 'off'}>{!fresh ? 'Device offline' : state?.automation ? 'On' : 'Off'}</StateMark>}
+    >
+      <div className="space-y-4">
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[520px] text-left text-sm">
+            <thead className="border-b border-line text-xs text-ink-3">
+              <tr>
+                <th scope="col" className="py-2 pr-3 font-medium">Water condition</th>
+                <th scope="col" className="px-3 py-2 text-right font-medium">Water replaced</th>
+                <th scope="col" className="py-2 pl-3 font-medium">System response</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-line-soft">
+              <tr><td className="py-2 pr-3"><StateMark state="ok">Normal</StateMark></td><td className="num px-3 py-2 text-right">0%</td><td className="py-2 pl-3 text-ink-2">No draining; keep monitoring</td></tr>
+              <tr><td className="py-2 pr-3"><StateMark state="warn">Warning</StateMark></td><td className="num px-3 py-2 text-right">5%</td><td className="py-2 pl-3 text-ink-2">Partial exchange, then keep monitoring (at most every 6 h)</td></tr>
+              <tr><td className="py-2 pr-3"><StateMark state="alarm">Critical</StateMark></td><td className="num px-3 py-2 text-right">10%</td><td className="py-2 pl-3 text-ink-2">Urgent partial exchange (at most every 2 h), aerator on, SMS alert</td></tr>
+              <tr><td className="py-2 pr-3"><StateMark state="warn">Low water</StateMark></td><td className="num px-3 py-2 text-right">—</td><td className="py-2 pl-3 text-ink-2">Depth below the Thresholds normal range: fill to the target depth first (at most every 30 min), never drain</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {state?.automation
+            ? <button type="button" disabled={!deviceId || pending} onClick={() => void command('AUTOMATION_OFF')} className="btn-secondary">Turn off automatic exchange</button>
+            : <button type="button" disabled={!deviceId || pending || !fresh} title={!fresh ? offlineReason : undefined} onClick={() => void command('AUTOMATION_ON')} className="btn-primary">Turn on automatic exchange</button>}
+        </div>
+        <p className="text-[13px] leading-relaxed text-ink-3">
+          Never more than 30% of the water in 24 hours. Low water is filled to the target depth before any exchange, and pumps only start while the device is online. The low-water fill needs the tank depth calibration (Calibration → Tank). The partial exchange also needs the tank volume and the measured pump flows, set in the ESP32 Serial Monitor: <span className="num">exchange volume &lt;litres&gt;</span>, <span className="num">exchange drain &lt;L/min&gt;</span>, <span className="num">exchange fill &lt;L/min&gt;</span>. Stop pumps turns automation off.
+        </p>
+      </div>
+    </Panel>
 
     <Panel
       title="Water level"
@@ -333,7 +374,7 @@ const WaterChangePage: React.FC = () => {
         ))}
       </div>
       <p className="mt-3 text-[13px] leading-relaxed text-ink-3">
-        Device target is {targetDepthCm.toFixed(1)} cm{tank?.targetDepthCm != null ? '' : ' (from Thresholds Normal midpoint until the device reports a calibrated target)'}. Press Fill to target to restore lost depth; the device never fills or drains by itself. The pump stops at the device target depth, on a bad echo, or at the 10-minute safety ceiling.
+        Device target is {targetDepthCm.toFixed(1)} cm{tank?.targetDepthCm != null ? '' : ' (from Thresholds Normal midpoint until the device reports a calibrated target)'}. With automatic exchange on, the device fills to target by itself when the depth stays below the Thresholds normal range for about a minute; otherwise press Fill to target. The pump stops at the device target depth, on a bad echo, or at the 10-minute safety ceiling.
       </p>
     </Panel>
 

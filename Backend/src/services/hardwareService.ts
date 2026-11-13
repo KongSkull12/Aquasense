@@ -100,6 +100,12 @@ export const hardwareService = {
 
   async acceptMqttAck(userId: string, ack: SignedHardwareAck): Promise<boolean> {
     const { reportedAt, id, source, action, result, deviceId, state } = ack;
+    // Phase / pump heartbeats are not tied to a command row. They keep the dashboard
+    // in sync when HTTP /hardware/device/sync cannot reach the LAN backend.
+    if (source === 'hardware' && action === 'STATE' && result === 'state') {
+      await HardwareDeviceState.upsert({ deviceId, state, receivedAt: new Date() });
+      return true;
+    }
     if (source === 'hardware') {
       const command = await HardwareCommand.findOne({ where: { id, userId, deviceId } });
       if (!command || command.action !== action) return false;
