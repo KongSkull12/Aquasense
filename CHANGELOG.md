@@ -24,6 +24,15 @@ The running version is shown in the dashboard sidebar (App = frontend, API = bac
 - Flash the new firmware. If pH reads far off in a known buffer (e.g. negative in 6.86), press
   Reset to default on the pH card first, then capture 6.86, 4.01 and 9.18.
 
+## [1.9.5] - 2026-11-13
+
+### Changed
+- SMS default provider is now **IPROG SMS**. Set `SMS_PROVIDER=iprogsms` and `IPROG_SMS_API_TOKEN`
+  (token from https://www.iprogsms.com/account/token). Optional `IPROG_SMS_NETWORK_PROVIDER=2` for
+  broad Philippine network coverage. Alerts, test SMS, message log and pending-status checks use
+  IPROG’s `/sms_messages` and `/sms_messages/status` APIs. Semaphore and UniSMS remain available
+  when `SMS_PROVIDER` is set to `semaphore` or `unisms`.
+
 ## [1.9.0] - 2026-11-11
 
 ### Added

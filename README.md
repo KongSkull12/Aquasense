@@ -26,7 +26,7 @@ flowchart LR
     Backend <--> Database[(PostgreSQL records)]
     Backend -->|Socket.IO live updates| Dashboard[Web dashboard]
     Dashboard -->|Account and control requests| Backend
-    Backend --> SMS[SMS: UniSMS or Semaphore]
+    Backend --> SMS[SMS: IPROG / Semaphore / UniSMS]
     Feeder[ESP32 feeder] <-->|HTTP schedule sync and confirmation| Backend
     NTP[Internet time servers] --> Feeder
 ```
@@ -89,8 +89,9 @@ if (!(Test-Path Frontend/.env)) { Copy-Item Frontend/.env.example Frontend/.env 
 | `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` | PostgreSQL details: `localhost`, `5432`, `AquaSense`, `postgres`, and your password. Keep `DB_DIALECT=postgres`. |
 | `PORT`, `HOST`, `CORS_ORIGIN` | Local defaults: `5001`, `localhost`, and the allowed website `http://localhost:3000`. |
 | `JWT_SECRET` | A private random value of at least 32 characters. Replace the template value. |
-| `SMS_PROVIDER` | `unisms` (default) or `semaphore`. |
-| `UNISMS_API_SECRET_KEY`, `UNISMS_SENDER_ID`, `FARMER_PHONE` | Valid provider key, assigned/approved sender ID, and real farmer mobile. A placeholder key permits startup but cannot send. Leave the phone blank to skip automatic SMS. |
+| `SMS_PROVIDER` | `iprogsms` (default), `semaphore`, or `unisms`. |
+| `IPROG_SMS_API_TOKEN`, `IPROG_SMS_NETWORK_PROVIDER` | Used when `SMS_PROVIDER=iprogsms`. Token from the IPROG SMS account dashboard. Network provider `2` is recommended for broad PH coverage. Philippine numbers only (`+63…`). |
+| `UNISMS_API_SECRET_KEY`, `UNISMS_SENDER_ID`, `FARMER_PHONE` | Used when `SMS_PROVIDER=unisms`. Valid provider key, assigned/approved sender ID, and real farmer mobile. A placeholder key permits startup but cannot send. Leave the phone blank to skip automatic SMS. |
 | `SEMAPHORE_API_KEY`, `SEMAPHORE_SENDER_NAME` | Used when `SMS_PROVIDER=semaphore`. The sender name is optional (blank uses the account's default approved name). Semaphore sends to Philippine numbers only. |
 | `MQTT_*`, `DEVICE_KEYS` | Sensor messaging settings and device credentials; see integration instructions below. |
 
@@ -159,7 +160,7 @@ Run only one backend instance. `npm run dev` checks the configured port before s
 
 Match firmware `DEVICE_ID` and backend `FEEDER_DEVICE_ID` (default `esp32-feeder-1`). Set firmware `API_BASE_URL` to the backend computer's network address, port **5001**. Local-network access requires backend `HOST=0.0.0.0` and a firewall allowance. The powered ESP32 runs up to 20 schedules, polls `/feeding/device/sync` every 30 seconds, and confirms through `/feeding/device/ack`. It uses servo GPIO 13 and UTC+8 time; backend `FEEDING_TIMEZONE` defaults to `Asia/Manila`. Manual commands may wait for the next poll.
 
-**SMS through UniSMS or Semaphore.** `SMS_PROVIDER` selects the gateway; for Semaphore set `SEMAPHORE_API_KEY` (and optionally `SEMAPHORE_SENDER_NAME`), and avoid messages that start with the word TEST, which Semaphore drops. For UniSMS, set a valid API key and international `FARMER_PHONE` (`+63` plus the mobile number without its initial `0`). Configure `FARMER_NAME`, `TANK_NAME`, and optional `FARM_NAME`. Set `UNISMS_SENDER_ID` to the exact sender assigned/approved by UniSMS. Critical/emergency alerts and eligible high/critical predictions trigger texts. Every submission is reserved in `sms_logs` before sending, with database locking to prevent duplicates. Pending messages are checked by reference ID every 30 seconds; only provider-confirmed sent messages are labeled Sent. Validation failures are not automatically retried within a submission; automatic alerts back off for at least one minute after a failed attempt. Timeouts with uncertain submission status are labeled Unconfirmed and blocked from automatic resending until reviewed against provider history. This is provider send status, not a handset delivery receipt.
+**SMS through IPROG SMS (default), Semaphore, or UniSMS.** `SMS_PROVIDER` selects the gateway. For IPROG set `IPROG_SMS_API_TOKEN` (from iprogsms.com) and optional `IPROG_SMS_NETWORK_PROVIDER=2`. For Semaphore set `SEMAPHORE_API_KEY` (and optionally `SEMAPHORE_SENDER_NAME`), and avoid messages that start with the word TEST, which Semaphore drops. For UniSMS, set a valid API key and `UNISMS_SENDER_ID`. Recipients use international `FARMER_PHONE` / saved numbers (`+63` plus the mobile number without its initial `0`). Configure `FARMER_NAME`, `TANK_NAME`, and optional `FARM_NAME`. Critical/emergency alerts and eligible high/critical predictions trigger texts. Every submission is reserved in `sms_logs` before sending, with database locking to prevent duplicates. Pending messages are checked by reference ID every 30 seconds; only provider-confirmed sent messages are labeled Sent. Validation failures are not automatically retried within a submission; automatic alerts back off for at least one minute after a failed attempt. Timeouts with uncertain submission status are labeled Unconfirmed and blocked from automatic resending until reviewed against provider history. This is provider send status, not a handset delivery receipt.
 
 **Access boundaries.** HTTP has session, role, and device checks, with development exceptions. MQTT and Socket.IO lack equivalent authentication; water records are shared across accounts. Public or separate-farm deployment needs these gaps addressed and a private, authenticated broker.
 

@@ -375,15 +375,16 @@ bool signatureMatches(const char* message, const char* signature) {
 // ACTUATOR OUTPUTS (servo, buzzer, relays)
 // =====================================================
 
-// The feeder servo is driven by ESP32Servo, the same driver as the original
-// feeder firmware: hand-rolled LEDC code compiled and reported success on
-// this board but the horn never moved, while ESP32Servo moves it. attach(pin)
-// uses 544-2400 us, the range SERVO_CLOSED_DEG / SERVO_OPEN_DEG were tuned
-// against. After each move the pulses are switched off (release) once the horn
-// has arrived, so the servo stops instead of buzzing or creeping between commands.
+// The feeder servo is driven by ESP32Servo. Default signal pin is GPIO18
+// (integrated board). Legacy standalone feeders used GPIO13 — switch with
+// serial "servo pin 13" (saved in flash). After a closed rest the pulses can
+// be switched off; while Feeder on holds open, pulses stay active.
 Servo feederServo;
-const uint32_t SERVO_HOLD_MS = 1500;   // time for the horn to reach a new angle
-uint32_t servoReleaseAt = 0;           // millis() when to switch the signal off; 0 = nothing pending
+int servoPin = SERVO_PIN;              // runtime pin (NVS may override)
+const uint32_t SERVO_HOLD_MS = 3000;   // time for the horn to reach a new angle before resting closed
+uint32_t servoReleaseAt = 0;           // millis() when to switch the signal off; 0 = keep pulsing / nothing pending
+bool servoPulseActive = false;         // true while LEDC is outputting a non-zero servo pulse
+bool servoHoldForever = false;         // serial "servo hold" — never auto-release
 bool buzzerOn = false;
 bool wifiDiagOff = false;   // serial "wifi off" diagnostic
 
@@ -396,15 +397,41 @@ void buzzerSet(bool on) {
 
 void buzzerQuiet() { buzzerSet(false); }
 
-// The servo channel is attached once and then kept: between moves the pulses are
-// paused (release) instead of detaching, so a dashboard move uses exactly the same
-// path as the boot self-test, which moves the servo reliably.
-bool attachServo() {
-  if (feederServo.attached()) return true;
+void loadServoPin() {
+  const int saved = prefs.getInt("servoPin", SERVO_PIN);
+  // Safe PWM-capable GPIOs used on this project (avoid input-only 34-39).
+  // 18 = integrated board (default). 13 = legacy standalone feeder. Do not use
+  // 19 (buzzer) or 21/22 (LCD I2C).
+  if (saved == 13 || saved == 18 || saved == 23) {
+    servoPin = saved;
+  } else {
+    servoPin = SERVO_PIN;
+  }
+}
+
+bool saveServoPin(int pin) {
+  if (!(pin == 13 || pin == 18 || pin == 23)) return false;
+  servoPin = pin;
+  prefs.putInt("servoPin", pin);
+  return true;
+}
+
+// Fresh attach every move: release()/duty-0 has left the pin silent on this
+// board even when writeMicroseconds() reported a pulse width.
+bool attachServo(bool forceReattach = false) {
+  if (feederServo.attached() && !forceReattach) return true;
+  if (feederServo.attached()) {
+    feederServo.detach();
+    delay(5);
+  }
   feederServo.setPeriodHertz(50);
-  feederServo.attach(SERVO_PIN);   // returns the channel, which can be 0 on success
-  if (!feederServo.attached()) { Serial.println("[SERVO] attach failed on GPIO18"); return false; }
-  Serial.printf("[SERVO] feeder servo on GPIO%d (ESP32Servo, 50 Hz)\n", SERVO_PIN);
+  // Explicit pulse range matching the angles tuned on this feeder.
+  feederServo.attach(servoPin, 544, 2400);
+  if (!feederServo.attached()) {
+    Serial.printf("[SERVO] attach failed on GPIO%d\n", servoPin);
+    return false;
+  }
+  Serial.printf("[SERVO] feeder servo on GPIO%d (ESP32Servo, 50 Hz)\n", servoPin);
   return true;
 }
 
@@ -417,7 +444,8 @@ wifi_power_t servoSavedTxPower = WIFI_POWER_19_5dBm;
 void lowerWifiForServo() {
   if (servoWifiLowered || WiFi.getMode() == WIFI_OFF) return;
   servoSavedTxPower = WiFi.getTxPower();
-  WiFi.setTxPower(WIFI_POWER_7dBm);
+  // Keep TX very low while the horn moves; shared 5 V rails collapse under Wi-Fi peaks.
+  WiFi.setTxPower(WIFI_POWER_2dBm);
   servoWifiLowered = true;
 }
 
@@ -427,23 +455,55 @@ void restoreWifiAfterServo() {
   if (WiFi.getMode() != WIFI_OFF) WiFi.setTxPower(servoSavedTxPower);
 }
 
+void dumpServoPin() {
+#if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
+  Serial.printf("[SERVO] GPIO%d owner=%s freq=%lu Hz duty=%lu pulse=%lu us attached=%d\n", servoPin,
+                perimanGetTypeName(perimanGetPinBusType(servoPin)), (unsigned long)ledcReadFreq(servoPin),
+                (unsigned long)ledcRead(servoPin), (unsigned long)feederServo.readMicroseconds(), feederServo.attached());
+#else
+  Serial.printf("[SERVO] GPIO%d pulse=%lu us attached=%d\n", servoPin,
+                (unsigned long)feederServo.readMicroseconds(), feederServo.attached());
+#endif
+}
+
 bool servoAngle(int degrees) {
   lowerWifiForServo();
-  if (!attachServo()) { restoreWifiAfterServo(); return false; }
+  // Always re-attach so a prior release()/detach cannot leave duty 0 stuck.
+  if (!attachServo(true)) { restoreWifiAfterServo(); return false; }
   const int angle = constrain(degrees, 0, 180);
-  feederServo.write(angle);
-  Serial.printf("[SERVO] -> %d degrees (%d us pulse)\n", angle, feederServo.readMicroseconds());
-  servoReleaseAt = millis() + SERVO_HOLD_MS;
-  if (servoReleaseAt == 0) servoReleaseAt = 1;
+  const int us = map(angle, 0, 180, 544, 2400);
+  delay(10);
+  feederServo.writeMicroseconds(us);
+  delay(10);
+  feederServo.write(angle);   // second write forces LEDC refresh on some cores
+  servoPulseActive = true;
+  Serial.printf("[SERVO] -> %d degrees (%d us pulse) on GPIO%d\n", angle, feederServo.readMicroseconds(), servoPin);
+  dumpServoPin();
+  if (servoHoldForever) {
+    servoReleaseAt = 0;
+  } else {
+    servoReleaseAt = millis() + SERVO_HOLD_MS;
+    if (servoReleaseAt == 0) servoReleaseAt = 1;
+  }
   return true;
 }
 
 void servoRelease() {
+  if (servoHoldForever) return;   // serial hold mode keeps pulsing
   servoReleaseAt = 0;
   restoreWifiAfterServo();
-  if (!feederServo.attached()) return;
-  feederServo.release();   // pulses off, channel kept: no re-attach before the next move
-  Serial.println("[SERVO] signal off (servo stopped)");
+  if (!feederServo.attached()) { servoPulseActive = false; return; }
+  feederServo.release();
+  delay(5);
+  feederServo.detach();           // fully free the pin; next move re-attaches clean
+  servoPulseActive = false;
+  Serial.printf("[SERVO] signal off on GPIO%d (servo stopped)\n", servoPin);
+}
+
+// Keep pulsing while held open; only rest (release) when the feeder is idle/closed.
+void servoKeepOpen(int degrees) {
+  servoAngle(degrees);
+  servoReleaseAt = 0;   // do not auto-release while Feeder on
 }
 
 // Saved in flash (see loadRelaySettings); defaults used on first boot.
@@ -491,6 +551,7 @@ void loadRelaySettings() {
 
 FeederStep feederStep = FEED_IDLE;
 uint32_t feederStepAt = 0;
+uint32_t feederHoldRefreshAt = 0;     // next open-pulse re-assert while FEED_HOLD_OPEN
 char feedSuppressedMinute[20] = "";   // OFF / ALL_OFF block a scheduled feed in this minute
 bool feederStateChanged = false;      // shows the LCD status page on the next loop
 
@@ -505,17 +566,27 @@ bool feederStart(FeederStep step, int angle) {
   const FeederStep previous = feederStep;
   feederStep = step;
   feederStepAt = millis();
-  if (servoAngle(angle)) {
-    if (step != previous) { feederStateChanged = true; Serial.printf("[FEED] feeder %s\n", feederStateText()); }
-    return true;
+  if (!servoAngle(angle)) {
+    feederStep = previous;
+    return false;
   }
-  feederStep = previous;
-  return false;
+  if (step == FEED_HOLD_OPEN) {
+    servoReleaseAt = 0;
+    feederHoldRefreshAt = millis() + 3000;
+  }
+  if (step != previous) { feederStateChanged = true; Serial.printf("[FEED] feeder %s\n", feederStateText()); }
+  return true;
 }
 
-// Feed now: closed -> open -> closed, once.
-bool feederTrigger() { return !feederBusy() && feederStart(FEED_PRE, SERVO_CLOSED_DEG); }
-// Feeder on: open and stay open until Feeder off (or the FEED_ON_MAX_MS safety close).
+// Feed now: closed -> open -> closed, once. If Feeder on left the horn open,
+// interrupt that hold and finish with an open->closed dispense instead of
+// rejecting as busy (dashboard previously sat in "Feeding" with no motion).
+bool feederTrigger() {
+  if (feederStep == FEED_HOLD_OPEN) return feederStart(FEED_OPEN, SERVO_OPEN_DEG);
+  if (feederBusy()) return false;
+  return feederStart(FEED_PRE, SERVO_CLOSED_DEG);
+}
+// Feeder on: open and keep pulsing until Feeder off (or FEED_ON_MAX_MS safety close).
 bool feederHoldOpen() { return feederStart(FEED_HOLD_OPEN, SERVO_OPEN_DEG); }
 // Feeder off: close now, also cancelling a feed cycle that is running.
 bool feederStop() {
@@ -525,7 +596,8 @@ bool feederStop() {
 }
 
 void updateFeeder() {
-  const uint32_t elapsed = millis() - feederStepAt;
+  const uint32_t now = millis();
+  const uint32_t elapsed = now - feederStepAt;
   switch (feederStep) {
     case FEED_PRE:       if (elapsed >= FEED_PRE_MS) feederStart(FEED_OPEN, SERVO_OPEN_DEG); break;
     case FEED_OPEN:      if (elapsed >= FEED_OPEN_MS) feederStart(FEED_POST, SERVO_CLOSED_DEG); break;
@@ -533,13 +605,20 @@ void updateFeeder() {
       if (elapsed >= FEED_POST_MS) { feederStep = FEED_IDLE; feederStateChanged = true; Serial.println("[FEED] feed cycle done"); }
       break;
     case FEED_HOLD_OPEN:
-      if (elapsed >= FEED_ON_MAX_MS) { Serial.println("[FEED] safety close: no Feeder off within 60 s"); feederStop(); }
+      if (elapsed >= FEED_ON_MAX_MS) {
+        Serial.println("[FEED] safety close: no Feeder off within 60 s");
+        feederStop();
+      } else if ((int32_t)(now - feederHoldRefreshAt) >= 0) {
+        // Re-assert open pulse so a dropped LEDC duty cannot leave the horn limp.
+        servoKeepOpen(SERVO_OPEN_DEG);
+        feederHoldRefreshAt = now + 3000;
+      }
       break;
     default: break;
   }
-  // Stop the servo once it has reached its angle and is resting (closed, or held open).
-  if (servoReleaseAt && (int32_t)(millis() - servoReleaseAt) >= 0 &&
-      (feederStep == FEED_IDLE || feederStep == FEED_HOLD_OPEN)) servoRelease();
+  // Only rest the servo when idle/closed. Never kill pulses while Feeder on is holding open —
+  // that left the dashboard "ON: acked / Feeding" with a limp horn and blocked Feed now.
+  if (servoReleaseAt && (int32_t)(now - servoReleaseAt) >= 0 && feederStep == FEED_IDLE) servoRelease();
 }
 
 void suppressFeedingThisMinute() {
@@ -1977,6 +2056,9 @@ void printHelp() {
   Serial.println("fill <seconds>         same path as dashboard Fill (1–600 s)");
   Serial.println("stop | water stop      stop pumps / clear a pump run (same as Stop pumps)");
   Serial.println("servo <degrees>        move the feeder servo, e.g. servo 140 then servo 25");
+  Serial.println("servo hold <degrees>   move and keep pulsing (no auto-release)");
+  Serial.println("servo pin 13|18|23     signal GPIO (saved; 18 default, 13 = legacy feeder)");
+  Serial.println("servo release          stop pulses / end hold mode");
   Serial.println("feed                   run one feed cycle locally (no dashboard needed)");
   Serial.println("selftest               run the boot self-test now (relays, servo, buzzer)");
   Serial.println("selftest on|off        run it at every power-up or not (saved)");
@@ -2675,17 +2757,40 @@ void handleSerialCommand(String line) {
   }
   if (cmd == "relay") { handleRelayCommand(rest); return; }
   if (cmd == "servo") {
-    if (!rest.length()) { Serial.println("Use: servo <0-180>"); return; }
+    if (!rest.length()) {
+      Serial.printf("Use: servo <0-180> | servo hold <0-180> | servo pin 13|18|23 | servo release\nCurrent signal GPIO%d\n", servoPin);
+      return;
+    }
+    if (rest == "release" || rest == "stop") {
+      servoHoldForever = false;
+      feederStep = FEED_IDLE;
+      servoRelease();
+      Serial.println("Servo pulses stopped.");
+      return;
+    }
+    if (rest.startsWith("pin ")) {
+      const int pin = rest.substring(4).toInt();
+      if (!saveServoPin(pin)) { Serial.println("Use: servo pin 13|18|23  (18=default board, 13=legacy feeder)"); return; }
+      feederStep = FEED_IDLE;
+      servoHoldForever = false;
+      if (feederServo.attached()) { feederServo.detach(); servoPulseActive = false; }
+      Serial.printf("Servo signal pin set to GPIO%d (saved). Try: servo hold 140\n", servoPin);
+      servoAngle(SERVO_CLOSED_DEG);
+      return;
+    }
+    if (rest.startsWith("hold ")) {
+      feederStep = FEED_IDLE;
+      servoHoldForever = true;
+      const int deg = constrain(rest.substring(5).toInt(), 0, 180);
+      servoAngle(deg);
+      Serial.printf("Servo HOLD %d degrees on GPIO%d (pulses stay on). 'servo release' to stop. No movement? Separate 5-6 V supply + common GND, or try 'servo pin 13'.\n", deg, servoPin);
+      return;
+    }
     feederStep = FEED_IDLE;
+    servoHoldForever = false;
     const int deg = constrain(rest.toInt(), 0, 180);
     servoAngle(deg);
-    Serial.printf("Servo -> %d degrees on GPIO%d. No movement? Check the servo's own 5-6 V supply (2 A+) and that its GND joins the ESP32 GND.\n", deg, SERVO_PIN);
-#if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
-    // What the pin is really doing: owner, PWM frequency and duty (14-bit of 20 ms).
-    Serial.printf("[SERVO] GPIO%d owner=%s freq=%lu Hz duty=%lu pulse=%lu us attached=%d\n", SERVO_PIN,
-                  perimanGetTypeName(perimanGetPinBusType(SERVO_PIN)), (unsigned long)ledcReadFreq(SERVO_PIN),
-                  (unsigned long)ledcRead(SERVO_PIN), (unsigned long)feederServo.readMicroseconds(), feederServo.attached());
-#endif
+    Serial.printf("Servo -> %d degrees on GPIO%d. No movement? Check 5-6 V supply + common GND, or try: servo hold 140 / servo pin 13\n", deg, servoPin);
     return;
   }
   if (cmd == "wifi") {
@@ -2696,9 +2801,20 @@ void handleSerialCommand(String line) {
     Serial.println("Use: wifi off|on");
     return;
   }
-  if (cmd == "feed") {
-    if (feederBusy()) { Serial.println("Feeder is busy."); return; }
-    feederTrigger();
+  if (cmd == "feed" || cmd == "feeder") {
+    if (rest == "on") {
+      if (!feederHoldOpen()) { Serial.println("Feeder on failed (servo PWM)."); return; }
+      Serial.printf("Feeder on: holding %d degrees (pulses stay on until feed off).\n", SERVO_OPEN_DEG);
+      return;
+    }
+    if (rest == "off") {
+      if (!feederStop()) { Serial.println("Feeder off failed (servo PWM)."); return; }
+      Serial.printf("Feeder off: closing to %d degrees.\n", SERVO_CLOSED_DEG);
+      return;
+    }
+    if (rest.length()) { Serial.println("Use: feed | feed on | feed off"); return; }
+    if (feederBusy() && feederStep != FEED_HOLD_OPEN) { Serial.println("Feeder is busy."); return; }
+    if (!feederTrigger()) { Serial.println("Feed cycle failed (servo PWM)."); return; }
     Serial.printf("Feed cycle: %d -> %d -> %d degrees.\n", SERVO_CLOSED_DEG, SERVO_OPEN_DEG, SERVO_CLOSED_DEG);
     return;
   }
@@ -3038,11 +3154,14 @@ void setup() {
 
   prefs.begin("aquasense", false);
   loadRelaySettings();   // polarity must be known before driving the relay pins
+  loadServoPin();        // GPIO18 default; "servo pin 13" for legacy wiring
   relaysInit();          // outputs safe before anything else
   buzzerQuiet();
   // Park the feeder closed straight away so the gate never floats at boot. The
   // signal stays on from here, which keeps the horn at a known angle.
-  if (!servoAngle(SERVO_CLOSED_DEG)) Serial.println("[SERVO] 50 Hz PWM did not start on GPIO18; feeder disabled.");
+  if (!servoAngle(SERVO_CLOSED_DEG)) {
+    Serial.printf("[SERVO] 50 Hz PWM did not start on GPIO%d; feeder disabled.\n", servoPin);
+  }
   loadSeen();
   loadSchedules();
   loadCalibration();

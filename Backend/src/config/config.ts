@@ -76,12 +76,32 @@ const getOptionalCredential = (key: string): string | undefined => {
   return value;
 };
 
-export type SmsProvider = 'unisms' | 'semaphore';
+export type SmsProvider = 'unisms' | 'semaphore' | 'iprogsms';
 
-/** SMS_PROVIDER picks the gateway; anything else falls back to UniSMS. */
-const smsProvider: SmsProvider = (getEnv('SMS_PROVIDER', 'unisms') || 'unisms').trim().toLowerCase() === 'semaphore'
+/** SMS_PROVIDER picks the gateway: iprogsms (default), semaphore, or unisms. */
+const smsProviderRaw = (getEnv('SMS_PROVIDER', 'iprogsms') || 'iprogsms').trim().toLowerCase();
+const smsProvider: SmsProvider = smsProviderRaw === 'semaphore'
   ? 'semaphore'
-  : 'unisms';
+  : smsProviderRaw === 'unisms'
+    ? 'unisms'
+    : 'iprogsms';
+
+const smsCredentialKey = (provider: SmsProvider): string => {
+  if (provider === 'semaphore') return 'SEMAPHORE_API_KEY';
+  if (provider === 'iprogsms') {
+    // Prefer IPROG_SMS_API_TOKEN; accept IPROG_API_TOKEN as an alias.
+    return getOptionalCredential('IPROG_SMS_API_TOKEN') ? 'IPROG_SMS_API_TOKEN' : 'IPROG_API_TOKEN';
+  }
+  return 'UNISMS_API_SECRET_KEY';
+};
+
+const smsSenderKey = (provider: SmsProvider): string | undefined => {
+  if (provider === 'semaphore') return 'SEMAPHORE_SENDER_NAME';
+  if (provider === 'unisms') return 'UNISMS_SENDER_ID';
+  return undefined; // IPROG uses the account default / shared sender name
+};
+
+const iprogNetworkProvider = Math.min(2, Math.max(0, parseInt(getEnv('IPROG_SMS_NETWORK_PROVIDER', '2') || '2', 10) || 2));
 
 const parseDeviceKeys = (raw?: string): Record<string, string> => {
   if (!raw) {
@@ -166,8 +186,13 @@ export const config = {
     provider: smsProvider as SmsProvider,
     // Key and sender of the selected provider. Semaphore's sender name is optional:
     // without it, Semaphore uses the account's default approved sender name.
-    apiSecretKey: getOptionalCredential(smsProvider === 'semaphore' ? 'SEMAPHORE_API_KEY' : 'UNISMS_API_SECRET_KEY'),
-    senderId: getOptionalCredential(smsProvider === 'semaphore' ? 'SEMAPHORE_SENDER_NAME' : 'UNISMS_SENDER_ID'),
+    // IPROG SMS does not require a separate sender id in the API request.
+    apiSecretKey: getOptionalCredential(smsCredentialKey(smsProvider)),
+    senderId: smsSenderKey(smsProvider) ? getOptionalCredential(smsSenderKey(smsProvider) as string) : undefined,
+    /** IPROG sms_provider: 0/1/2. Use 2 for broad PH network coverage. */
+    iprogNetworkProvider,
+    /** Override only if IPROG publishes a different API host. */
+    iprogBaseUrl: (getEnv('IPROG_SMS_BASE_URL', 'https://www.iprogsms.com/api/v1') || 'https://www.iprogsms.com/api/v1').replace(/\/$/, ''),
     maxMessageLength: parseInt(getEnv('SMS_MAX_MESSAGE_LENGTH', '160') || '160', 10),
     failureThreshold: parseInt(getEnv('SMS_FAILURE_THRESHOLD', '5') || '5', 10),
     circuitCooldownMs: parseInt(getEnv('SMS_CIRCUIT_COOLDOWN_MS', '60000') || '60000', 10),
@@ -238,9 +263,11 @@ const configSchema = z.object({
     maxAgeMs: z.number().int().min(60000),
   }),
   sms: z.object({
-    provider: z.enum(['unisms', 'semaphore']),
+    provider: z.enum(['unisms', 'semaphore', 'iprogsms']),
     apiSecretKey: z.string().min(1).optional(),
     senderId: z.string().min(1).optional(),
+    iprogNetworkProvider: z.number().int().min(0).max(2),
+    iprogBaseUrl: z.string().url(),
     maxMessageLength: z.number().int().min(1).max(160),
     failureThreshold: z.number().int().min(1).max(20),
     circuitCooldownMs: z.number().int().min(1000).max(3600000),

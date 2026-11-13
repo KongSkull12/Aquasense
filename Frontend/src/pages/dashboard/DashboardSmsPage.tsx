@@ -18,7 +18,7 @@ const reachesDefaultSender = (phone: string): boolean => {
   return GLOBE_OR_DITO.has(local.slice(0, 4));
 };
 
-type SmsProvider = 'unisms' | 'semaphore';
+type SmsProvider = 'unisms' | 'semaphore' | 'iprogsms';
 
 interface SmsRecipientList {
   enabled: boolean;
@@ -43,11 +43,15 @@ const DashboardSmsPage: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [testResults, setTestResults] = useState<TestResult[] | null>(null);
-  const [provider, setProvider] = useState<SmsProvider>('unisms');
+  const [provider, setProvider] = useState<SmsProvider>('iprogsms');
 
   const applyList = (list: SmsRecipientList) => {
     setEnabled(list.enabled);
-    setProvider(list.provider === 'semaphore' ? 'semaphore' : 'unisms');
+    setProvider(
+      list.provider === 'semaphore' ? 'semaphore'
+        : list.provider === 'unisms' ? 'unisms'
+          : 'iprogsms',
+    );
     setPhones(Array.from({ length: SLOTS }, (_, index) => list.phones[index] || ''));
   };
 
@@ -170,9 +174,11 @@ const DashboardSmsPage: React.FC = () => {
           </Panel>
           <Notice tone="info" title="Test send">
             The test goes to every saved number, including while alert texts are off. Save first. A second test soon after may wait on the SMS cooldown.{' '}
-            {provider === 'semaphore'
-              ? 'Texts are sent through Semaphore, under the sender name approved on that account, to Philippine mobile numbers.'
-              : 'This account sends as Unisoft, which reaches Globe and DITO. Smart, TNT, and Sun numbers are refused.'}
+            {provider === 'iprogsms'
+              ? 'Texts are sent through IPROG SMS to Philippine mobile numbers.'
+              : provider === 'semaphore'
+                ? 'Texts are sent through Semaphore, under the sender name approved on that account, to Philippine mobile numbers.'
+                : 'This account sends as Unisoft, which reaches Globe and DITO. Smart, TNT, and Sun numbers are refused.'}
           </Notice>
           {provider === 'unisms' && filled && phones.some((phone) => phone.trim() && !reachesDefaultSender(phone)) && (
             <Notice tone="warn" title="Network">

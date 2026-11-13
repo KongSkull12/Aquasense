@@ -24,15 +24,23 @@ export const validateSmsMessage = (message: string): { valid: boolean; reason?: 
   return { valid: true };
 };
 
-const providerName = (): string => (config.sms.provider === 'semaphore' ? 'Semaphore' : 'UniSMS');
+const providerName = (): string => {
+  if (config.sms.provider === 'semaphore') return 'Semaphore';
+  if (config.sms.provider === 'iprogsms') return 'IPROG SMS';
+  return 'UniSMS';
+};
 
 const SEMAPHORE_ENDPOINT = 'https://api.semaphore.co/api/v4/messages';
+const UNISMS_ENDPOINT = 'https://unismsapi.com/api/sms';
 
-/** Semaphore takes Philippine numbers as 63XXXXXXXXXX (no plus sign). */
-export const toSemaphoreNumber = (recipient: string): string | null => {
+/** Philippine mobiles as 63XXXXXXXXXX (no plus) for Semaphore and IPROG SMS. */
+export const toPhMobileDigits = (recipient: string): string | null => {
   const trimmed = recipient.trim();
   return /^\+63\d{10}$/.test(trimmed) ? trimmed.slice(1) : null;
 };
+
+/** @deprecated Use toPhMobileDigits — kept for existing Semaphore tests. */
+export const toSemaphoreNumber = toPhMobileDigits;
 
 /** Semaphore silently drops messages that start with the word TEST. */
 export const startsWithTestWord = (message: string): boolean => /^test\b/i.test(message.trim());
@@ -40,6 +48,22 @@ export const startsWithTestWord = (message: string): boolean => /^test\b/i.test(
 /** Semaphore statuses: Queued and Pending are in transit, Sent reached the network. */
 const SEMAPHORE_STATUS: Record<string, SmsStatus> = {
   queued: 'pending', pending: 'pending', sent: 'sent', failed: 'failed', refunded: 'failed',
+};
+
+/** IPROG message_status / recent activity status values. */
+const IPROG_STATUS: Record<string, SmsStatus> = {
+  pending: 'pending',
+  queued: 'pending',
+  processing: 'pending',
+  submitted: 'pending',
+  completed: 'sent',
+  sent: 'sent',
+  success: 'sent',
+  delivered: 'sent',
+  failed: 'failed',
+  error: 'failed',
+  undelivered: 'failed',
+  rejected: 'rejected',
 };
 
 /** Field errors such as { sendername: ['…'] } with no message_id mean nothing was sent. */
@@ -65,6 +89,53 @@ export const parseSemaphoreResponse = (data: unknown, httpStatus: number, retrie
   return smsResult(status, retries, { referenceId, httpStatus,
     reason: status === 'unknown' ? 'Unrecognized provider response; verify before resending'
       : status === 'failed' ? `Semaphore reported ${String(first?.status)}` : undefined });
+};
+
+/** IPROG queues accepted SMS and returns message_id; treat HTTP/body success as pending. */
+export const parseIprogSendResponse = (data: unknown, httpStatus: number, retries: number): SmsSendResult => {
+  const payload = (data && typeof data === 'object' ? data : {}) as {
+    status?: unknown;
+    message?: unknown;
+    message_id?: unknown;
+    error?: unknown;
+    errors?: unknown;
+  };
+  const rawId = payload.message_id;
+  const referenceId = typeof rawId === 'string' && rawId.trim() ? rawId.trim()
+    : typeof rawId === 'number' ? String(rawId) : undefined;
+  const bodyStatus = payload.status;
+  const ok = bodyStatus === 200 || bodyStatus === '200' || bodyStatus === 'success'
+    || (httpStatus >= 200 && httpStatus < 300 && Boolean(referenceId));
+  if (referenceId && ok) {
+    return smsResult('pending', retries, { referenceId, httpStatus });
+  }
+  const errors = payload.errors
+    ?? (typeof payload.error === 'string' || typeof payload.message === 'string'
+      ? { detail: [String(payload.error || payload.message)] }
+      : undefined);
+  return smsResult('unknown', retries, {
+    referenceId, httpStatus, errors,
+    reason: 'Unrecognized IPROG SMS response; verify before resending',
+  });
+};
+
+export const parseIprogStatusResponse = (
+  data: unknown, httpStatus: number, referenceId: string, retries = 0,
+): SmsSendResult => {
+  const payload = (data && typeof data === 'object' ? data : {}) as {
+    message_status?: unknown;
+    status?: unknown;
+    message_id?: unknown;
+  };
+  const rawStatus = typeof payload.message_status === 'string' ? payload.message_status
+    : typeof payload.status === 'string' && !/^(success|error|\d+)$/i.test(payload.status) ? payload.status
+      : undefined;
+  const mapped = rawStatus ? IPROG_STATUS[rawStatus.trim().toLowerCase()] : undefined;
+  if (!mapped) {
+    return smsResult('unknown', retries, { referenceId, httpStatus, reason: 'Unrecognized IPROG SMS status' });
+  }
+  return smsResult(mapped, retries, { referenceId, httpStatus,
+    reason: mapped === 'failed' ? `IPROG SMS reported ${rawStatus}` : undefined });
 };
 
 const maskSensitive = (value: unknown): unknown => {
@@ -95,6 +166,12 @@ export const describeSmsFailure = (results: SmsSendResult[]): string => {
       if (config.sms.provider === 'semaphore' && errors.some((line) => /apikey/i.test(line))) {
         return 'Semaphore rejected the API key. Check SEMAPHORE_API_KEY.';
       }
+      if (config.sms.provider === 'iprogsms' && errors.some((line) => /api[_ ]?token|unauthorized|unauthenticated|invalid token/i.test(line))) {
+        return 'IPROG SMS rejected the API token. Check IPROG_SMS_API_TOKEN.';
+      }
+      if (config.sms.provider === 'iprogsms' && errors.some((line) => /credit|balance|load/i.test(line))) {
+        return 'IPROG SMS reports insufficient credits. Top up at iprogsms.com.';
+      }
       if (errors.some((line) => /sender_id/i.test(line) && /does not exist/i.test(line))) {
         return 'UniSMS does not have that sender name. This account uses Unisoft.';
       }
@@ -121,11 +198,10 @@ export const smsResult = (
 });
 
 export class SmsService {
-  private readonly endpoint = 'https://unismsapi.com/api/sms';
   private consecutiveFailures = 0;
   private circuitOpenUntil = 0;
 
-  private parseResponse(data: unknown, httpStatus: number, retries: number): SmsSendResult {
+  private parseUnismsResponse(data: unknown, httpStatus: number, retries: number): SmsSendResult {
     const payload = data as { message?: { status?: string; reference_id?: string; fail_reason?: string } } | null;
     const message = payload?.message;
     const validStatus = ['sent', 'pending', 'retrying', 'failed'].includes(message?.status || '');
@@ -135,54 +211,92 @@ export class SmsService {
       reason: status === 'unknown' ? 'Unrecognized provider response; verify before resending' : message?.fail_reason });
   }
 
+  private credentialLabel(): string {
+    if (config.sms.provider === 'semaphore') return 'SEMAPHORE_API_KEY';
+    if (config.sms.provider === 'iprogsms') return 'IPROG_SMS_API_TOKEN';
+    return 'UNISMS_API_SECRET_KEY';
+  }
+
   async sendSms(recipient: string, message: string): Promise<SmsSendResult> {
     if (!isValidSmsRecipient(recipient)) return smsResult('rejected', 0, { reason: 'Invalid E.164 recipient', httpStatus: 400 });
     const validation = validateSmsMessage(message);
     if (!validation.valid) return smsResult('rejected', 0, { reason: validation.reason, httpStatus: 400 });
-    const semaphore = config.sms.provider === 'semaphore';
+
+    const provider = config.sms.provider;
     const name = providerName();
     const senderId = config.sms.senderId?.trim();
     const apiKey = config.sms.apiSecretKey?.trim();
-    if (!semaphore && !senderId) return smsResult('rejected', 0, { reason: 'UNISMS_SENDER_ID must be configured', httpStatus: 400 });
+
+    if (provider === 'unisms' && !senderId) {
+      return smsResult('rejected', 0, { reason: 'UNISMS_SENDER_ID must be configured', httpStatus: 400 });
+    }
     if (!apiKey || /replace-with|changeme/i.test(apiKey)) {
-      return smsResult('rejected', 0, { reason: `A valid ${semaphore ? 'SEMAPHORE_API_KEY' : 'UNISMS_API_SECRET_KEY'} is required`, httpStatus: 400 });
+      return smsResult('rejected', 0, { reason: `A valid ${this.credentialLabel()} is required`, httpStatus: 400 });
     }
-    const semaphoreNumber = semaphore ? toSemaphoreNumber(recipient) : null;
-    if (semaphore && !semaphoreNumber) {
-      return smsResult('rejected', 0, { reason: 'Semaphore sends only to Philippine mobile numbers (+63XXXXXXXXXX)', httpStatus: 400 });
+
+    const phNumber = (provider === 'semaphore' || provider === 'iprogsms') ? toPhMobileDigits(recipient) : null;
+    if ((provider === 'semaphore' || provider === 'iprogsms') && !phNumber) {
+      return smsResult('rejected', 0, {
+        reason: `${name} sends only to Philippine mobile numbers (+63XXXXXXXXXX)`,
+        httpStatus: 400,
+      });
     }
-    if (semaphore && startsWithTestWord(message)) {
+    if (provider === 'semaphore' && startsWithTestWord(message)) {
       return smsResult('rejected', 0, { reason: 'Semaphore drops messages that start with the word TEST; reword the message', httpStatus: 400 });
     }
     if (Date.now() < this.circuitOpenUntil) return smsResult('unavailable', 0, { reason: 'SMS circuit breaker open' });
 
-    const submit = () => (semaphore
-      ? axios.post(SEMAPHORE_ENDPOINT, new URLSearchParams({
-        apikey: apiKey, number: semaphoreNumber as string, message: message.trim(), ...(senderId ? { sendername: senderId } : {}),
-      }).toString(), { timeout: 10000, headers: { 'Content-Type': 'application/x-www-form-urlencoded' } })
-      : axios.post(this.endpoint, {
+    const submit = () => {
+      if (provider === 'semaphore') {
+        return axios.post(SEMAPHORE_ENDPOINT, new URLSearchParams({
+          apikey: apiKey, number: phNumber as string, message: message.trim(), ...(senderId ? { sendername: senderId } : {}),
+        }).toString(), { timeout: 10000, headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+      }
+      if (provider === 'iprogsms') {
+        const base = config.sms.iprogBaseUrl;
+        return axios.post(`${base}/sms_messages`, {
+          api_token: apiKey,
+          phone_number: phNumber,
+          message: message.trim(),
+          sms_provider: config.sms.iprogNetworkProvider,
+        }, {
+          timeout: 10000,
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${apiKey}`,
+          },
+        });
+      }
+      return axios.post(UNISMS_ENDPOINT, {
         recipient: recipient.trim(), content: message.trim(), sender_id: senderId,
       }, {
         auth: { username: apiKey, password: '' },
         timeout: 10000, headers: { 'Content-Type': 'application/json' },
-      }));
+      });
+    };
 
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
         const response = await submit();
         this.consecutiveFailures = 0;
-        const result = semaphore
+        const result = provider === 'semaphore'
           ? parseSemaphoreResponse(response.data, response.status, attempt)
-          : this.parseResponse(response.data, response.status, attempt);
+          : provider === 'iprogsms'
+            ? parseIprogSendResponse(response.data, response.status, attempt)
+            : this.parseUnismsResponse(response.data, response.status, attempt);
         logger.info(`${name} submission result`, { status: result.status, referenceId: result.referenceId });
         return result;
       } catch (error) {
         const providerError = axios.isAxiosError(error) ? error : undefined;
         const httpStatus = providerError?.response?.status;
         const responseData = providerError?.response?.data;
-        const errors = semaphore
+        const errors = provider === 'semaphore'
           ? semaphoreFieldErrors(responseData) ?? (responseData as { errors?: unknown } | undefined)?.errors
-          : (responseData as { errors?: unknown } | undefined)?.errors;
+          : (responseData as { errors?: unknown; error?: unknown; message?: unknown } | undefined)?.errors
+            ?? (responseData && typeof responseData === 'object'
+              ? { detail: [String((responseData as { error?: unknown; message?: unknown }).error
+                || (responseData as { message?: unknown }).message || 'request failed')] }
+              : undefined);
         // Only retry failures known to precede submission. A timeout/reset/5xx
         // may follow acceptance and must not cause a duplicate SMS.
         const safeToRetry = !httpStatus && ['ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED'].includes(providerError?.code || '');
@@ -218,11 +332,24 @@ export class SmsService {
         return smsResult('unknown', 0, { referenceId, reason: 'Status lookup unavailable; original submission must not be repeated' });
       }
     }
+    if (config.sms.provider === 'iprogsms') {
+      try {
+        const apiKey = config.sms.apiSecretKey || '';
+        const response = await axios.get(`${config.sms.iprogBaseUrl}/sms_messages/status`, {
+          params: { api_token: apiKey, message_id: referenceId },
+          timeout: 10000,
+          headers: { Authorization: `Bearer ${apiKey}` },
+        });
+        return parseIprogStatusResponse(response.data, response.status, referenceId);
+      } catch {
+        return smsResult('unknown', 0, { referenceId, reason: 'Status lookup unavailable; original submission must not be repeated' });
+      }
+    }
     try {
-      const response = await axios.get(`${this.endpoint}/${encodeURIComponent(referenceId)}`, {
+      const response = await axios.get(`${UNISMS_ENDPOINT}/${encodeURIComponent(referenceId)}`, {
         auth: { username: config.sms.apiSecretKey || '', password: '' }, timeout: 10000,
       });
-      const result = this.parseResponse(response.data, response.status, 0);
+      const result = this.parseUnismsResponse(response.data, response.status, 0);
       return result.referenceId === referenceId ? result : smsResult('unknown', 0, { referenceId, reason: 'Provider returned a different reference ID' });
     } catch {
       return smsResult('unknown', 0, { referenceId, reason: 'Status lookup unavailable; original submission must not be repeated' });

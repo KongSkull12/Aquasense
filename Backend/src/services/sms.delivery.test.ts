@@ -4,7 +4,10 @@ import axios, { AxiosError } from 'axios';
 import type { Request, Response } from 'express';
 import { config } from '../config/config';
 import { logger } from '../utils/logger';
-import { describeSmsFailure, SmsService, smsService, smsResult, toSemaphoreNumber } from './sms.service';
+import {
+  describeSmsFailure, parseIprogSendResponse, parseIprogStatusResponse,
+  SmsService, smsService, smsResult, toSemaphoreNumber,
+} from './sms.service';
 import { smsNotificationService } from './smsNotification.service';
 import { smsLogService } from './smsLogService';
 import { cooldownService } from './cooldown.service';
@@ -24,6 +27,7 @@ const settings = { ...config.sms };
 afterEach(() => { mock.restoreAll(); Object.assign(config.sms, settings); });
 
 function setup(): SmsService {
+  config.sms.provider = 'unisms';
   config.sms.apiSecretKey = 'unit-test-key';
   config.sms.senderId = 'AquaSense';
   mock.method(logger, 'info', () => {});
@@ -287,5 +291,84 @@ test('Semaphore: status lookup reads the message by ID and never resubmits', asy
   assert.equal(result.status, 'sent');
   assert.equal(post.mock.callCount(), 0);
   assert.equal(result.response.includes('semaphore-unit-key'), false);
+});
+
+function setupIprog(): SmsService {
+  const service = setup();
+  config.sms.provider = 'iprogsms';
+  config.sms.apiSecretKey = 'iprog-unit-token';
+  config.sms.senderId = undefined;
+  config.sms.iprogNetworkProvider = 2;
+  config.sms.iprogBaseUrl = 'https://www.iprogsms.com/api/v1';
+  return service;
+}
+
+const iprogQueued = () => ({
+  status: 200,
+  data: {
+    status: 200,
+    message: 'Your SMS message has been successfully added to the queue and will be processed shortly.',
+    message_id: 'iSms-XHYBk',
+  },
+});
+
+test('IPROG SMS: posts JSON with api_token, 63 number, sms_provider 2 and Bearer auth', async () => {
+  const service = setupIprog();
+  const post = mock.method(axios, 'post', async () => iprogQueued());
+  const result = await service.sendSms(phone, message);
+  assert.equal(post.mock.callCount(), 1);
+  const [url, body, options] = post.mock.calls[0].arguments as unknown as [
+    string,
+    Record<string, unknown>,
+    { headers: Record<string, string> },
+  ];
+  assert.equal(url, 'https://www.iprogsms.com/api/v1/sms_messages');
+  assert.deepEqual(body, {
+    api_token: 'iprog-unit-token',
+    phone_number: '639171234567',
+    message,
+    sms_provider: 2,
+  });
+  assert.equal(options.headers.Authorization, 'Bearer iprog-unit-token');
+  assert.equal(result.status, 'pending');
+  assert.equal(result.accepted, true);
+  assert.equal(result.referenceId, 'iSms-XHYBk');
+  assert.equal(result.response.includes('iprog-unit-token'), false);
+});
+
+test('IPROG SMS: refuses non-Philippine numbers and a missing token without calling it', async () => {
+  const service = setupIprog();
+  const post = mock.method(axios, 'post', async () => iprogQueued());
+  assert.equal((await service.sendSms('+14155552671', message)).status, 'rejected');
+  assert.equal(post.mock.callCount(), 0);
+  config.sms.apiSecretKey = undefined;
+  assert.equal((await service.sendSms(phone, message)).status, 'rejected');
+  assert.match((await service.sendSms(phone, message)).response, /IPROG_SMS_API_TOKEN/);
+  assert.equal(post.mock.callCount(), 0);
+});
+
+test('IPROG SMS: parse helpers map queue accept and completed status', () => {
+  const queued = parseIprogSendResponse({
+    status: 200, message: 'queued', message_id: 'iSms-Ab12',
+  }, 200, 0);
+  assert.equal(queued.status, 'pending');
+  assert.equal(queued.referenceId, 'iSms-Ab12');
+  assert.equal(parseIprogStatusResponse({ status: 200, message_status: 'pending' }, 200, 'iSms-Ab12').status, 'pending');
+  assert.equal(parseIprogStatusResponse({ status: 200, message_status: 'completed' }, 200, 'iSms-Ab12').status, 'sent');
+  assert.equal(parseIprogStatusResponse({ status: 200, message_status: 'failed' }, 200, 'iSms-Ab12').status, 'failed');
+});
+
+test('IPROG SMS: status lookup reads message_id and never resubmits', async () => {
+  const service = setupIprog();
+  const post = mock.method(axios, 'post', async () => iprogQueued());
+  const get = mock.method(axios, 'get', async () => ({ status: 200, data: { status: 200, message_status: 'completed' } }));
+  const result = await service.getStatus('iSms-XHYBk');
+  const [url, options] = get.mock.calls[0].arguments as unknown as [string, { params: Record<string, string>; headers: Record<string, string> }];
+  assert.equal(url, 'https://www.iprogsms.com/api/v1/sms_messages/status');
+  assert.equal(options.params.api_token, 'iprog-unit-token');
+  assert.equal(options.params.message_id, 'iSms-XHYBk');
+  assert.equal(options.headers.Authorization, 'Bearer iprog-unit-token');
+  assert.equal(result.status, 'sent');
+  assert.equal(post.mock.callCount(), 0);
 });
 

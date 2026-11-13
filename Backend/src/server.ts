@@ -190,7 +190,13 @@ const startServer = async (): Promise<void> => {
     setInterval(refreshSmsStatus, 30000).unref();
 
     const app = createApp();
-    if (config.sms.provider === 'semaphore') {
+    if (config.sms.provider === 'iprogsms') {
+      if (!config.sms.apiSecretKey) {
+        logger.warn('SMS integration unavailable: configure IPROG_SMS_API_TOKEN to enable SMS delivery through IPROG SMS');
+      } else {
+        logger.info('SMS provider: IPROG SMS', { networkProvider: config.sms.iprogNetworkProvider });
+      }
+    } else if (config.sms.provider === 'semaphore') {
       if (!config.sms.apiSecretKey) {
         logger.warn('SMS integration unavailable: configure SEMAPHORE_API_KEY to enable SMS delivery through Semaphore');
       } else {
