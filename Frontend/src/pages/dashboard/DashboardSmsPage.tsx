@@ -113,7 +113,7 @@ const DashboardSmsPage: React.FC = () => {
     <div className="space-y-5">
       <PageHead
         title="SMS alerts"
-        description="Up to four mobile numbers. When an alert is sent, each saved number receives the same text."
+        description="Up to four mobile numbers. Warning, critical and emergency readings for each sensor (temperature, pH, turbidity, dissolved oxygen) automatically text every saved number."
         meta={saved ? <StateMark state="ok" className="!text-sm !font-semibold">Saved</StateMark> : undefined}
       />
 
@@ -157,7 +157,7 @@ const DashboardSmsPage: React.FC = () => {
             >
               <span>
                 <span className="block text-sm font-semibold">{enabled ? 'SMS on' : 'SMS off'}</span>
-                <span className="mt-0.5 block text-xs leading-relaxed text-ink-3">Alerts send a text only while this is on.</span>
+                <span className="mt-0.5 block text-xs leading-relaxed text-ink-3">While on, each sensor warning or alert sends a text (15 min cooldown per sensor; 5 min for emergencies).</span>
               </span>
               <span className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${enabled ? 'bg-ok' : 'bg-line'}`} aria-hidden="true">
                 <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-transform ${enabled ? 'translate-x-5' : 'translate-x-0.5'}`} />

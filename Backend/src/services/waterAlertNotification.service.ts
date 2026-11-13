@@ -3,7 +3,7 @@ import { alertService } from './alert.service';
 import { predictiveAnalyticsService } from './predictiveAnalytics.service';
 import { ruleEngine, type AlertSeverity, type RuleAlertResult } from './ruleEngine.service';
 import { smsNotificationService } from './smsNotification.service';
-import { buildCombinedAlertSmsTemplate, buildPredictiveSmsTemplate } from './smsTemplate.service';
+import { buildPredictiveSmsTemplate, buildSmsTemplate } from './smsTemplate.service';
 import { alertPhonesForDevice } from './smsRecipients';
 import { config } from '../config/config';
 import { logger } from '../utils/logger';
@@ -25,27 +25,9 @@ export interface WaterAlertNotificationResult {
   smsSentCount: number;
 }
 
+/** Warning, critical and emergency water-quality alerts all send SMS (INFO does not). */
 const shouldSendSmsForSeverity = (severity: AlertSeverity): boolean => {
-  return severity === 'CRITICAL' || severity === 'EMERGENCY';
-};
-
-const severityRank: Record<AlertSeverity, number> = {
-  INFO: 0,
-  WARNING: 1,
-  CRITICAL: 2,
-  EMERGENCY: 3,
-};
-
-const selectHighestSeverity = (alerts: RuleAlertResult[]): AlertSeverity => {
-  return alerts.reduce<AlertSeverity>(
-    (highest, alert) => (severityRank[alert.severity] > severityRank[highest] ? alert.severity : highest),
-    'INFO'
-  );
-};
-
-const selectPrimaryAction = (alerts: RuleAlertResult[]): string => {
-  const priority = ['AERATOR_ON_IMMEDIATE', 'WATER_CHANGE', 'WATER_REPLACEMENT', 'AERATOR_ON'];
-  return priority.find((action) => alerts.some((alert) => alert.action === action)) || alerts[0]?.action || 'DASHBOARD_ONLY';
+  return severity === 'WARNING' || severity === 'CRITICAL' || severity === 'EMERGENCY';
 };
 
 class WaterAlertNotificationService {
@@ -80,11 +62,12 @@ class WaterAlertNotificationService {
       smsCandidates.push({ alertId: created.id, alert });
     }
 
-    if (smsCandidates.length > 0) {
-      const sent = await this.sendCombinedRuleAlertSms(input.deviceId, smsCandidates);
-      if (sent) {
-        smsSentCount += 1;
-      }
+    // One SMS per sensor category (TEMP_*, PH_*, DO_*, TURBIDITY_*) so a pH
+    // warning still texts even if a temperature alert was sent recently.
+    // Cooldown is tracked per category (15 min standard / 5 min emergency).
+    for (const candidate of smsCandidates) {
+      const sent = await this.sendSingleRuleAlertSms(input.deviceId, candidate);
+      if (sent) smsSentCount += 1;
     }
 
     // This prediction model requires measured oxygen. Other measured-parameter
@@ -128,9 +111,9 @@ class WaterAlertNotificationService {
     });
   }
 
-  private async sendCombinedRuleAlertSms(
+  private async sendSingleRuleAlertSms(
     deviceId: string,
-    alertsToNotify: Array<{ alertId: string; alert: RuleAlertResult }>
+    entry: { alertId: string; alert: RuleAlertResult }
   ): Promise<boolean> {
     const recipients = await alertPhonesForDevice(deviceId);
     if (!recipients.length) {
@@ -138,25 +121,27 @@ class WaterAlertNotificationService {
       return false;
     }
 
-    const alerts = alertsToNotify.map((entry) => entry.alert);
-    const severity = selectHighestSeverity(alerts);
-    const category = 'WATER_QUALITY_ALERT';
+    const { alert, alertId } = entry;
     const tankName = config.farm.tankName || deviceId;
-    const smsMessage = buildCombinedAlertSmsTemplate({
+    const smsMessage = buildSmsTemplate({
+      farmerName: config.farm.farmerName || 'Farmer',
       farmName: config.farm.farmName,
       tankName,
-      severity,
-      problems: [...alerts].sort((a, b) => severityRank[b.severity] - severityRank[a.severity]).map((alert) => ({
-        message: alert.message,
-        value: alert.currentValue,
-        unit: alert.unit,
-      })),
-      action: selectPrimaryAction(alerts),
+      severity: alert.severity,
+      problem: alert.message,
+      value: alert.currentValue,
+      unit: alert.unit,
+      action: alert.action,
     });
 
+    // Category = sensor rule (e.g. PH_LOW) so each parameter has its own cooldown.
     const results = await smsNotificationService.sendEach({
-      deviceId, category, severity, recipients, message: smsMessage,
-      alertIds: alertsToNotify.map((entry) => entry.alertId),
+      deviceId,
+      category: alert.category,
+      severity: alert.severity,
+      recipients,
+      message: smsMessage,
+      alertIds: [alertId],
     });
     return results?.some((result) => result.accepted) ?? false;
   }

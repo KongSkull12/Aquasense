@@ -111,7 +111,9 @@ export const resendAlert = async (req: AuthenticatedRequest, res: Response): Pro
     });
 
     const results = await smsNotificationService.sendEach({
-      deviceId: alert.deviceId, category: 'WATER_QUALITY_ALERT', severity: alert.severity as AlertSeverity,
+      deviceId: alert.deviceId,
+      category: alert.category || 'WATER_QUALITY_ALERT',
+      severity: alert.severity as AlertSeverity,
       recipients, message: smsMessage, alertIds: [alert.id],
     });
     if (!results) {

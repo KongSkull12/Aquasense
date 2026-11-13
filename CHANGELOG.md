@@ -24,6 +24,13 @@ The running version is shown in the dashboard sidebar (App = frontend, API = bac
 - Flash the new firmware. If pH reads far off in a known buffer (e.g. negative in 6.86), press
   Reset to default on the pH card first, then capture 6.86, 4.01 and 9.18.
 
+## [1.9.6] - 2026-11-13
+
+### Changed
+- Automatic SMS now covers **WARNING** as well as CRITICAL and EMERGENCY for each water-quality
+  sensor rule (temperature, pH, turbidity, dissolved oxygen). Each sensor category has its own
+  cooldown so one parameter does not block texts for another.
+
 ## [1.9.5] - 2026-11-13
 
 ### Changed
