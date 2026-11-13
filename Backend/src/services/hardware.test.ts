@@ -52,6 +52,9 @@ test('pump commands require bounded integer timing; non-pump commands reject tim
   assert.equal(hardwareCommandSchema.safeParse({ deviceId: 'board', action: 'WATER_EXCHANGE', durationMs: 1000 }).success, true);
   assert.equal(hardwareCommandSchema.safeParse({ deviceId: 'board', action: 'ALL_OFF', durationMs: 1000 }).success, false);
   assert.equal(hardwareCommandSchema.safeParse({ deviceId: 'board', action: 'RAW_GPIO', pin: 25 }).success, false);
+  // Automatic water exchange was removed: it can no longer be switched on, only off.
+  assert.equal(hardwareCommandSchema.safeParse({ deviceId: 'board', action: 'AUTOMATION_ON' }).success, false);
+  assert.equal(hardwareCommandSchema.safeParse({ deviceId: 'board', action: 'AUTOMATION_OFF' }).success, true);
   assert.equal(hardwareSyncSchema.safeParse({ deviceId: 'board', state: { ...state, floatWet: true } }).success, false);
   assert.equal(hardwareStateSchema.safeParse({ ...state, waterPhase: 'TRANSITION' }).success, false);
 });

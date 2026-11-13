@@ -113,8 +113,7 @@ const uint32_t PUMP_COOLDOWN_MS = 10000;
 
 // Optional measured exchange caps. 0 means Run exchange uses the dashboard
 // duration (1–600 s) for the drain and again for the fill. A non-zero value
-// can only shorten that phase. Automatic exchange sizes its own runs from the
-// tank volume and measured flows below ('exchange' command), not from these.
+// can only shorten that phase.
 const uint32_t EXCHANGE_DRAIN_MS    = 0;
 const uint32_t EXCHANGE_SETTLING_MS = 0;
 const uint32_t EXCHANGE_FILL_MS     = 0;
@@ -125,25 +124,6 @@ const uint32_t EXCHANGE_FILL_MS     = 0;
 const bool  AERATOR_POLICY_CONFIGURED = true;
 const float AERATOR_ON_ABOVE_C  = 29.5;
 const float AERATOR_OFF_BELOW_C = 28.5;
-
-// AUTOMATION_ON: automatic partial water exchange (AquaSense exchange policy).
-//   Normal   -> 0%   no draining, keep monitoring
-//   Warning  -> 5%   partial exchange, keep monitoring
-//   Critical -> 10%  urgent partial exchange + aerator on (the backend sends the SMS)
-// The level comes from the dashboard Thresholds for temperature, pH and turbidity.
-// Water depth never starts a drain. Run times come from the tank volume and the
-// measured pump flow rates set with the 'exchange' Serial Monitor command.
-const float    WARNING_EXCHANGE_PERCENT  = 5.0f;
-const float    CRITICAL_EXCHANGE_PERCENT = 10.0f;   // policy range 10-15%
-const uint32_t AUTO_EXCHANGE_CONFIRM_READS = 60;    // ~1 min of out-of-range readings first
-const uint32_t WARNING_EXCHANGE_GAP_MS  = 6UL * 3600UL * 1000UL;   // time between automatic exchanges
-const uint32_t CRITICAL_EXCHANGE_GAP_MS = 2UL * 3600UL * 1000UL;
-const float    MAX_AUTO_EXCHANGE_PERCENT_PER_DAY = 30.0f;          // never more than this in 24 h
-
-// Measured installation values for automatic exchange (saved in NVS).
-struct ExchangeSetup { float tankVolumeL, drainLpm, fillLpm; };
-const ExchangeSetup DEFAULT_EXCHANGE_SETUP = { NAN, NAN, NAN };
-const char* const EXCHANGE_NVS_KEY = "xchg1";
 
 // Feeder servo angles and timing (original feeder cycle).
 const int      SERVO_CLOSED_DEG = 25;
@@ -552,40 +532,6 @@ const char* waterPhase = "IDLE";   // IDLE DRAINING SETTLING_AFTER_DRAIN REFILLI
 char waterFault[48] = "";
 uint32_t phaseStartedAt = 0, phaseDurationMs = 0;
 bool exchangeRunning = false;
-bool waterAutomation = false;
-uint32_t lastAutoExchangeAt = 0;
-bool autoExchangeEverRan = false;
-uint32_t outOfRangeSamples = 0;
-bool automationSaved = false;              // last waterAutomation value written to NVS
-ExchangeSetup exchangeSetup = DEFAULT_EXCHANGE_SETUP;
-AlarmLevel qualityLevelNow = ALARM_NORMAL; // this read: temperature, pH, turbidity (no depth)
-AlarmLevel exchangeLevel = ALARM_NORMAL;   // the same, confirmed for ~1 min; drives exchange and aerator
-uint32_t exchangeWindowStart = 0;          // 24 h budget for automatic exchanges
-float exchangePercentInWindow = 0.0f;
-bool exchangeWindowOpen = false;
-
-bool exchangeCommissioned() {
-  const ExchangeSetup& x = exchangeSetup;
-  return isfinite(x.tankVolumeL) && x.tankVolumeL >= 1.0f && x.tankVolumeL <= 5000.0f
-    && isfinite(x.drainLpm) && x.drainLpm >= 0.05f && x.drainLpm <= 200.0f
-    && isfinite(x.fillLpm) && x.fillLpm >= 0.05f && x.fillLpm <= 200.0f;
-}
-
-// Pump run time to move `percent` of the tank volume, or 0 if outside 1 s .. hard max.
-uint32_t exchangeRunMs(float percent, float litersPerMinute) {
-  if (!exchangeCommissioned()) return 0;
-  const float ms = exchangeSetup.tankVolumeL * percent / 100.0f / litersPerMinute * 60000.0f;
-  return (ms >= 1000.0f && ms <= (float)PUMP_HARD_MAX_MS) ? (uint32_t)ms : 0;
-}
-
-void loadExchangeSetup() {
-  ExchangeSetup stored;
-  if (prefs.getBytesLength(EXCHANGE_NVS_KEY) == sizeof(stored)
-      && prefs.getBytes(EXCHANGE_NVS_KEY, &stored, sizeof(stored)) == sizeof(stored)) exchangeSetup = stored;
-}
-
-void saveExchangeSetup() { prefs.putBytes(EXCHANGE_NVS_KEY, &exchangeSetup, sizeof(exchangeSetup)); }
-
 void enterPhase(const char* phase, uint32_t durationMs) { waterPhase = phase; phaseStartedAt = millis(); phaseDurationMs = durationMs; }
 
 void pumpsOff() { setRelay(RELAY_FILL_PIN, false, fillOn); setRelay(RELAY_DRAIN_PIN, false, drainOn); }
@@ -594,7 +540,6 @@ void waterFaultLatch(const char* reason) {
   pumpsOff();
   exchangeRunning = false;
   fillToTargetActive = false;
-  waterAutomation = false;
   strlcpy(waterFault, reason, sizeof(waterFault));
   enterPhase("FAULT", 0);
   Serial.printf("[WATER] FAULT %s\n", reason);
@@ -610,7 +555,6 @@ void waterStop() {
   pumpsOff();
   exchangeRunning = false;
   fillToTargetActive = false;
-  waterAutomation = false;
   if (strcmp(waterPhase, "FAULT")) enterPhase(wasRunning ? "COOLDOWN" : "IDLE", wasRunning ? PUMP_COOLDOWN_MS : 0);
 }
 
@@ -683,9 +627,6 @@ void updateWater() {
   }
 }
 
-// The automatic exchange decision (evaluateWaterAutomation) lives after the
-// water-quality alarm below, because it uses the alarm's Normal/Warning/Critical level.
-
 
 // =====================================================
 // AERATOR / BUZZER
@@ -693,26 +634,8 @@ void updateWater() {
 
 bool aeratorAuto = false;
 bool buzzerManual = false;
-bool aeratorForcedByAlarm = false;   // Critical water quality switched the aerator on
-bool aeratorOnBeforeForce = false;
 
 void updateAerator() {
-  // Exchange policy: Critical water quality with automation on keeps the aerator
-  // running until the water recovers, then hands back to its previous mode.
-  if (waterAutomation && exchangeLevel == ALARM_ALERT && relaysEnabled) {
-    if (!aeratorForcedByAlarm) {
-      aeratorForcedByAlarm = true;
-      aeratorOnBeforeForce = aeratorOn;
-      Serial.println("[AIR] critical water quality: aerator ON");
-    }
-    if (!aeratorOn) setRelay(RELAY_AERATOR_PIN, true, aeratorOn);
-    return;
-  }
-  if (aeratorForcedByAlarm) {
-    aeratorForcedByAlarm = false;
-    Serial.println("[AIR] water quality no longer critical: aerator back to its previous mode");
-    if (!aeratorAuto && !aeratorOnBeforeForce) setRelay(RELAY_AERATOR_PIN, false, aeratorOn);
-  }
   if (!aeratorAuto) return;
   // Invalid or missing temperature turns the aerator on (fail-safe for stock).
   if (!tempS.connected || !isfinite(tempS.value)) { if (!aeratorOn) setRelay(RELAY_AERATOR_PIN, true, aeratorOn); return; }
@@ -831,7 +754,6 @@ void evaluateWaterAlarm() {
   if (tempS.connected && isfinite(tempS.value)) check("temperature", tempS.value, thresholdBands.temperature);
   if (phS.quality == SQ_STABLE) check("pH", phS.value, thresholdBands.ph);
   if (turbS.quality == SQ_STABLE) check("turbidity", turbS.value, thresholdBands.turbidity);
-  qualityLevelNow = worst;   // water quality only: this is what an exchange can fix
   // The level is meant to drop and rise during a water exchange, so depth is not judged then.
   if (isfinite(tankDepthCm) && !waterBusy() && !fillOn && !drainOn) check("depth", tankDepthCm, thresholdBands.waterDepth);
 
@@ -843,103 +765,6 @@ void evaluateWaterAlarm() {
     Serial.printf("[ALARM] %s%s%s\n", alarmLevelName(alarmLevel), reason[0] ? ": " : "", reason);
   }
   if (worst == alarmLevel) strlcpy(alarmReason, reason, sizeof(alarmReason));
-}
-
-// Automation needs either the exchange setup (volume + flows) or a calibrated
-// tank depth for the low-water fill; each part skips itself when it lacks its own.
-bool automationPossible() {
-  return exchangeCommissioned() || (tankMountCalibrated() && tankTargetConfigured());
-}
-
-// Low water (depth below the Thresholds normal range, Warning or Alert) is fixed
-// by filling to the calibrated target depth, never by draining.
-const uint32_t AUTO_FILL_CONFIRM_READS = 60;               // ~1 min below normal first
-const uint32_t AUTO_FILL_GAP_MS = 30UL * 60UL * 1000UL;    // at most one automatic fill per 30 min
-uint32_t lowDepthReads = 0;
-uint32_t lastAutoFillAt = 0;
-bool autoFillEverRan = false;
-
-// Returns true when it started (or is waiting to start) a low-water fill, so the
-// exchange below does not drain a tank that is already low.
-bool evaluateLowWaterFill(uint32_t now) {
-  const float normalMin = thresholdBands.waterDepth.normalMin;
-  const bool depthKnown = tankMountCalibrated() && tankTargetConfigured() && isfinite(tankDepthCm) && isfinite(normalMin);
-  const bool low = depthKnown && tankDepthCm < normalMin;
-  if (!low) { lowDepthReads = 0; return false; }
-  if (lowDepthReads < AUTO_FILL_CONFIRM_READS) lowDepthReads++;
-  if (lowDepthReads < AUTO_FILL_CONFIRM_READS) return true;
-  if (autoFillEverRan && now - lastAutoFillAt < AUTO_FILL_GAP_MS) return true;
-
-  static uint32_t lastFillSkipLogAt = 0;
-  const float stopAt = tankCal.targetDepthCm - (isfinite(tankCal.stopHysteresisCm) ? tankCal.stopHysteresisCm : 0.2f);
-  if (stopAt <= normalMin) {
-    if (!lastFillSkipLogAt || now - lastFillSkipLogAt >= 600000UL) {
-      lastFillSkipLogAt = now | 1;
-      Serial.printf("[WATER] low-water fill skipped: target %.2f cm is not above the normal minimum %.2f cm\n",
-                    tankCal.targetDepthCm, normalMin);
-    }
-    return true;
-  }
-  lastAutoFillAt = now;
-  autoFillEverRan = true;
-  lowDepthReads = 0;
-  Serial.printf("[WATER] %s: water depth %.2f cm is below normal (%.2f cm): filling to target %.2f cm\n",
-                classifyBand(tankDepthCm, thresholdBands.waterDepth) == ALARM_ALERT ? "CRITICAL" : "WARNING",
-                tankDepthCm, normalMin, tankCal.targetDepthCm);
-  startFillToTarget(PUMP_HARD_MAX_MS);   // stops at target, on a bad echo, or at the 10 min ceiling
-  return true;
-}
-
-// Automatic water policy. Runs after evaluateWaterAlarm() on every sensor read:
-// first a low-water fill, then the partial exchange for water quality.
-void evaluateWaterAutomation() {
-  // Confirm the water-quality level over ~1 min so a short spike never pumps.
-  if (qualityLevelNow == ALARM_NORMAL) { outOfRangeSamples = 0; exchangeLevel = ALARM_NORMAL; }
-  else if (++outOfRangeSamples >= AUTO_EXCHANGE_CONFIRM_READS) {
-    outOfRangeSamples = AUTO_EXCHANGE_CONFIRM_READS;
-    exchangeLevel = qualityLevelNow;
-  }
-
-  if (!waterAutomation) return;
-  if (!relaysEnabled || waterBusy() || fillOn || drainOn || !strcmp(waterPhase, "FAULT")) return;
-  // Pumps start only while the dashboard can see them and stop them.
-  if (WiFi.status() != WL_CONNECTED || !mqtt.connected()) return;
-
-  const uint32_t now = millis();
-  if (evaluateLowWaterFill(now)) return;
-  if (exchangeLevel == ALARM_NORMAL) return;
-
-  const bool critical = exchangeLevel == ALARM_ALERT;
-  if (autoExchangeEverRan && now - lastAutoExchangeAt < (critical ? CRITICAL_EXCHANGE_GAP_MS : WARNING_EXCHANGE_GAP_MS)) return;
-  if (exchangeWindowOpen && now - exchangeWindowStart >= 24UL * 3600UL * 1000UL) {
-    exchangeWindowOpen = false;
-    exchangePercentInWindow = 0.0f;
-  }
-
-  const float percent = critical ? CRITICAL_EXCHANGE_PERCENT : WARNING_EXCHANGE_PERCENT;
-  static uint32_t lastSkipLogAt = 0;
-  auto skip = [&](const char* why) {
-    if (lastSkipLogAt && now - lastSkipLogAt < 600000UL) return;   // log at most every 10 min
-    lastSkipLogAt = now | 1;
-    Serial.printf("[WATER] automatic %s exchange skipped: %s\n", critical ? "critical" : "warning", why);
-  };
-  if (exchangePercentInWindow + percent > MAX_AUTO_EXCHANGE_PERCENT_PER_DAY + 0.01f) { skip("24 h exchange limit reached"); return; }
-  if (!exchangeCommissioned()) { skip("tank volume and pump flow not set (type 'exchange')"); return; }
-  if (isfinite(tankDepthCm) && isfinite(thresholdBands.waterDepth.normalMin) && tankDepthCm < thresholdBands.waterDepth.normalMin) {
-    skip("water level is already below normal"); return;
-  }
-  const uint32_t drainMs = exchangeRunMs(percent, exchangeSetup.drainLpm);
-  const uint32_t fillMs = exchangeRunMs(percent, exchangeSetup.fillLpm);
-  if (!drainMs || !fillMs) { skip("pump run time would be under 1 s or over 10 min; check 'exchange'"); return; }
-
-  lastAutoExchangeAt = now;
-  autoExchangeEverRan = true;
-  if (!exchangeWindowOpen) { exchangeWindowOpen = true; exchangeWindowStart = now; }
-  exchangePercentInWindow += percent;
-  Serial.printf("[WATER] %s (%s): automatic %.0f%% exchange, %.2f L: drain %.1f s, fill %.1f s\n",
-                critical ? "CRITICAL" : "WARNING", alarmReason[0] ? alarmReason : "water quality", percent,
-                exchangeSetup.tankVolumeL * percent / 100.0f, drainMs / 1000.0f, fillMs / 1000.0f);
-  startExchange(drainMs, fillMs);
 }
 
 bool buzzerSounding() { return buzzerManual || !strcmp(waterPhase, "FAULT"); }
@@ -1193,8 +1018,7 @@ void readSensors() {
   readAnalogSensors();
   readTemperature();
   readUltrasonic();
-  evaluateWaterAlarm();        // sets the Normal / Warning / Alert level first
-  evaluateWaterAutomation();   // then the exchange policy acts on it
+  evaluateWaterAlarm();        // Normal / Warning / Alert for the buzzer and dashboard
 }
 
 
@@ -1314,7 +1138,7 @@ void fillState(JsonObject s) {
   s["aeratorAuto"] = aeratorAuto;
   s["feederBusy"] = feederBusy();
   s["buzzer"] = buzzerSounding();
-  s["automation"] = waterAutomation;
+  s["automation"] = false;   // automatic water exchange was removed; kept for the state schema
   s["waterPhase"] = waterPhase;
   s["fault"] = waterFault;
   s["relaysReady"] = relaysEnabled;
@@ -1447,7 +1271,7 @@ const char* executeCommand(const PendingCommand& c) {
   }
 
   if (a == "ALL_OFF") {
-    pumpsOff(); exchangeRunning = false; fillToTargetActive = false; waterAutomation = false;
+    pumpsOff(); exchangeRunning = false; fillToTargetActive = false;
     if (strcmp(waterPhase, "FAULT")) enterPhase("IDLE", 0);
     aeratorAuto = false; setRelay(RELAY_AERATOR_PIN, false, aeratorOn);
     buzzerManual = false; feederStop(); suppressFeedingThisMinute();
@@ -1477,17 +1301,13 @@ const char* executeCommand(const PendingCommand& c) {
     aeratorAuto = true; updateAerator(); return "accepted";
   }
 
-  if (a == "AUTOMATION_ON") {
-    if (relayGate()) return relayGate();
-    if (!automationPossible()) return "rejected_water_policy_not_configured";
-    waterAutomation = true; return "accepted";
-  }
-  if (a == "AUTOMATION_OFF") { waterAutomation = false; return "accepted"; }
+  // Automatic water exchange was removed: pumps only run when someone presses a button.
+  if (a == "AUTOMATION_ON") return "rejected_unsupported_action";
+  if (a == "AUTOMATION_OFF") return "accepted";
 
   if (a == "FILL" || a == "DRAIN" || a == "WATER_EXCHANGE" || a == "FILL_TO_TARGET") {
     if (!strcmp(waterPhase, "FAULT")) return "rejected_fault_latched";
     if (waterBusy()) return "rejected_water_busy";
-    // Automation stays on: it never starts while this manual run or its cooldown is active.
     if (a == "WATER_EXCHANGE") {
       const uint32_t drainMs = cappedRunMs(c.durationMs, EXCHANGE_DRAIN_MS);
       const uint32_t fillMs = cappedRunMs(c.durationMs, EXCHANGE_FILL_MS);
@@ -1909,12 +1729,6 @@ void printHelp() {
   Serial.println("feed                   run one feed cycle locally (no dashboard needed)");
   Serial.println("selftest               run the boot self-test now (relays, servo, buzzer)");
   Serial.println("selftest on|off        run it at every power-up or not (saved)");
-  Serial.println("==== Automatic water exchange ====");
-  Serial.println("exchange               show volume, pump flows, run times and state");
-  Serial.println("exchange volume <L>    tank water volume in litres (saved)");
-  Serial.println("exchange drain <L/min> measured drain pump flow (saved)");
-  Serial.println("exchange fill <L/min>  measured fill pump flow (saved)");
-  Serial.println("exchange on|off        automatic exchange: Warning 5%, Critical 10% + aerator");
   Serial.println("==== Water alarm (buzzer) ====");
   Serial.println("alarm                  show Normal/Warning/Alert state and the limits in use");
   Serial.println("alarm off|on           silence / restore the beeps (off lasts until a restart)");
@@ -2249,6 +2063,15 @@ void calibrate(const String& sensor, float reference, char* result, size_t resul
         setResult(result, resultSize, "rejected_same_input"); return;
       }
       // Dirtier water raises both the curve and the reference, so the gain must be positive.
+      // A negative gain means the cloudier standard gave an equal or higher (clearer)
+      // voltage than the cleaner one: the clean water was not clean, or light / bubbles
+      // reached the sensor. Say so instead of a generic "not plausible".
+      if (isfinite(slope) && slope <= 0.0f) {
+        for (uint8_t i = 0; i < turbPts; i++) Serial.printf("  point %u: %.1f NTU at Vsensor %.4f V\n", i + 1, turbPtY[i], turbPtX[i]);
+        Serial.println("Rejected: the cloudier standard read as clear or clearer than the cleaner one (SEN0189 voltage falls as water gets cloudier). Use Clear points, recapture 0 NTU in fresh clean water in a dark container, then the standard. Previous calibration kept.");
+        turbPts = 0;
+        setResult(result, resultSize, "rejected_turb_inverted"); return;
+      }
       if (!isfinite(slope) || !isfinite(offset) || slope < 0.05f || slope > 20.0f || fabsf(offset) > 5000.0f) {
         Serial.println("Rejected: turbidity fit is not plausible. Check that the standards were not swapped. Previous calibration kept.");
         setResult(result, resultSize, "rejected_implausible_slope"); return;
@@ -2597,44 +2420,7 @@ void handleSerialCommand(String line) {
     return;
   }
   if (cmd == "exchange") {
-    const int sp = rest.indexOf(' ');
-    const String what = sp < 0 ? rest : rest.substring(0, sp);
-    const String arg = sp < 0 ? "" : rest.substring(sp + 1);
-    if (what == "on" || what == "off") {
-      if (what == "on" && !automationPossible()) { Serial.println("Calibrate the tank depth (empty + target), or set volume, drain and fill first."); return; }
-      if (what == "on" && !relaysEnabled) { Serial.println("Relays are disabled. Check them with 'relay test', then 'relay enable'."); return; }
-      waterAutomation = what == "on";
-      Serial.printf("Automatic water exchange %s.\n", waterAutomation ? "ON" : "off");
-      return;
-    }
-    if (what == "volume" || what == "drain" || what == "fill") {
-      const float v = arg.toFloat();
-      const bool ok = what == "volume" ? (v >= 1.0f && v <= 5000.0f) : (v >= 0.05f && v <= 200.0f);
-      if (!ok) { Serial.println(what == "volume" ? "Tank volume must be 1-5000 litres." : "Flow must be 0.05-200 litres per minute."); return; }
-      if (what == "volume") exchangeSetup.tankVolumeL = v;
-      else if (what == "drain") exchangeSetup.drainLpm = v;
-      else exchangeSetup.fillLpm = v;
-      saveExchangeSetup();
-      Serial.println("Saved.");
-    } else if (what.length()) {
-      Serial.println("Use: exchange | exchange volume <L> | exchange drain <L/min> | exchange fill <L/min> | exchange on|off");
-      return;
-    }
-    auto shown = [](float v) { return isfinite(v) ? String(v, 2) : String("not set"); };
-    Serial.printf("Tank volume  : %s L\n", shown(exchangeSetup.tankVolumeL).c_str());
-    Serial.printf("Drain flow   : %s L/min\n", shown(exchangeSetup.drainLpm).c_str());
-    Serial.printf("Fill flow    : %s L/min\n", shown(exchangeSetup.fillLpm).c_str());
-    const float pcts[] = {WARNING_EXCHANGE_PERCENT, CRITICAL_EXCHANGE_PERCENT};
-    const char* names[] = {"Warning ", "Critical"};
-    for (int i = 0; i < 2; i++) {
-      const uint32_t d = exchangeRunMs(pcts[i], exchangeSetup.drainLpm), f = exchangeRunMs(pcts[i], exchangeSetup.fillLpm);
-      if (d && f) Serial.printf("%s %4.1f%% : %.2f L, drain %.1f s, fill %.1f s\n", names[i], pcts[i],
-                                exchangeSetup.tankVolumeL * pcts[i] / 100.0f, d / 1000.0f, f / 1000.0f);
-      else Serial.printf("%s %4.1f%% : run time not usable (needs 1 s to 10 min per pump)\n", names[i], pcts[i]);
-    }
-    Serial.printf("Automation   : %s; water quality %s (confirmed %s)\n", waterAutomation ? "ON" : "off",
-                  alarmLevelName(qualityLevelNow), alarmLevelName(exchangeLevel));
-    if (exchangeWindowOpen) Serial.printf("Last 24 h    : %.0f%% of %.0f%% allowed\n", exchangePercentInWindow, MAX_AUTO_EXCHANGE_PERCENT_PER_DAY);
+    Serial.println("Automatic water exchange was removed. Use Drain, Fill or Run exchange on the dashboard.");
     return;
   }
   if (cmd == "alarm") {
@@ -2941,9 +2727,7 @@ void setup() {
   loadCalibration();
   printCalibration();
   loadThresholdBands();
-  loadExchangeSetup();
-  waterAutomation = automationSaved = prefs.getBool("autoX", false) && automationPossible();
-  if (waterAutomation) Serial.println("[WATER] automatic water exchange is ON");
+  prefs.remove("autoX");   // automatic water exchange was removed; drop its saved on/off flag
   Serial.println("Type 'help' for sensor calibration commands.");
 
   snprintf(bootId, sizeof(bootId), "esp-%08lx", (unsigned long)esp_random());
@@ -3015,10 +2799,7 @@ void loop() {
     // Pumps never run unattended without a control link. The aerator keeps its
     // state so the stock is not left without air during a network blip.
     Serial.println("[WATER] link lost: stopping pumps");
-    const bool keepAutomation = waterAutomation;
     waterStop();
-    // Automation stays on: it only starts pumps again once the link is back.
-    waterAutomation = keepAutomation;
   }
   networkWasUp = networkUp;
 
@@ -3026,11 +2807,6 @@ void loop() {
   if (now - lastFrame >= FRAME_INTERVAL_MS) { lastFrame = now; publishFrame(); }
 
   processCommands();
-  if (waterAutomation != automationSaved) {
-    // Automatic exchange survives a restart; Stop pumps, All off or a fault turn it off.
-    automationSaved = waterAutomation;
-    prefs.putBool("autoX", waterAutomation);
-  }
   updateFeeder();
   updateWater();
   updateAerator();

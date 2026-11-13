@@ -27,6 +27,7 @@ const deviceResultText: Record<string, string> = {
   rejected_same_input: 'The references gave almost the same probe voltage. Check the probe, buffers, and wiring — a stuck ~3.1 V reading usually means the ADC is open or at the rail.',
   rejected_implausible_slope: 'The fitted line is not plausible for this sensor. Check the solutions and wiring, then clear the points and try again.',
   rejected_turb_voltage_low: 'Turbidity voltage is too low. Power the module from 5 V, set its switch to Analog (A), and check the wire to GPIO34.',
+  rejected_turb_inverted: 'The cloudier standard read as clear as (or clearer than) your 0 NTU water, so the points were cleared. Recapture 0 NTU in fresh clean water in a dark cup with no bubbles on the sensor, then capture the standard in the same cup.',
   rejected_turb_curve: 'Turbidity voltage could not be converted. Check the sensor power and wiring, then try again.',
   rejected_bad_param: 'The device did not understand the calibration request.',
   rejected_divider_ratio_unset: 'Set the measured voltage-divider ratio on the ESP32 Serial Monitor first (afe ph|orp|turb <ratio>).',

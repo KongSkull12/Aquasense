@@ -241,7 +241,7 @@ const DashboardCalibrationPage: React.FC = () => {
               <ol className="list-decimal space-y-1 pl-4 text-[13px] leading-relaxed text-ink-2">
                 <li>Drain the tub so the sensor sees the bottom (or a known empty reference), wait for a steady distance, then capture empty.</li>
                 <li>Set the desired water column (for crayfish, typically 3 cm). Depth = mount height − distance.</li>
-                <li>On Water change, Normal/Warning/Alert follow Thresholds; Fill to target restores lost depth when you press it, or by itself when automatic exchange is on.</li>
+                <li>On Water change, Normal/Warning/Alert follow Thresholds; Fill to target restores lost depth when you press it.</li>
               </ol>
               <div className="flex flex-wrap gap-2">
                 <button type="button" disabled={!deviceId || !fresh || busy} onClick={() => void send('tank', 'CAL_CAPTURE', 'tank:empty')} className="btn-primary">Capture empty (mount)</button>
