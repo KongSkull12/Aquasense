@@ -110,6 +110,9 @@ const bool DEFAULT_RELAY_ACTIVE_LOW = true;    // most 5 V relay boards switch o
 // Manual FILL / DRAIN: the dashboard sends a duration (1–600 s); this caps it.
 const uint32_t PUMP_HARD_MAX_MS = 600000;   // 10 minutes hard safety ceiling
 const uint32_t PUMP_COOLDOWN_MS = 10000;
+// PubSubClient can report disconnected for a loop or two during a keep-alive.
+// Do not cut a pump run on that blip; only stop after the link stays down.
+const uint32_t LINK_LOSS_GRACE_MS = 3000;
 
 // Optional measured exchange caps. 0 means Run exchange uses the dashboard
 // duration (1–600 s) for the drain and again for the fill. A non-zero value
@@ -558,8 +561,22 @@ void waterStop() {
   if (strcmp(waterPhase, "FAULT")) enterPhase(wasRunning ? "COOLDOWN" : "IDLE", wasRunning ? PUMP_COOLDOWN_MS : 0);
 }
 
-void startDrain(uint32_t ms) { fillToTargetActive = false; setRelay(RELAY_FILL_PIN, false, fillOn); setRelay(RELAY_DRAIN_PIN, true, drainOn); enterPhase("DRAINING", ms); }
-void startFill(uint32_t ms)  { fillToTargetActive = false; setRelay(RELAY_DRAIN_PIN, false, drainOn); setRelay(RELAY_FILL_PIN, true, fillOn); enterPhase("REFILLING", ms); }
+void startDrain(uint32_t ms) {
+  fillToTargetActive = false;
+  setRelay(RELAY_FILL_PIN, false, fillOn);
+  setRelay(RELAY_DRAIN_PIN, true, drainOn);
+  enterPhase("DRAINING", ms);
+  Serial.printf("[WATER] drain ON for %lu ms (GPIO%d %s)\n",
+                (unsigned long)ms, RELAY_DRAIN_PIN, drainOn ? "driven" : "blocked: relays disabled");
+}
+void startFill(uint32_t ms)  {
+  fillToTargetActive = false;
+  setRelay(RELAY_DRAIN_PIN, false, drainOn);
+  setRelay(RELAY_FILL_PIN, true, fillOn);
+  enterPhase("REFILLING", ms);
+  Serial.printf("[WATER] fill ON for %lu ms (GPIO%d %s)\n",
+                (unsigned long)ms, RELAY_FILL_PIN, fillOn ? "driven" : "blocked: relays disabled");
+}
 
 // User-started closed-loop fill: stops at target depth, bad echo, or hard max.
 void startFillToTarget(uint32_t maxMs) {
@@ -622,8 +639,12 @@ void updateWater() {
     fillToTargetActive = false;
     enterPhase("COOLDOWN", PUMP_COOLDOWN_MS);
   } else if (!strcmp(waterPhase, "COOLDOWN")) {
-    enterPhase(exchangeRunning ? "COMPLETE" : "IDLE", 0);
+    // Exchange used to linger in COMPLETE forever (duration 0 never advances).
+    // Always return to IDLE so the next Drain / Fill is not blocked by a stale phase.
     exchangeRunning = false;
+    enterPhase("IDLE", 0);
+  } else if (!strcmp(waterPhase, "COMPLETE")) {
+    enterPhase("IDLE", 0);
   }
 }
 
@@ -1686,6 +1707,10 @@ void printStatus() {
   Serial.printf("WiFi %s  MQTT %s  uptime %lu ms\n",
                 WiFi.status() == WL_CONNECTED ? "OK" : "down",
                 mqtt.connected() ? "OK" : "down", (unsigned long)millis());
+  Serial.printf("Water phase : %s  fill=%s  drain=%s  relays=%s  remaining=%lu ms\n",
+                waterPhase, fillOn ? "ON" : "off", drainOn ? "ON" : "off",
+                relaysEnabled ? "ENABLED" : "disabled", (unsigned long)phaseRemainingMs());
+  if (waterFault[0]) Serial.printf("Water fault : %s\n", waterFault);
   Serial.printf("pH   connected=%d quality=%s value=%s\n", phS.connected, qualityName(phS.quality),
                 phS.connected && isfinite(phS.value) ? String(phS.value, 2).c_str() : "--");
   Serial.printf("ORP  connected=%d quality=%s value=%s\n", orpS.connected, qualityName(orpS.quality),
@@ -1696,6 +1721,7 @@ void printStatus() {
                 tempS.connected && isfinite(tempS.value) ? String(tempS.value, 2).c_str() : "--", tempRawC);
   printSignalHints();
   printCalibration();
+  printRelayStatus();
 }
 
 void printHelp() {
@@ -1725,6 +1751,9 @@ void printHelp() {
   Serial.println("relay mode low|high    set trigger type (saved). Use 'high' if loads run while 'off'");
   Serial.println("relay aerator|fill|drain on|off   switch one relay (pumps auto-stop after 10 s)");
   Serial.println("relay enable|disable   allow / block dashboard relay commands (saved)");
+  Serial.println("drain <seconds>        same path as dashboard Drain (1–600 s)");
+  Serial.println("fill <seconds>         same path as dashboard Fill (1–600 s)");
+  Serial.println("stop | water stop      stop pumps / clear a pump run (same as Stop pumps)");
   Serial.println("servo <degrees>        move the feeder servo, e.g. servo 140 then servo 25");
   Serial.println("feed                   run one feed cycle locally (no dashboard needed)");
   Serial.println("selftest               run the boot self-test now (relays, servo, buzzer)");
@@ -1806,17 +1835,24 @@ void handleRelayCommand(String rest) {
   if (pin != RELAY_AERATOR_PIN && on) {
     if (fillOn || drainOn || waterBusy()) { Serial.println("A pump run is already active."); return; }
     writeRelay(pin == RELAY_FILL_PIN ? RELAY_DRAIN_PIN : RELAY_FILL_PIN, false);   // never both pumps
+    if (pin == RELAY_FILL_PIN) fillOn = false; else drainOn = false;
     benchPumpPin = pin; benchPumpOffAt = millis() + BENCH_PUMP_MAX_MS;
   }
   if (pin == benchPumpPin && !on) benchPumpPin = -1;
   writeRelay(pin, on);
+  // Keep logical state in sync so a brief MQTT blip (link-loss guard) and
+  // restoreRelayOutputs() do not disagree with the pin level.
   if (pin == RELAY_AERATOR_PIN) aeratorOn = on && relaysEnabled;
+  else if (pin == RELAY_FILL_PIN) fillOn = on;
+  else if (pin == RELAY_DRAIN_PIN) drainOn = on;
   Serial.printf("%s relay %s%s\n", which.c_str(), on ? "ON" : "off", (pin != RELAY_AERATOR_PIN && on) ? " (auto-off in 10 s)" : "");
 }
 
 void serviceBenchPump() {
   if (benchPumpPin >= 0 && (int32_t)(millis() - benchPumpOffAt) >= 0) {
     writeRelay(benchPumpPin, false);
+    if (benchPumpPin == RELAY_FILL_PIN) fillOn = false;
+    else if (benchPumpPin == RELAY_DRAIN_PIN) drainOn = false;
     Serial.printf("Bench pump on GPIO%d auto-stopped.\n", benchPumpPin);
     benchPumpPin = -1;
   }
@@ -2248,6 +2284,24 @@ void handleSerialCommand(String line) {
   if (cmd == "help" || cmd == "?") { printHelp(); return; }
   if (cmd == "status") { printStatus(); return; }
   if (cmd == "show" || (cmd == "cal" && rest == "show")) { printStatus(); return; }
+  if (cmd == "stop" || (cmd == "water" && rest == "stop")) {
+    waterStop();
+    Serial.printf("Pumps stopped. Water phase %s.\n", waterPhase);
+    return;
+  }
+  if (cmd == "drain" || cmd == "fill") {
+    if (!relaysEnabled) { Serial.println("Relays are disabled. Type: relay enable"); return; }
+    if (!strcmp(waterPhase, "FAULT")) { Serial.println("A water fault is latched. Clear it from the dashboard first."); return; }
+    if (waterBusy() || fillOn || drainOn) { Serial.println("A pump run is already active. Type: stop"); return; }
+    const uint32_t seconds = rest.toInt();
+    if (seconds < 1 || seconds > (PUMP_HARD_MAX_MS / 1000UL)) {
+      Serial.printf("Use: %s <seconds>  (1–%lu)\n", cmd.c_str(), (unsigned long)(PUMP_HARD_MAX_MS / 1000UL));
+      return;
+    }
+    if (cmd == "drain") startDrain(seconds * 1000UL);
+    else startFill(seconds * 1000UL);
+    return;
+  }
   if (cmd == "cal" && rest == "reset confirm") {
     for (const char* s : {"ph", "orp", "turb", "temp", "tank"}) resetCalibration(s);
     saveCalibration(); saveTankCalibration();
@@ -2708,6 +2762,7 @@ void runSelfTest() {
 
 uint32_t lastSensor = 0, lastFrame = 0, lastLcd = 0, lastPage = 0, lastSchedSync = 0, lastHeartbeat = 0, lastSchedCheck = 0;
 bool networkWasUp = false;
+uint32_t linkDownSince = 0;   // millis when Wi-Fi/MQTT first dropped while we cared
 
 void setup() {
   buzzerQuiet();   // first: the active buzzer stays off until a beep is requested
@@ -2795,13 +2850,23 @@ void loop() {
   serviceBenchPump();
 
   const bool networkUp = WiFi.status() == WL_CONNECTED && mqtt.connected();
-  if (networkWasUp && !networkUp && (fillOn || drainOn || exchangeRunning)) {
-    // Pumps never run unattended without a control link. The aerator keeps its
-    // state so the stock is not left without air during a network blip.
-    Serial.println("[WATER] link lost: stopping pumps");
-    waterStop();
+  if (networkUp) {
+    linkDownSince = 0;
+    networkWasUp = true;
+  } else if (networkWasUp && (fillOn || drainOn || exchangeRunning)) {
+    // Pumps never run unattended without a control link, but a one-loop MQTT
+    // flicker used to abort Drain/Fill immediately. Wait out a short grace.
+    if (!linkDownSince) linkDownSince = now ? now : 1;
+    if ((int32_t)(now - linkDownSince) >= (int32_t)LINK_LOSS_GRACE_MS) {
+      Serial.println("[WATER] link lost: stopping pumps");
+      waterStop();
+      networkWasUp = false;
+      linkDownSince = 0;
+    }
+  } else {
+    networkWasUp = false;
+    linkDownSince = 0;
   }
-  networkWasUp = networkUp;
 
   if (now - lastSensor >= SENSOR_INTERVAL_MS) { lastSensor = now; readSensors(); }
   if (now - lastFrame >= FRAME_INTERVAL_MS) { lastFrame = now; publishFrame(); }

@@ -226,7 +226,12 @@ const WaterChangePage: React.FC = () => {
             { label: 'Last report', value: hardware?.receivedAt ? new Date(hardware.receivedAt).toLocaleString() : 'Not yet reported' },
           ]} />
           {state?.fault && <Notice tone="alarm" title="Device fault">{state.fault}</Notice>}
-          <p className="text-[13px] leading-relaxed text-ink-3">The device firmware owns automatic water-change decisions. Predictive risk on this page does not start pumps.</p>
+          {fresh && state?.drainPump && (
+            <Notice tone="ok" title="Drain relay is ON">
+              The device is driving the drain output. If water is not moving, check the drain pump power lead on relay NO (not NC), the tube, and that the tub still has water to move.
+            </Notice>
+          )}
+          <p className="text-[13px] leading-relaxed text-ink-3">Pumps run only while you hold a command on this page. Predictive risk never starts pumps.</p>
         </div>
       </Panel>
 
@@ -292,6 +297,9 @@ const WaterChangePage: React.FC = () => {
           </div>
           {!fresh && <Notice tone="info">Drain, fill and exchange stay disabled until the device reports fresh state. Stop is always available.</Notice>}
           {pumpBusy && <Notice tone="info">{state ? phaseLabel(state.waterPhase, trackedCommand?.action === 'FILL_TO_TARGET') : 'A pump run'} is in progress, so Drain, Fill and Run exchange are paused. {busyReason}</Notice>}
+          {fresh && depthLive && tank!.depthCm! < 1 && (
+            <Notice tone="info">Live depth is under 1 cm. Drain can still switch the relay, but there may be little or no water left to move.</Notice>
+          )}
           {!depthLive && fresh && <Notice tone="info">Fill to target needs a calibrated mount height (Calibration → Tank) and a live depth reading.</Notice>}
           <div aria-live="polite">
             {pending ? <StateMark state="info">Submitting command…</StateMark> : <StateMark state={commandStatus.state}>{commandStatus.text}</StateMark>}

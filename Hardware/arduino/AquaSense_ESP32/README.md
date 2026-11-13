@@ -132,6 +132,10 @@ Drain, Fill, Run exchange or Fill to target on the dashboard, and a new run is r
 while another run or its 10 s cooldown is active. Water-quality levels still drive the
 buzzer and the SMS alerts. The old `exchange` Serial command now only prints this notice.
 
+From Serial Monitor you can also run the same timed path locally: `drain 30`, `fill 30`,
+`stop`. A brief MQTT blip no longer aborts a pump run; the link must stay down for about
+3 s before pumps stop.
+
 ## Honest limits
 
 - Sensor conversions use the calibration saved on the device. The dashboard classifies
