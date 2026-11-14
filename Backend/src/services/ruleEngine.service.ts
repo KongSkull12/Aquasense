@@ -1,5 +1,5 @@
 import { refreshHealth, type HealthSummary } from './sensorHealth';
-import { classifyBand, DEFAULT_THRESHOLD_BANDS, type ThresholdBands } from './thresholdBands';
+import { classifyBand, DEFAULT_THRESHOLD_BANDS, type ParameterBand, type ThresholdBands } from './thresholdBands';
 export type AlertSeverity = 'INFO' | 'WARNING' | 'CRITICAL' | 'EMERGENCY';
 export type AlertCategory =
   | 'TEMP_HIGH'
@@ -38,7 +38,7 @@ export interface RuleEngineInput {
   orp?: number | null;
   sensorHealth?: HealthSummary;
   turbidityUnit?: string;
-  /** Saved dashboard Thresholds (ORP alert cuts). Defaults used when omitted. */
+  /** Saved dashboard Thresholds — same Normal/Warning/Alert cuts as Overview. */
   thresholdBands?: ThresholdBands;
 }
 
@@ -58,8 +58,8 @@ export const SENSOR_ALERT_CATALOG: SensorAlertCatalogEntry[] = [
     unit: 'C',
     autoSms: true,
     triggers: [
-      { severity: 'WARNING', when: 'Below ideal range', limit: '< 26' },
-      { severity: 'CRITICAL', when: 'Critically low', limit: '< 15' },
+      { severity: 'WARNING', when: 'Below Thresholds normal', limit: 'Thresholds normal min' },
+      { severity: 'CRITICAL', when: 'Below Thresholds alert', limit: 'Thresholds alert min' },
       { severity: 'EMERGENCY', when: 'Dangerously low', limit: '< 10' },
     ],
   },
@@ -69,8 +69,8 @@ export const SENSOR_ALERT_CATALOG: SensorAlertCatalogEntry[] = [
     unit: 'C',
     autoSms: true,
     triggers: [
-      { severity: 'WARNING', when: 'Above ideal range', limit: '> 29' },
-      { severity: 'CRITICAL', when: 'Critically high', limit: '> 32' },
+      { severity: 'WARNING', when: 'Above Thresholds normal', limit: 'Thresholds normal max' },
+      { severity: 'CRITICAL', when: 'Above Thresholds alert', limit: 'Thresholds alert max' },
       { severity: 'EMERGENCY', when: 'Dangerously high', limit: '> 35' },
     ],
   },
@@ -80,8 +80,8 @@ export const SENSOR_ALERT_CATALOG: SensorAlertCatalogEntry[] = [
     unit: 'pH',
     autoSms: true,
     triggers: [
-      { severity: 'WARNING', when: 'Below ideal range', limit: '< 6.5' },
-      { severity: 'CRITICAL', when: 'Critically low', limit: '< 6.0' },
+      { severity: 'WARNING', when: 'Below Thresholds normal', limit: 'Thresholds normal min' },
+      { severity: 'CRITICAL', when: 'Below Thresholds alert', limit: 'Thresholds alert min' },
     ],
   },
   {
@@ -90,8 +90,8 @@ export const SENSOR_ALERT_CATALOG: SensorAlertCatalogEntry[] = [
     unit: 'pH',
     autoSms: true,
     triggers: [
-      { severity: 'WARNING', when: 'Above ideal range', limit: '> 8.2' },
-      { severity: 'CRITICAL', when: 'Critically high', limit: '> 8.5' },
+      { severity: 'WARNING', when: 'Above Thresholds normal', limit: 'Thresholds normal max' },
+      { severity: 'CRITICAL', when: 'Above Thresholds alert', limit: 'Thresholds alert max' },
     ],
   },
   {
@@ -100,8 +100,8 @@ export const SENSOR_ALERT_CATALOG: SensorAlertCatalogEntry[] = [
     unit: 'NTU',
     autoSms: true,
     triggers: [
-      { severity: 'WARNING', when: 'Above ideal range', limit: '> 70' },
-      { severity: 'CRITICAL', when: 'Critically high', limit: '> 100' },
+      { severity: 'WARNING', when: 'Above Thresholds normal', limit: 'Thresholds normal max' },
+      { severity: 'CRITICAL', when: 'Above Thresholds alert', limit: 'Thresholds alert max' },
     ],
   },
   {
@@ -121,8 +121,8 @@ export const SENSOR_ALERT_CATALOG: SensorAlertCatalogEntry[] = [
     unit: 'mV',
     autoSms: true,
     triggers: [
-      { severity: 'WARNING', when: 'Below normal range', limit: 'Thresholds normal min' },
-      { severity: 'CRITICAL', when: 'Below alert limit', limit: 'Thresholds alert min' },
+      { severity: 'WARNING', when: 'Below Thresholds normal', limit: 'Thresholds normal min' },
+      { severity: 'CRITICAL', when: 'Below Thresholds alert', limit: 'Thresholds alert min' },
     ],
   },
   {
@@ -131,11 +131,56 @@ export const SENSOR_ALERT_CATALOG: SensorAlertCatalogEntry[] = [
     unit: 'mV',
     autoSms: true,
     triggers: [
-      { severity: 'WARNING', when: 'Above normal range', limit: 'Thresholds normal max' },
-      { severity: 'CRITICAL', when: 'Above alert limit', limit: 'Thresholds alert max' },
+      { severity: 'WARNING', when: 'Above Thresholds normal', limit: 'Thresholds normal max' },
+      { severity: 'CRITICAL', when: 'Above Thresholds alert', limit: 'Thresholds alert max' },
     ],
   },
 ];
+
+const bandIsHigh = (value: number, band: ParameterBand): boolean => {
+  if (band.normalMin == null && band.alertMin == null) return true; // high-only (turbidity)
+  if (band.alertMax != null && value > band.alertMax) return true;
+  if (band.normalMax != null && value > band.normalMax) return true;
+  return false;
+};
+
+const bandThresholdValue = (value: number, band: ParameterBand, level: 'warning' | 'alert', high: boolean): number => {
+  if (high) {
+    return level === 'alert'
+      ? (band.alertMax ?? band.normalMax ?? value)
+      : (band.normalMax ?? band.alertMax ?? value);
+  }
+  return level === 'alert'
+    ? (band.alertMin ?? band.normalMin ?? value)
+    : (band.normalMin ?? band.alertMin ?? value);
+};
+
+const bandAlert = (input: {
+  value: number;
+  band: ParameterBand;
+  unit: string;
+  lowCategory: AlertCategory;
+  highCategory: AlertCategory;
+  criticalAction: AlertAction;
+  lowLabel: string;
+  highLabel: string;
+}): RuleAlertResult | null => {
+  const level = classifyBand(input.value, input.band);
+  if (level === 'normal') return null;
+  const high = bandIsHigh(input.value, input.band);
+  const severity: AlertSeverity = level === 'alert' ? 'CRITICAL' : 'WARNING';
+  return {
+    category: high ? input.highCategory : input.lowCategory,
+    severity,
+    currentValue: input.value,
+    thresholdValue: bandThresholdValue(input.value, input.band, level, high),
+    unit: input.unit,
+    action: severity === 'CRITICAL' ? input.criticalAction : 'DASHBOARD_ONLY',
+    message: high
+      ? (severity === 'CRITICAL' ? `${input.highLabel} critically high` : `${input.highLabel} above normal range`)
+      : (severity === 'CRITICAL' ? `${input.lowLabel} critically low` : `${input.lowLabel} below normal range`),
+  };
+};
 
 export const severityRank = (severity: AlertSeverity | string): number => {
   switch (String(severity).toUpperCase()) {
@@ -167,205 +212,122 @@ export const ruleEngine = (input: RuleEngineInput): RuleAlertResult[] => {
     }
     return true;
   };
-  // Temperature (aligned with DEFAULT_THRESHOLD_BANDS: normal 26–29 °C)
+  const bands = input.thresholdBands ?? DEFAULT_THRESHOLD_BANDS;
+
+  // Temperature, pH, turbidity, and ORP share Overview Thresholds cuts.
   if (usable('temperature', input.temperature)) {
-  if (input.temperature < 10) {
-    alerts.push({
-      category: 'TEMP_LOW',
-      severity: 'EMERGENCY',
-      currentValue: input.temperature,
-      thresholdValue: 10,
-      unit: 'C',
-      action: 'WATER_CHANGE',
-      message: 'Temperature dangerously low',
-    });
-  } else if (input.temperature < 15) {
-    alerts.push({
-      category: 'TEMP_LOW',
-      severity: 'CRITICAL',
-      currentValue: input.temperature,
-      thresholdValue: 15,
-      unit: 'C',
-      action: 'WATER_CHANGE',
-      message: 'Temperature critically low',
-    });
-  } else if (input.temperature < 26) {
-    alerts.push({
-      category: 'TEMP_LOW',
-      severity: 'WARNING',
-      currentValue: input.temperature,
-      thresholdValue: 26,
-      unit: 'C',
-      action: 'DASHBOARD_ONLY',
-      message: 'Temperature below ideal range',
-    });
-  } else if (input.temperature > 35) {
-    alerts.push({
-      category: 'TEMP_HIGH',
-      severity: 'EMERGENCY',
-      currentValue: input.temperature,
-      thresholdValue: 35,
-      unit: 'C',
-      action: 'WATER_CHANGE',
-      message: 'Temperature dangerously high',
-    });
-  } else if (input.temperature > 32) {
-    alerts.push({
-      category: 'TEMP_HIGH',
-      severity: 'CRITICAL',
-      currentValue: input.temperature,
-      thresholdValue: 32,
-      unit: 'C',
-      action: 'WATER_CHANGE',
-      message: 'Temperature critically high',
-    });
-  } else if (input.temperature > 29) {
-    alerts.push({
-      category: 'TEMP_HIGH',
-      severity: 'WARNING',
-      currentValue: input.temperature,
-      thresholdValue: 29,
-      unit: 'C',
-      action: 'DASHBOARD_ONLY',
-      message: 'Temperature above ideal range',
-    });
-  }
-
-  }
-  if (usable('ph', input.ph)) {
-  // pH Low
-  if (input.ph < 6.0) {
-    alerts.push({
-      category: 'PH_LOW',
-      severity: 'CRITICAL',
-      currentValue: input.ph,
-      thresholdValue: 6.0,
-      unit: 'pH',
-      action: 'WATER_REPLACEMENT',
-      message: 'pH critically low',
-    });
-  } else if (input.ph < 6.5) {
-    alerts.push({
-      category: 'PH_LOW',
-      severity: 'WARNING',
-      currentValue: input.ph,
-      thresholdValue: 6.5,
-      unit: 'pH',
-      action: 'DASHBOARD_ONLY',
-      message: 'pH below ideal range',
-    });
-  }
-
-  // pH High
-  if (input.ph > 8.5) {
-    alerts.push({
-      category: 'PH_HIGH',
-      severity: 'CRITICAL',
-      currentValue: input.ph,
-      thresholdValue: 8.5,
-      unit: 'pH',
-      action: 'WATER_REPLACEMENT',
-      message: 'pH critically high',
-    });
-  } else if (input.ph > 8.2) {
-    alerts.push({
-      category: 'PH_HIGH',
-      severity: 'WARNING',
-      currentValue: input.ph,
-      thresholdValue: 8.2,
-      unit: 'pH',
-      action: 'DASHBOARD_ONLY',
-      message: 'pH above ideal range',
-    });
-  }
-
-  }
-  if (input.dissolvedOxygen !== null && Number.isFinite(input.dissolvedOxygen) && input.dissolvedOxygen >= 0 && input.dissolvedOxygen <= 20) {
-  // Dissolved Oxygen
-  if (input.dissolvedOxygenMeasured !== false && input.dissolvedOxygen < 2) {
-    alerts.push({
-      category: 'DO_LOW',
-      severity: 'EMERGENCY',
-      currentValue: input.dissolvedOxygen,
-      thresholdValue: 2,
-      unit: 'mg/L',
-      action: 'AERATOR_ON_IMMEDIATE',
-      message: 'Dissolved oxygen dangerously low',
-    });
-  } else if (input.dissolvedOxygenMeasured !== false && input.dissolvedOxygen < 3) {
-    alerts.push({
-      category: 'DO_LOW',
-      severity: 'CRITICAL',
-      currentValue: input.dissolvedOxygen,
-      thresholdValue: 3,
-      unit: 'mg/L',
-      action: 'AERATOR_ON_IMMEDIATE',
-      message: 'Dissolved oxygen critically low',
-    });
-  } else if (input.dissolvedOxygenMeasured !== false && input.dissolvedOxygen < 5) {
-    alerts.push({
-      category: 'DO_LOW',
-      severity: 'WARNING',
-      currentValue: input.dissolvedOxygen,
-      thresholdValue: 5,
-      unit: 'mg/L',
-      action: 'AERATOR_ON',
-      message: 'Dissolved oxygen below ideal range',
-    });
-  }
-
-  }
-  if (input.turbidityUnit === 'NTU' && usable('turbidity', input.turbidity)) {
-  // Turbidity
-  if (input.turbidity > 100) {
-    alerts.push({
-      category: 'TURBIDITY_HIGH',
-      severity: 'CRITICAL',
-      currentValue: input.turbidity,
-      thresholdValue: 100,
-      unit: 'NTU',
-      action: 'WATER_REPLACEMENT',
-      message: 'Turbidity critically high',
-    });
-  } else if (input.turbidity > 70) {
-    alerts.push({
-      category: 'TURBIDITY_HIGH',
-      severity: 'WARNING',
-      currentValue: input.turbidity,
-      thresholdValue: 70,
-      unit: 'NTU',
-      action: 'DASHBOARD_ONLY',
-      message: 'Turbidity above ideal range',
-    });
-  }
-
-  }
-
-  // ORP uses saved Thresholds bands (same cuts as Overview Normal/Warning/Alert).
-  const orpBand = input.thresholdBands?.orp ?? DEFAULT_THRESHOLD_BANDS.orp;
-  if (usable('orp', input.orp)) {
-    const level = classifyBand(input.orp, orpBand);
-    if (level === 'alert' || level === 'warning') {
-      const high = orpBand.alertMax != null && input.orp > (orpBand.normalMax ?? orpBand.alertMax);
-      const severity: AlertSeverity = level === 'alert' ? 'CRITICAL' : 'WARNING';
+    if (input.temperature < 10) {
       alerts.push({
-        category: high ? 'ORP_HIGH' : 'ORP_LOW',
-        severity,
-        currentValue: input.orp,
-        thresholdValue: high
-          ? (level === 'alert' ? (orpBand.alertMax ?? orpBand.normalMax!) : orpBand.normalMax!)
-          : (level === 'alert' ? (orpBand.alertMin ?? orpBand.normalMin!) : orpBand.normalMin!),
-        unit: 'mV',
-        action: severity === 'CRITICAL' ? 'WATER_CHANGE' : 'DASHBOARD_ONLY',
-        message: high
-          ? (severity === 'CRITICAL' ? 'ORP critically high' : 'ORP above normal range')
-          : (severity === 'CRITICAL' ? 'ORP critically low' : 'ORP below normal range'),
+        category: 'TEMP_LOW',
+        severity: 'EMERGENCY',
+        currentValue: input.temperature,
+        thresholdValue: 10,
+        unit: 'C',
+        action: 'WATER_CHANGE',
+        message: 'Temperature dangerously low',
+      });
+    } else if (input.temperature > 35) {
+      alerts.push({
+        category: 'TEMP_HIGH',
+        severity: 'EMERGENCY',
+        currentValue: input.temperature,
+        thresholdValue: 35,
+        unit: 'C',
+        action: 'WATER_CHANGE',
+        message: 'Temperature dangerously high',
+      });
+    } else {
+      const alert = bandAlert({
+        value: input.temperature,
+        band: bands.temperature,
+        unit: 'C',
+        lowCategory: 'TEMP_LOW',
+        highCategory: 'TEMP_HIGH',
+        criticalAction: 'WATER_CHANGE',
+        lowLabel: 'Temperature',
+        highLabel: 'Temperature',
+      });
+      if (alert) alerts.push(alert);
+    }
+  }
+
+  if (usable('ph', input.ph)) {
+    const alert = bandAlert({
+      value: input.ph,
+      band: bands.ph,
+      unit: 'pH',
+      lowCategory: 'PH_LOW',
+      highCategory: 'PH_HIGH',
+      criticalAction: 'WATER_REPLACEMENT',
+      lowLabel: 'pH',
+      highLabel: 'pH',
+    });
+    if (alert) alerts.push(alert);
+  }
+
+  if (input.dissolvedOxygen !== null && Number.isFinite(input.dissolvedOxygen) && input.dissolvedOxygen >= 0 && input.dissolvedOxygen <= 20) {
+    if (input.dissolvedOxygenMeasured !== false && input.dissolvedOxygen < 2) {
+      alerts.push({
+        category: 'DO_LOW',
+        severity: 'EMERGENCY',
+        currentValue: input.dissolvedOxygen,
+        thresholdValue: 2,
+        unit: 'mg/L',
+        action: 'AERATOR_ON_IMMEDIATE',
+        message: 'Dissolved oxygen dangerously low',
+      });
+    } else if (input.dissolvedOxygenMeasured !== false && input.dissolvedOxygen < 3) {
+      alerts.push({
+        category: 'DO_LOW',
+        severity: 'CRITICAL',
+        currentValue: input.dissolvedOxygen,
+        thresholdValue: 3,
+        unit: 'mg/L',
+        action: 'AERATOR_ON_IMMEDIATE',
+        message: 'Dissolved oxygen critically low',
+      });
+    } else if (input.dissolvedOxygenMeasured !== false && input.dissolvedOxygen < 5) {
+      alerts.push({
+        category: 'DO_LOW',
+        severity: 'WARNING',
+        currentValue: input.dissolvedOxygen,
+        thresholdValue: 5,
+        unit: 'mg/L',
+        action: 'AERATOR_ON',
+        message: 'Dissolved oxygen below ideal range',
       });
     }
   }
 
+  if (input.turbidityUnit === 'NTU' && usable('turbidity', input.turbidity)) {
+    const alert = bandAlert({
+      value: input.turbidity,
+      band: bands.turbidity,
+      unit: 'NTU',
+      lowCategory: 'TURBIDITY_HIGH',
+      highCategory: 'TURBIDITY_HIGH',
+      criticalAction: 'WATER_REPLACEMENT',
+      lowLabel: 'Turbidity',
+      highLabel: 'Turbidity',
+    });
+    if (alert) alerts.push(alert);
+  }
+
+  if (usable('orp', input.orp)) {
+    const alert = bandAlert({
+      value: input.orp,
+      band: bands.orp,
+      unit: 'mV',
+      lowCategory: 'ORP_LOW',
+      highCategory: 'ORP_HIGH',
+      criticalAction: 'WATER_CHANGE',
+      lowLabel: 'ORP',
+      highLabel: 'ORP',
+    });
+    if (alert) alerts.push(alert);
+  }
+
   // No ammonia toxicity thresholds until a policy with explicit NH3-N units is commissioned.
   // Speciation percentage alone must never create a toxicity alert.
-  // Alerts and SMS are not demoted when other sensors are missing or uncalibrated.
   return alerts;
 };

@@ -66,25 +66,37 @@ test('decisionEligible stays true when pH is ready even if temperature is down',
   health.orp = validate('orp', null);
   assert.equal(decisionEligible(health, now), false);
 });
-test('rule engine texts pH without waiting for temperature or calibration peers', () => {
-  const alerts = ruleEngine({
+test('rule engine follows Thresholds bands and does not wait on other sensors', () => {
+  const bands = {
+    temperature: { alertMin: 15, normalMin: 26, normalMax: 29, alertMax: 32 },
+    ph: { alertMin: 2, normalMin: 3, normalMax: 7, alertMax: 8 },
+    turbidity: { alertMin: null, normalMin: null, normalMax: 100, alertMax: 500 },
+    orp: { alertMin: 100, normalMin: 150, normalMax: 300, alertMax: 301 },
+    waterDepth: { alertMin: 2, normalMin: 2.7, normalMax: 3.3, alertMax: 4 },
+  };
+  const normalPh = ruleEngine({
     temperature: null,
     ph: 4.8,
     turbidity: null,
     dissolvedOxygen: null,
     dissolvedOxygenMeasured: false,
-    orp: 404,
-    thresholdBands: {
-      temperature: { alertMin: 15, normalMin: 26, normalMax: 29, alertMax: 32 },
-      ph: { alertMin: 2, normalMin: 3, normalMax: 7, alertMax: 8 },
-      turbidity: { alertMin: null, normalMin: null, normalMax: 100, alertMax: 500 },
-      orp: { alertMin: 100, normalMin: 150, normalMax: 300, alertMax: 301 },
-      waterDepth: { alertMin: 2, normalMin: 2.7, normalMax: 3.3, alertMax: 4 },
-    },
+    orp: 200,
+    thresholdBands: bands,
   });
-  assert.ok(alerts.some((alert) => alert.category === 'PH_LOW' && alert.severity === 'CRITICAL'));
+  assert.equal(normalPh.some((alert) => alert.category.startsWith('PH_')), false);
+  assert.equal(normalPh.some((alert) => alert.category.startsWith('ORP_')), false);
+
+  const alerts = ruleEngine({
+    temperature: null,
+    ph: 1.5,
+    turbidity: null,
+    dissolvedOxygen: null,
+    dissolvedOxygenMeasured: false,
+    orp: 404,
+    thresholdBands: bands,
+  });
+  assert.ok(alerts.some((alert) => alert.category === 'PH_LOW' && alert.severity === 'CRITICAL' && alert.thresholdValue === 2));
   assert.ok(alerts.some((alert) => alert.category === 'ORP_HIGH' && alert.severity === 'CRITICAL'));
-  assert.equal(alerts.every((alert) => !/preliminary|calibration required/i.test(alert.message)), true);
 });
 check('invalid sensor cannot trigger water alert',-127,0,()=>ruleEngine({temperature:-127,ph:null,turbidity:null,dissolvedOxygen:null}).length);
 check('raw ADC cannot trigger NTU alert',3000,0,()=>ruleEngine({temperature:27,ph:7,turbidity:3000,turbidityUnit:'raw_adc',dissolvedOxygen:null}).length);

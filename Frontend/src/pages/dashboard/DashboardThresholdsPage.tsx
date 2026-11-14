@@ -252,7 +252,7 @@ const DashboardThresholdsPage: React.FC = () => {
           {pending ? 'Saving…' : 'Save thresholds'}
         </button>
         <p className="max-w-3xl text-xs leading-relaxed text-ink-3">
-          Saving updates the marks on Overview, Parameters, and Water change. The station buzzer uses the same limits within about a minute. ORP SMS uses these Thresholds cuts; temperature, pH, and turbidity SMS still use their built-in alert rules. The NH₃ fraction is calculated (not a probe) and has no limits here. Dissolved oxygen is not measured on this station.
+          Saving updates Overview, Parameters, Water change, Alerts & logs, and SMS for temperature, pH, turbidity, ORP, and water depth. The station buzzer uses the same limits within about a minute. The NH₃ fraction is calculated (not a probe) and has no limits here. Dissolved oxygen is not measured on this station.
         </p>
       </div>
 

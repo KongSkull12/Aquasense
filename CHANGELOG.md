@@ -13,6 +13,13 @@ The running version is shown in the dashboard sidebar (App = frontend, API = bac
 3. Commit, tag and push: `git tag vX.Y.Z && git push kongskull main --tags`.
    Vercel and Render redeploy `main` automatically.
 
+## [1.10.8] - 2026-11-14
+
+### Fixed
+- Alerts & logs and SMS for temperature, pH, turbidity, and ORP now use the same **Thresholds**
+  bands as Overview. A pH of ~4.8 with Normal 3–7 no longer stays “critically low” against the
+  old hard-coded limit of 6; the stuck active row clears on the next reading when in Normal.
+
 ## [1.10.7] - 2026-11-14
 
 ### Fixed
