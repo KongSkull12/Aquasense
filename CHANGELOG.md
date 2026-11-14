@@ -13,6 +13,13 @@ The running version is shown in the dashboard sidebar (App = frontend, API = bac
 3. Commit, tag and push: `git tag vX.Y.Z && git push kongskull main --tags`.
    Vercel and Render redeploy `main` automatically.
 
+## [1.10.6] - 2026-11-14
+
+### Changed
+- Thresholds includes **ORP / redox** with recommended Normal 150–550 mV. Overview and
+  Parameters classify calibrated ORP with those limits; ESP32 buzzer uses them after the
+  next firmware flash / heartbeat sync.
+
 ## [1.10.5] - 2026-11-14
 
 ### Changed

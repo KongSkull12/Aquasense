@@ -65,13 +65,11 @@ const DashboardParametersPage: React.FC = () => {
               ? liveTurbidityNtu ?? null
               : sensorValue };
             const health = latestReading?.sensorHealth?.[item.key];
-            const bandKey = item.key === 'orp' ? null : item.key as LimitKey;
-            const level = bandKey && stats.current != null ? classifyBand(stats.current, thresholdBands[bandKey]) : null;
+            const bandKey = item.key as LimitKey;
+            const level = stats.current != null ? classifyBand(stats.current, thresholdBands[bandKey]) : null;
             const levelLabel = level ? bandLabel(level) : null;
-            const guidance = item.key === 'orp'
-              ? 'Redox, after a saved calibration'
-              : `Normal ${formatNormalBand(thresholdBands[item.key as LimitKey], item.digits, item.unit)}`;
-            const chartBand: [number, number] | undefined = item.key === 'temperature' || item.key === 'ph'
+            const guidance = `Normal ${formatNormalBand(thresholdBands[bandKey], item.digits, item.unit)}`;
+            const chartBand: [number, number] | undefined = item.key === 'temperature' || item.key === 'ph' || item.key === 'orp'
               ? [thresholdBands[item.key].normalMin ?? 0, thresholdBands[item.key].normalMax ?? 0]
               : item.key === 'turbidity' && thresholdBands.turbidity.normalMax != null
                 ? [0, thresholdBands.turbidity.normalMax]
@@ -80,7 +78,7 @@ const DashboardParametersPage: React.FC = () => {
               !health.valid || health.measurementValid===false ? (health.health==='STALE' ? 'STALE' : 'UNAVAILABLE') :
               health.health==='UNSTABLE' || health.stability==='UNSTABLE' ? 'UNSTABLE' :
               health.calibration!=='CALIBRATED' ? 'CALIBRATION REQUIRED' :
-              health.stability!=='STABLE' ? 'SETTLING' : item.key === 'orp' ? 'Calibrated reading' : levelLabel || 'Unclassified';
+              health.stability!=='STABLE' ? 'SETTLING' : levelLabel || 'Unclassified';
             const statusLabel = sensorStatus;
             const statusState: MarkState = ['STALE', 'UNSTABLE'].includes(statusLabel) ? 'warn'
               : statusLabel === 'CALIBRATION REQUIRED' ? 'trust'

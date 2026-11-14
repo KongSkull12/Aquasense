@@ -174,6 +174,7 @@ export const thresholdBandsSchema = z.object({
   temperature: thresholdBandSchema,
   ph: thresholdBandSchema,
   turbidity: thresholdBandSchema,
+  orp: thresholdBandSchema,
   waterDepth: thresholdBandSchema,
 }).strict();
 

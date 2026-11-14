@@ -1,5 +1,5 @@
 export type BandLevel = 'normal' | 'warning' | 'alert';
-export type BandKey = 'temperature' | 'ph' | 'turbidity' | 'waterDepth';
+export type BandKey = 'temperature' | 'ph' | 'turbidity' | 'orp' | 'waterDepth';
 
 export interface ParameterBand {
   alertMin: number | null;
@@ -12,6 +12,7 @@ export interface ThresholdBands {
   temperature: ParameterBand;
   ph: ParameterBand;
   turbidity: ParameterBand;
+  orp: ParameterBand;
   waterDepth: ParameterBand;
 }
 
@@ -20,6 +21,7 @@ export const DEFAULT_THRESHOLD_BANDS: ThresholdBands = {
   temperature: { alertMin: 15, normalMin: 26, normalMax: 29, alertMax: 32 },
   ph: { alertMin: 6, normalMin: 7, normalMax: 8.5, alertMax: 8.5 },
   turbidity: { alertMin: null, normalMin: null, normalMax: 70, alertMax: 100 },
+  orp: { alertMin: 50, normalMin: 150, normalMax: 550, alertMax: 700 },
   waterDepth: { alertMin: 2.0, normalMin: 2.7, normalMax: 3.3, alertMax: 4.0 },
 };
 
@@ -36,6 +38,7 @@ const BAND_LIMITS: Record<BandKey, { min: number; max: number; highOnly: boolean
   temperature: { min: 0, max: 50, highOnly: false },
   ph: { min: 0, max: 14, highOnly: false },
   turbidity: { min: 0, max: 10000, highOnly: true },
+  orp: { min: -500, max: 1500, highOnly: false },
   waterDepth: { min: 0, max: 200, highOnly: false },
 };
 

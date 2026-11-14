@@ -39,6 +39,15 @@ test('water depth uses the crayfish shallow-tub defaults', () => {
   assert.equal(classifyBand(4.1, band), 'alert');
 });
 
+test('ORP uses the starting freshwater redox band', () => {
+  const band = DEFAULT_THRESHOLD_BANDS.orp;
+  assert.equal(classifyBand(300, band), 'normal');
+  assert.equal(classifyBand(100, band), 'warning');
+  assert.equal(classifyBand(49, band), 'alert');
+  assert.equal(classifyBand(600, band), 'warning');
+  assert.equal(classifyBand(701, band), 'alert');
+});
+
 test('saved limits must keep Normal inside Alert', () => {
   assert.equal(thresholdBandIssue(DEFAULT_THRESHOLD_BANDS), null);
   const reversed = {
@@ -51,4 +60,11 @@ test('saved limits must keep Normal inside Alert', () => {
     ph: { ...DEFAULT_THRESHOLD_BANDS.ph, alertMax: 15 },
   };
   assert.match(thresholdBandIssue(wide) || '', /pH is outside 0–14/);
+  const missingOrp = {
+    temperature: DEFAULT_THRESHOLD_BANDS.temperature,
+    ph: DEFAULT_THRESHOLD_BANDS.ph,
+    turbidity: DEFAULT_THRESHOLD_BANDS.turbidity,
+    waterDepth: DEFAULT_THRESHOLD_BANDS.waterDepth,
+  } as typeof DEFAULT_THRESHOLD_BANDS;
+  assert.match(thresholdBandIssue(missingOrp) || '', /ORP/);
 });

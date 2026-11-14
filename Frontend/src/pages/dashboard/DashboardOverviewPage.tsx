@@ -69,8 +69,8 @@ const DashboardOverviewPage: React.FC = () => {
   };
   const humanize = (value: string) => value.toLowerCase().replace(/_/g, ' ');
 
-  const bandFor = (param: 'temp' | 'ph' | 'turbidity'): LimitKey => param === 'temp' ? 'temperature' : param;
-  const getStatus = (param: 'temp' | 'ph' | 'turbidity', value: number | null | undefined, qualified: boolean, calibrated: boolean): Status => {
+  const bandFor = (param: 'temp' | 'ph' | 'turbidity' | 'orp'): LimitKey => param === 'temp' ? 'temperature' : param;
+  const getStatus = (param: 'temp' | 'ph' | 'turbidity' | 'orp', value: number | null | undefined, qualified: boolean, calibrated: boolean): Status => {
     if (value == null || !Number.isFinite(value)) return { label: noValue, state: 'off' };
     if (!calibrated) return { label: 'Calibration required, not classified', state: 'trust' };
     if (!qualified) return { label: 'Calibrated, settling', state: 'info' };
@@ -119,7 +119,7 @@ const DashboardOverviewPage: React.FC = () => {
       unit: 'mV',
       status: !live ? { label: noValue, state: 'off' }
         : orpIsStale ? { label: 'Stale sample', state: 'warn' }
-        : orpIsCalibrated ? { label: 'Calibrated reading', state: 'ok' }
+        : orpIsCalibrated ? getStatus('orp', latestReading?.orp, true, true)
           : isCalibrated('orp') ? { label: 'Calibrated, settling', state: 'info' }
           : latestReading?.orp != null ? { label: 'Reported; calibration required', state: 'trust' }
             : { label: noValue, state: 'off' },
@@ -252,7 +252,7 @@ const DashboardOverviewPage: React.FC = () => {
             const series = [
               { key: 'temperature', title: 'Temperature (°C)', label: 'Temperature', guidance: `Normal ${formatNormalBand(thresholdBands.temperature, 1, '°C')}`, data: liveChart, domain: [20, 36] as [number, number], band: [thresholdBands.temperature.normalMin ?? 26, thresholdBands.temperature.normalMax ?? 29] as [number, number], unit: '°C', digits: 1, empty: 'No temperature samples yet' },
               { key: 'ph', title: 'pH', label: 'pH', guidance: `Normal ${formatNormalBand(thresholdBands.ph, 2, '')}`, data: liveChart, domain: [4, 10] as [number, number], band: [thresholdBands.ph.normalMin ?? 7, thresholdBands.ph.normalMax ?? 8.5] as [number, number], unit: '', digits: 2, empty: 'No pH samples yet' },
-              { key: 'orp', title: 'ORP / redox (mV)', label: 'ORP', guidance: 'No validated range', data: liveChart, domain: ['auto', 'auto'] as ['auto', 'auto'], unit: 'mV', digits: 1, empty: 'No ORP samples reported',
+              { key: 'orp', title: 'ORP / redox (mV)', label: 'ORP', guidance: `Normal ${formatNormalBand(thresholdBands.orp, 0, 'mV')}`, data: liveChart, domain: ['auto', 'auto'] as ['auto', 'auto'], band: [thresholdBands.orp.normalMin ?? 150, thresholdBands.orp.normalMax ?? 550] as [number, number], unit: 'mV', digits: 1, empty: 'No ORP samples reported',
                 note: orpIsStale ? 'Latest sample is stale.' : isCalibrated('orp') ? 'Saved device calibration. ORP is a redox reading, not dissolved oxygen.' : latestReading?.orp != null ? 'Device-reported trend. Capture an ORP standard before it can be interpreted.' : undefined },
               { key: 'turbidity', title: 'Turbidity (NTU)', label: 'Turbidity', guidance: `Normal ${formatNormalBand(thresholdBands.turbidity, 1, 'NTU')}`, data: turbidityData, domain: ['auto', 'auto'] as ['auto', 'auto'], band: thresholdBands.turbidity.normalMax == null ? undefined : [0, thresholdBands.turbidity.normalMax] as [number, number], unit: 'NTU', digits: 1, empty: 'NTU unavailable for current samples',
                 note: turbidityNtuHistoryAvailable ? (isCalibrated('turbidity') ? 'Linear estimate from the saved calibration.' : 'Linear estimate; sensor calibration required.') : undefined },

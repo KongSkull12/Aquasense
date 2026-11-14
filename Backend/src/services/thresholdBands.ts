@@ -2,7 +2,7 @@ import { WaterQualitySetting } from '../database/models/WaterQualitySetting';
 import { logger } from '../utils/logger';
 
 export type BandLevel = 'normal' | 'warning' | 'alert';
-export type BandKey = 'temperature' | 'ph' | 'turbidity' | 'waterDepth';
+export type BandKey = 'temperature' | 'ph' | 'turbidity' | 'orp' | 'waterDepth';
 
 export interface ParameterBand {
   alertMin: number | null;
@@ -15,6 +15,7 @@ export interface ThresholdBands {
   temperature: ParameterBand;
   ph: ParameterBand;
   turbidity: ParameterBand;
+  orp: ParameterBand;
   waterDepth: ParameterBand;
 }
 
@@ -23,6 +24,8 @@ export const DEFAULT_THRESHOLD_BANDS: ThresholdBands = {
   temperature: { alertMin: 15, normalMin: 26, normalMax: 29, alertMax: 32 },
   ph: { alertMin: 6, normalMin: 7, normalMax: 8.5, alertMax: 8.5 },
   turbidity: { alertMin: null, normalMin: null, normalMax: 70, alertMax: 100 },
+  // Starting freshwater redox band; farmers adjust after Calibration → ORP.
+  orp: { alertMin: 50, normalMin: 150, normalMax: 550, alertMax: 700 },
   // Shallow crayfish tub guidance around a 3 cm target depth.
   waterDepth: { alertMin: 2.0, normalMin: 2.7, normalMax: 3.3, alertMax: 4.0 },
 };
@@ -31,7 +34,16 @@ const LIMITS: Record<BandKey, { min: number; max: number; highOnly: boolean }> =
   temperature: { min: 0, max: 50, highOnly: false },
   ph: { min: 0, max: 14, highOnly: false },
   turbidity: { min: 0, max: 10000, highOnly: true },
+  orp: { min: -500, max: 1500, highOnly: false },
   waterDepth: { min: 0, max: 200, highOnly: false },
+};
+
+const BAND_LABEL: Record<BandKey, string> = {
+  temperature: 'Temperature',
+  ph: 'pH',
+  turbidity: 'Turbidity',
+  orp: 'ORP',
+  waterDepth: 'Water depth',
 };
 
 const finite = (value: unknown): number | null =>
@@ -50,11 +62,11 @@ const inRange = (value: number | null, min: number, max: number): boolean =>
   value == null || (value >= min && value <= max);
 
 export const thresholdBandIssue = (bands: ThresholdBands): string | null => {
-  const keys: BandKey[] = ['temperature', 'ph', 'turbidity', 'waterDepth'];
+  const keys: BandKey[] = ['temperature', 'ph', 'turbidity', 'orp', 'waterDepth'];
   for (const key of keys) {
     const band = bands[key];
     const limit = LIMITS[key];
-    const label = key === 'ph' ? 'pH' : key === 'temperature' ? 'Temperature' : key === 'turbidity' ? 'Turbidity' : 'Water depth';
+    const label = BAND_LABEL[key];
     if (!band) return `${label} limits are missing`;
     if (limit.highOnly && (band.alertMin != null || band.normalMin != null)) {
       return `${label} uses an upper limit only`;
@@ -111,6 +123,7 @@ export const loadThresholdBands = async (): Promise<ThresholdBands> => {
       temperature: readBand(stored.temperature, false) ?? DEFAULT_THRESHOLD_BANDS.temperature,
       ph: readBand(stored.ph, false) ?? DEFAULT_THRESHOLD_BANDS.ph,
       turbidity: readBand(stored.turbidity, true) ?? DEFAULT_THRESHOLD_BANDS.turbidity,
+      orp: readBand(stored.orp, false) ?? DEFAULT_THRESHOLD_BANDS.orp,
       waterDepth: readBand(stored.waterDepth, false) ?? DEFAULT_THRESHOLD_BANDS.waterDepth,
     };
     return thresholdBandIssue(bands) ? DEFAULT_THRESHOLD_BANDS : bands;

@@ -176,8 +176,12 @@ export const useDashboardData = () => {
         setPredictiveWarning(response.data.predictiveWarning);
         setRiskAssessment(response.data.riskAssessment ?? null);
         if (response.data.thresholdBands) {
-          setThresholdBands({ ...DEFAULT_THRESHOLD_BANDS, ...response.data.thresholdBands,
-            waterDepth: response.data.thresholdBands.waterDepth ?? DEFAULT_THRESHOLD_BANDS.waterDepth });
+          setThresholdBands({
+            ...DEFAULT_THRESHOLD_BANDS,
+            ...response.data.thresholdBands,
+            orp: response.data.thresholdBands.orp ?? DEFAULT_THRESHOLD_BANDS.orp,
+            waterDepth: response.data.thresholdBands.waterDepth ?? DEFAULT_THRESHOLD_BANDS.waterDepth,
+          });
         }
         setSmsLogs(response.data.smsLogs || []);
         setRestError(null);

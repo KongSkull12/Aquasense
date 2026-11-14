@@ -251,7 +251,7 @@ bool drainToTargetActive = false;
 
 // Water-quality alarm types (used by the buzzer section below).
 struct ThresholdBand { float alertMin, normalMin, normalMax, alertMax; };
-struct ThresholdBandSet { ThresholdBand temperature, ph, turbidity, waterDepth; };
+struct ThresholdBandSet { ThresholdBand temperature, ph, turbidity, orp, waterDepth; };
 enum AlarmLevel : uint8_t { ALARM_NORMAL = 0, ALARM_WARNING = 1, ALARM_ALERT = 2 };
 
 bool tankMountCalibrated() { return isfinite(tankCal.mountHeightCm) && tankCal.mountHeightCm >= 20.0f && tankCal.mountHeightCm <= 800.0f; }
@@ -879,10 +879,12 @@ const ThresholdBandSet DEFAULT_THRESHOLD_BANDS = {
   { 15.0f, 26.0f, 29.0f, 32.0f },   // temperature, C
   {  6.0f,  7.0f,  8.5f,  8.5f },   // pH
   {   NAN,   NAN, 70.0f, 100.0f },  // turbidity, NTU (upper limits only)
+  { 50.0f, 150.0f, 550.0f, 700.0f }, // ORP / redox, mV
   {  2.0f,  2.7f,  3.3f,  4.0f },   // water depth, cm
 };
 ThresholdBandSet thresholdBands = DEFAULT_THRESHOLD_BANDS;
-const char* const BANDS_NVS_KEY = "bands1";
+// bands2: struct grew when ORP was added; old bands1 blobs are ignored safely.
+const char* const BANDS_NVS_KEY = "bands2";
 
 const uint8_t ALARM_CONFIRM_READS = 5;   // ~5 s at one read per second: one noisy sample never beeps
 AlarmLevel alarmLevel = ALARM_NORMAL;      // confirmed level; this drives the buzzer
@@ -915,7 +917,8 @@ bool thresholdBandValid(const ThresholdBand& b, bool highOnly) {
 
 bool thresholdBandsValid(const ThresholdBandSet& set) {
   return thresholdBandValid(set.temperature, false) && thresholdBandValid(set.ph, false)
-    && thresholdBandValid(set.turbidity, true) && thresholdBandValid(set.waterDepth, false);
+    && thresholdBandValid(set.turbidity, true) && thresholdBandValid(set.orp, false)
+    && thresholdBandValid(set.waterDepth, false);
 }
 
 void loadThresholdBands() {
@@ -939,6 +942,7 @@ void printThresholdBands() {
   row("temperature", thresholdBands.temperature);
   row("pH", thresholdBands.ph);
   row("turbidity", thresholdBands.turbidity);
+  row("ORP", thresholdBands.orp);
   row("depth", thresholdBands.waterDepth);
 }
 
@@ -958,6 +962,7 @@ void applyThresholdBands(JsonVariantConst json) {
   readThresholdBand(json["temperature"], next.temperature);
   readThresholdBand(json["ph"], next.ph);
   readThresholdBand(json["turbidity"], next.turbidity);
+  readThresholdBand(json["orp"], next.orp);
   readThresholdBand(json["waterDepth"], next.waterDepth);
   if (!thresholdBandsValid(next)) { Serial.println("[ALARM] ignored invalid thresholds from the server"); return; }
   if (!memcmp(&next, &thresholdBands, sizeof(next))) return;
@@ -979,6 +984,7 @@ void evaluateWaterAlarm() {
   if (tempS.connected && isfinite(tempS.value)) check("temperature", tempS.value, thresholdBands.temperature);
   if (phS.quality == SQ_STABLE) check("pH", phS.value, thresholdBands.ph);
   if (turbS.quality == SQ_STABLE) check("turbidity", turbS.value, thresholdBands.turbidity);
+  if (orpS.quality == SQ_STABLE) check("ORP", orpS.value, thresholdBands.orp);
   qualityLevelNow = worst;   // water quality only: this is what an exchange can fix
   // The level is meant to drop and rise during a water exchange, so depth is not judged then.
   if (isfinite(tankDepthCm) && !waterBusy() && !fillOn && !drainOn) check("depth", tankDepthCm, thresholdBands.waterDepth);

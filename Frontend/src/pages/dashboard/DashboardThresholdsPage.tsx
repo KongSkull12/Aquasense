@@ -12,12 +12,13 @@ import {
   type ThresholdBands,
 } from '../../components/WaterQuality/thresholdBands';
 
-const KEYS: BandKey[] = ['temperature', 'ph', 'turbidity', 'waterDepth'];
+const KEYS: BandKey[] = ['temperature', 'ph', 'turbidity', 'orp', 'waterDepth'];
 
 const COPY: Record<BandKey, { label: string; unit: string; digits: number; highOnly: boolean; hint?: string }> = {
   temperature: { label: 'Temperature', unit: '°C', digits: 1, highOnly: false },
   ph: { label: 'pH', unit: '', digits: 2, highOnly: false },
   turbidity: { label: 'Turbidity', unit: 'NTU', digits: 1, highOnly: true, hint: 'Starting values, not a species limit.' },
+  orp: { label: 'ORP / redox', unit: 'mV', digits: 0, highOnly: false, hint: 'Starting redox band. Needs Calibration → ORP. Not dissolved oxygen.' },
   waterDepth: { label: 'Water depth', unit: 'cm', digits: 1, highOnly: false, hint: 'Needs Calibration → Tank. With automatic control on: below normal min fills to target; above normal max drains to target.' },
 };
 
@@ -163,6 +164,7 @@ const DashboardThresholdsPage: React.FC = () => {
     if (!qualified) return null;
     if (key === 'temperature') return latestReading.temperature;
     if (key === 'ph') return latestReading.ph ?? health.value ?? null;
+    if (key === 'orp') return latestReading.orp ?? health.value ?? null;
     return latestReading.turbidityUnit === 'NTU' ? latestReading.turbidity : null;
   };
 
@@ -186,7 +188,7 @@ const DashboardThresholdsPage: React.FC = () => {
         actions={<button type="button" className="btn-secondary btn-sm" disabled={disabled} onClick={applyRecommendedToAll}>Use recommended for all</button>}
       />
 
-      <div className="grid items-start gap-4 lg:grid-cols-2 xl:grid-cols-4">
+      <div className="grid items-start gap-4 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-5">
         {KEYS.map((key) => {
           const copy = COPY[key];
           const band = bands[key];
@@ -250,7 +252,7 @@ const DashboardThresholdsPage: React.FC = () => {
           {pending ? 'Saving…' : 'Save thresholds'}
         </button>
         <p className="max-w-3xl text-xs leading-relaxed text-ink-3">
-          Saving updates the marks on Overview, Parameters, and Water change. The station buzzer uses the same limits within about a minute: 3 beeps on repeat for an Alert, 2 for a Warning, until readings are normal again. SMS alerts use their own built-in limits, so a change here does not change a text. ORP, tank level, and the NH₃ fraction have no limits here. Dissolved oxygen is not measured on this station.
+          Saving updates the marks on Overview, Parameters, and Water change. The station buzzer uses the same limits within about a minute: 3 beeps on repeat for an Alert, 2 for a Warning, until readings are normal again. SMS alerts use their own built-in limits, so a change here does not change a text. The NH₃ fraction is calculated (not a probe) and has no limits here. Dissolved oxygen is not measured on this station.
         </p>
       </div>
 
