@@ -190,7 +190,13 @@ const startServer = async (): Promise<void> => {
     setInterval(refreshSmsStatus, 30000).unref();
 
     const app = createApp();
-    if (config.sms.provider === 'iprogsms') {
+    if (config.sms.provider === 'mensaheko') {
+      if (!config.sms.apiSecretKey) {
+        logger.warn('SMS integration unavailable: configure MENSAHEKO_API_KEY to enable SMS delivery through MensaheKo');
+      } else {
+        logger.info('SMS provider: MensaheKo', { blastUrl: config.sms.mensahekoBlastUrl });
+      }
+    } else if (config.sms.provider === 'iprogsms') {
       if (!config.sms.apiSecretKey) {
         logger.warn('SMS integration unavailable: configure IPROG_SMS_API_TOKEN to enable SMS delivery through IPROG SMS');
       } else {

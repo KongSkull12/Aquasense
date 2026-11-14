@@ -27,6 +27,7 @@ export const validateSmsMessage = (message: string): { valid: boolean; reason?: 
 const providerName = (): string => {
   if (config.sms.provider === 'semaphore') return 'Semaphore';
   if (config.sms.provider === 'iprogsms') return 'IPROG SMS';
+  if (config.sms.provider === 'mensaheko') return 'MensaheKo';
   return 'UniSMS';
 };
 
@@ -37,6 +38,12 @@ const UNISMS_ENDPOINT = 'https://unismsapi.com/api/sms';
 export const toPhMobileDigits = (recipient: string): string | null => {
   const trimmed = recipient.trim();
   return /^\+63\d{10}$/.test(trimmed) ? trimmed.slice(1) : null;
+};
+
+/** MensaheKo blast examples use local 09XXXXXXXXX numbers. */
+export const toMensahekoLocal = (recipient: string): string | null => {
+  const digits = toPhMobileDigits(recipient);
+  return digits ? `0${digits.slice(2)}` : null;
 };
 
 /** @deprecated Use toPhMobileDigits — kept for existing Semaphore tests. */
@@ -82,6 +89,49 @@ export const isIprogRejectionPayload = (data: unknown): boolean => {
   const status = (data as { status?: unknown }).status;
   if (status === 500 || status === '500' || status === 'error') return true;
   return iprogMessageLines(data).some((line) => /sender name|smart\s*\/\s*tnt|insufficient|invalid|api[_ ]?token|unauthorized/i.test(line));
+};
+
+const pickString = (...values: unknown[]): string | undefined => {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) return value.trim();
+    if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  }
+  return undefined;
+};
+
+/** MensaheKo blast success is treated as sent (dashboard tests show "sent"; no status API). */
+export const parseMensahekoResponse = (data: unknown, httpStatus: number, retries: number): SmsSendResult => {
+  const payload = (data && typeof data === 'object' ? data : {}) as Record<string, unknown>;
+  const nested = payload.data && typeof payload.data === 'object' ? payload.data as Record<string, unknown> : undefined;
+  const referenceId = pickString(
+    payload.id, payload.blast_id, payload.blastId, payload.reference, payload.reference_id,
+    nested?.id, nested?.blast_id, nested?.blastId, nested?.reference,
+  );
+  const rawStatus = pickString(payload.status, payload.state, nested?.status, nested?.state)?.toLowerCase();
+  const errorText = pickString(
+    typeof payload.error === 'string' ? payload.error : undefined,
+    typeof payload.message === 'string' && rawStatus && /fail|error|reject/i.test(rawStatus) ? payload.message : undefined,
+    Array.isArray(payload.errors) ? payload.errors.filter((item): item is string => typeof item === 'string').join('; ') : undefined,
+  );
+
+  if (httpStatus >= 400 || rawStatus === 'failed' || rawStatus === 'error' || rawStatus === 'rejected') {
+    return smsResult('rejected', retries, {
+      referenceId, httpStatus,
+      errors: errorText ? { detail: [errorText] } : undefined,
+      reason: errorText || 'MensaheKo rejected the SMS',
+    });
+  }
+  if (httpStatus >= 200 && httpStatus < 300) {
+    if (rawStatus === 'queued' || rawStatus === 'pending' || rawStatus === 'accepted') {
+      return smsResult('pending', retries, { referenceId, httpStatus });
+    }
+    // Successful blast responses (including empty/minimal bodies) count as sent.
+    return smsResult('sent', retries, { referenceId: referenceId || `mk-${Date.now()}`, httpStatus });
+  }
+  return smsResult('unknown', retries, {
+    referenceId, httpStatus,
+    reason: 'Unrecognized MensaheKo response; verify before resending',
+  });
 };
 
 /** Field errors such as { sendername: ['…'] } with no message_id mean nothing was sent. */
@@ -207,6 +257,9 @@ export const describeSmsFailure = (results: SmsSendResult[]): string => {
       if (config.sms.provider === 'iprogsms' && errors.some((line) => /credit|balance|load/i.test(line))) {
         return 'IPROG SMS reports insufficient credits. Top up at iprogsms.com.';
       }
+      if (config.sms.provider === 'mensaheko' && errors.some((line) => /api[_ ]?key|unauthorized|unauthenticated|invalid/i.test(line))) {
+        return 'MensaheKo rejected the API key. Check MENSAHEKO_API_KEY on the server.';
+      }
       if (errors.some((line) => /sender_id/i.test(line) && /does not exist/i.test(line))) {
         return 'UniSMS does not have that sender name. This account uses Unisoft.';
       }
@@ -249,6 +302,7 @@ export class SmsService {
   private credentialLabel(): string {
     if (config.sms.provider === 'semaphore') return 'SEMAPHORE_API_KEY';
     if (config.sms.provider === 'iprogsms') return 'IPROG_SMS_API_TOKEN';
+    if (config.sms.provider === 'mensaheko') return 'MENSAHEKO_API_KEY';
     return 'UNISMS_API_SECRET_KEY';
   }
 
@@ -270,9 +324,16 @@ export class SmsService {
     }
 
     const phNumber = (provider === 'semaphore' || provider === 'iprogsms') ? toPhMobileDigits(recipient) : null;
+    const mensahekoPhone = provider === 'mensaheko' ? toMensahekoLocal(recipient) : null;
     if ((provider === 'semaphore' || provider === 'iprogsms') && !phNumber) {
       return smsResult('rejected', 0, {
         reason: `${name} sends only to Philippine mobile numbers (+63XXXXXXXXXX)`,
+        httpStatus: 400,
+      });
+    }
+    if (provider === 'mensaheko' && !mensahekoPhone) {
+      return smsResult('rejected', 0, {
+        reason: 'MensaheKo sends only to Philippine mobile numbers (+63XXXXXXXXXX)',
         httpStatus: 400,
       });
     }
@@ -306,6 +367,19 @@ export class SmsService {
           },
         });
       }
+      if (provider === 'mensaheko') {
+        return axios.post(config.sms.mensahekoBlastUrl, {
+          message: message.trim(),
+          phones: [mensahekoPhone],
+        }, {
+          timeout: 15000,
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Api-Key': apiKey,
+            Accept: 'application/json',
+          },
+        });
+      }
       return axios.post(UNISMS_ENDPOINT, {
         recipient: recipient.trim(), content: message.trim(), sender_id: senderId,
       }, {
@@ -328,7 +402,9 @@ export class SmsService {
           ? parseSemaphoreResponse(response.data, response.status, attempt)
           : provider === 'iprogsms'
             ? parseIprogSendResponse(response.data, response.status, attempt)
-            : this.parseUnismsResponse(response.data, response.status, attempt);
+            : provider === 'mensaheko'
+              ? parseMensahekoResponse(response.data, response.status, attempt)
+              : this.parseUnismsResponse(response.data, response.status, attempt);
         // IPROG often completes within a second; poll once so the UI can show Sent.
         if (provider === 'iprogsms' && result.status === 'pending' && result.referenceId) {
           await new Promise((resolve) => setTimeout(resolve, 1200));
@@ -407,6 +483,10 @@ export class SmsService {
       } catch {
         return smsResult('unknown', 0, { referenceId, reason: 'Status lookup unavailable; original submission must not be repeated' });
       }
+    }
+    if (config.sms.provider === 'mensaheko') {
+      // External blast has no public per-message status endpoint; successful blasts are stored as sent.
+      return smsResult('sent', 0, { referenceId, reason: 'MensaheKo blast has no status lookup; original acceptance stands' });
     }
     try {
       const response = await axios.get(`${UNISMS_ENDPOINT}/${encodeURIComponent(referenceId)}`, {

@@ -397,3 +397,42 @@ test('IPROG SMS: parse helpers map Smart/TNT body rejection', () => {
   assert.match(rejected.response, /Smart\/TNT/);
 });
 
+function setupMensaheko(): SmsService {
+  const service = setup();
+  config.sms.provider = 'mensaheko';
+  config.sms.apiSecretKey = 'mk_live_unit_test_key';
+  config.sms.senderId = undefined;
+  config.sms.mensahekoBlastUrl = 'https://nssimssms.mensaheko.com/api/v1/blast';
+  return service;
+}
+
+test('MensaheKo: posts blast JSON with X-Api-Key and local 09 number', async () => {
+  const service = setupMensaheko();
+  const post = mock.method(axios, 'post', async () => ({ status: 200, data: { status: 'sent', id: 'blast-1' } }));
+  const result = await service.sendSms(phone, message);
+  assert.equal(post.mock.callCount(), 1);
+  const [url, body, options] = post.mock.calls[0].arguments as unknown as [
+    string,
+    Record<string, unknown>,
+    { headers: Record<string, string> },
+  ];
+  assert.equal(url, 'https://nssimssms.mensaheko.com/api/v1/blast');
+  assert.deepEqual(body, { message, phones: ['09171234567'] });
+  assert.equal(options.headers['X-Api-Key'], 'mk_live_unit_test_key');
+  assert.equal(result.status, 'sent');
+  assert.equal(result.accepted, true);
+  assert.equal(result.referenceId, 'blast-1');
+  assert.equal(result.response.includes('mk_live_unit_test_key'), false);
+});
+
+test('MensaheKo: refuses non-Philippine numbers and a missing key without calling it', async () => {
+  const service = setupMensaheko();
+  const post = mock.method(axios, 'post', async () => ({ status: 200, data: { status: 'sent' } }));
+  assert.equal((await service.sendSms('+14155552671', message)).status, 'rejected');
+  assert.equal(post.mock.callCount(), 0);
+  config.sms.apiSecretKey = undefined;
+  assert.equal((await service.sendSms(phone, message)).status, 'rejected');
+  assert.match((await service.sendSms(phone, message)).response, /MENSAHEKO_API_KEY/);
+  assert.equal(post.mock.callCount(), 0);
+});
+

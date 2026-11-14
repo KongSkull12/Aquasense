@@ -24,6 +24,13 @@ The running version is shown in the dashboard sidebar (App = frontend, API = bac
 - Flash the new firmware. If pH reads far off in a known buffer (e.g. negative in 6.86), press
   Reset to default on the pH card first, then capture 6.86, 4.01 and 9.18.
 
+## [1.9.8] - 2026-11-14
+
+### Changed
+- SMS default provider is now **MensaheKo**. Set `SMS_PROVIDER=mensaheko` and `MENSAHEKO_API_KEY`
+  (blast: `POST /api/v1/blast` with `X-Api-Key`). Philippine numbers are sent as `09XXXXXXXXX`.
+  IPROG, Semaphore and UniSMS remain available when `SMS_PROVIDER` is set accordingly.
+
 ## [1.9.7] - 2026-11-14
 
 ### Fixed

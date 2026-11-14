@@ -76,15 +76,17 @@ const getOptionalCredential = (key: string): string | undefined => {
   return value;
 };
 
-export type SmsProvider = 'unisms' | 'semaphore' | 'iprogsms';
+export type SmsProvider = 'unisms' | 'semaphore' | 'iprogsms' | 'mensaheko';
 
-/** SMS_PROVIDER picks the gateway: iprogsms (default), semaphore, or unisms. */
-const smsProviderRaw = (getEnv('SMS_PROVIDER', 'iprogsms') || 'iprogsms').trim().toLowerCase();
+/** SMS_PROVIDER picks the gateway: mensaheko (default), iprogsms, semaphore, or unisms. */
+const smsProviderRaw = (getEnv('SMS_PROVIDER', 'mensaheko') || 'mensaheko').trim().toLowerCase();
 const smsProvider: SmsProvider = smsProviderRaw === 'semaphore'
   ? 'semaphore'
   : smsProviderRaw === 'unisms'
     ? 'unisms'
-    : 'iprogsms';
+    : smsProviderRaw === 'iprogsms' || smsProviderRaw === 'iprog'
+      ? 'iprogsms'
+      : 'mensaheko';
 
 const smsCredentialKey = (provider: SmsProvider): string => {
   if (provider === 'semaphore') return 'SEMAPHORE_API_KEY';
@@ -92,13 +94,16 @@ const smsCredentialKey = (provider: SmsProvider): string => {
     // Prefer IPROG_SMS_API_TOKEN; accept IPROG_API_TOKEN as an alias.
     return getOptionalCredential('IPROG_SMS_API_TOKEN') ? 'IPROG_SMS_API_TOKEN' : 'IPROG_API_TOKEN';
   }
+  if (provider === 'mensaheko') {
+    return getOptionalCredential('MENSAHEKO_API_KEY') ? 'MENSAHEKO_API_KEY' : 'MENSAHE_API_KEY';
+  }
   return 'UNISMS_API_SECRET_KEY';
 };
 
 const smsSenderKey = (provider: SmsProvider): string | undefined => {
   if (provider === 'semaphore') return 'SEMAPHORE_SENDER_NAME';
   if (provider === 'unisms') return 'UNISMS_SENDER_ID';
-  return undefined; // IPROG uses the account default / shared sender name
+  return undefined; // IPROG / MensaheKo use account defaults
 };
 
 const iprogNetworkProvider = Math.min(2, Math.max(0, parseInt(getEnv('IPROG_SMS_NETWORK_PROVIDER', '2') || '2', 10) || 2));
@@ -186,14 +191,16 @@ export const config = {
     provider: smsProvider as SmsProvider,
     // Key and sender of the selected provider. Semaphore's sender name is optional:
     // without it, Semaphore uses the account's default approved sender name.
-    // IPROG SMS does not require a separate sender id in the API request.
+    // IPROG / MensaheKo do not require a separate sender id in the API request.
     apiSecretKey: getOptionalCredential(smsCredentialKey(smsProvider)),
     senderId: smsSenderKey(smsProvider) ? getOptionalCredential(smsSenderKey(smsProvider) as string) : undefined,
     /** IPROG sms_provider: 0/1/2. Use 2 for broad PH network coverage. */
     iprogNetworkProvider,
     /** Override only if IPROG publishes a different API host. */
-    // sms.iprogtech.com is the API host IPROG documents for programmatic clients.
     iprogBaseUrl: (getEnv('IPROG_SMS_BASE_URL', 'https://sms.iprogtech.com/api/v1') || 'https://sms.iprogtech.com/api/v1').replace(/\/$/, ''),
+    /** MensaheKo external blast endpoint (X-Api-Key). */
+    mensahekoBlastUrl: (getEnv('MENSAHEKO_BLAST_URL', 'https://nssimssms.mensaheko.com/api/v1/blast')
+      || 'https://nssimssms.mensaheko.com/api/v1/blast').replace(/\/$/, ''),
     maxMessageLength: parseInt(getEnv('SMS_MAX_MESSAGE_LENGTH', '160') || '160', 10),
     failureThreshold: parseInt(getEnv('SMS_FAILURE_THRESHOLD', '5') || '5', 10),
     circuitCooldownMs: parseInt(getEnv('SMS_CIRCUIT_COOLDOWN_MS', '60000') || '60000', 10),
@@ -264,11 +271,12 @@ const configSchema = z.object({
     maxAgeMs: z.number().int().min(60000),
   }),
   sms: z.object({
-    provider: z.enum(['unisms', 'semaphore', 'iprogsms']),
+    provider: z.enum(['unisms', 'semaphore', 'iprogsms', 'mensaheko']),
     apiSecretKey: z.string().min(1).optional(),
     senderId: z.string().min(1).optional(),
     iprogNetworkProvider: z.number().int().min(0).max(2),
     iprogBaseUrl: z.string().url(),
+    mensahekoBlastUrl: z.string().url(),
     maxMessageLength: z.number().int().min(1).max(160),
     failureThreshold: z.number().int().min(1).max(20),
     circuitCooldownMs: z.number().int().min(1000).max(3600000),

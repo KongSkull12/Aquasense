@@ -89,7 +89,8 @@ if (!(Test-Path Frontend/.env)) { Copy-Item Frontend/.env.example Frontend/.env 
 | `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` | PostgreSQL details: `localhost`, `5432`, `AquaSense`, `postgres`, and your password. Keep `DB_DIALECT=postgres`. |
 | `PORT`, `HOST`, `CORS_ORIGIN` | Local defaults: `5001`, `localhost`, and the allowed website `http://localhost:3000`. |
 | `JWT_SECRET` | A private random value of at least 32 characters. Replace the template value. |
-| `SMS_PROVIDER` | `iprogsms` (default), `semaphore`, or `unisms`. |
+| `SMS_PROVIDER` | `mensaheko` (default), `iprogsms`, `semaphore`, or `unisms`. |
+| `MENSAHEKO_API_KEY`, `MENSAHEKO_BLAST_URL` | Used when `SMS_PROVIDER=mensaheko`. API key from the MensaheKo project dashboard. Blast URL defaults to `https://nssimssms.mensaheko.com/api/v1/blast`. |
 | `IPROG_SMS_API_TOKEN`, `IPROG_SMS_NETWORK_PROVIDER` | Used when `SMS_PROVIDER=iprogsms`. Token from the IPROG SMS account dashboard. Network provider `2` is recommended for broad PH coverage. Philippine numbers only (`+63…`). |
 | `UNISMS_API_SECRET_KEY`, `UNISMS_SENDER_ID`, `FARMER_PHONE` | Used when `SMS_PROVIDER=unisms`. Valid provider key, assigned/approved sender ID, and real farmer mobile. A placeholder key permits startup but cannot send. Leave the phone blank to skip automatic SMS. |
 | `SEMAPHORE_API_KEY`, `SEMAPHORE_SENDER_NAME` | Used when `SMS_PROVIDER=semaphore`. The sender name is optional (blank uses the account's default approved name). Semaphore sends to Philippine numbers only. |
