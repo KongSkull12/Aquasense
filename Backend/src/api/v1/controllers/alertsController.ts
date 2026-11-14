@@ -24,14 +24,36 @@ const parseLimit = (value: unknown): number => {
   if (!Number.isFinite(parsed) || parsed <= 0) {
     return 50;
   }
-  return Math.min(parsed, 200);
+  return Math.min(parsed, 1000);
+};
+
+/** Parse an ISO date/datetime; bare YYYY-MM-DD is Asia/Manila start or end of day. */
+const parseAlertBound = (value: unknown, endOfDay: boolean): Date | undefined => {
+  if (typeof value !== 'string' || !value.trim()) return undefined;
+  const raw = value.trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    const parsed = new Date(`${raw}T${endOfDay ? '23:59:59.999' : '00:00:00.000'}+08:00`);
+    return Number.isFinite(parsed.getTime()) ? parsed : undefined;
+  }
+  const parsed = new Date(raw);
+  return Number.isFinite(parsed.getTime()) ? parsed : undefined;
 };
 
 export const getAlerts = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     const limit = parseLimit(req.query.limit);
     const status = req.query.status as AlertStatus | undefined;
-    const alerts = await alertService.getAlerts(limit, status, await visibleDeviceIds(req));
+    const from = parseAlertBound(req.query.from, false);
+    const to = parseAlertBound(req.query.to, true);
+    if ((req.query.from && !from) || (req.query.to && !to)) {
+      sendError(res, 400, 'from and to must be ISO dates (YYYY-MM-DD) or datetimes');
+      return;
+    }
+    if (from && to && from.getTime() > to.getTime()) {
+      sendError(res, 400, 'from must be on or before to');
+      return;
+    }
+    const alerts = await alertService.getAlerts(limit, status, await visibleDeviceIds(req), { from, to });
     sendSuccess(res, 200, 'Alerts retrieved', alerts);
   } catch (error) {
     logger.error('Failed to fetch alerts', error);

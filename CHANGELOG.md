@@ -13,6 +13,15 @@ The running version is shown in the dashboard sidebar (App = frontend, API = bac
 3. Commit, tag and push: `git tag vX.Y.Z && git push kongskull main --tags`.
    Vercel and Render redeploy `main` automatically.
 
+## [1.10.1] - 2026-11-14
+
+### Changed
+- Alerts & logs focuses on active counts, filtered history, and SMS for the selected dates. The
+  long auto-SMS rule catalog was removed from this page.
+- History can be filtered by month or custom from/to dates and by status; **Download Excel**
+  exports the filtered alerts and SMS log.
+- `GET /api/v1/alerts` accepts optional `from` / `to` (YYYY-MM-DD) and allows up to 1000 rows.
+
 ## [1.10.0] - 2026-11-14
 
 ### Added

@@ -195,8 +195,12 @@ export const sensorQuerySchema = z.object({
 }).partial();
 
 export const alertQuerySchema = z.object({
-  limit: z.coerce.number().int().min(1).max(200).default(50),
+  limit: z.coerce.number().int().min(1).max(1000).default(50),
   status: z.enum(['ACTIVE', 'ACKNOWLEDGED', 'RESOLVED']).optional(),
+  /** Inclusive start of createdAt range (ISO date or datetime). */
+  from: z.string().trim().min(4).max(40).optional(),
+  /** Inclusive end of createdAt range (ISO date or datetime). */
+  to: z.string().trim().min(4).max(40).optional(),
 }).strict();
 export const timeRangeQuerySchema = z.object({ minutes: z.coerce.number().int().min(1).max(1440).default(60) }).strict();
 export const limitQuerySchema = z.object({ limit: z.coerce.number().int().min(1).max(200).default(50) }).strict();

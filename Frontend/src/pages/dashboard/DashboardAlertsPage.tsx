@@ -1,8 +1,9 @@
-import React from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useDashboardData } from '../../components/WaterQuality/useDashboardData';
-import type { AlertSeverity, HealthAlert } from '../../types/water';
+import type { AlertSeverity, AlertStatus, HealthAlert } from '../../types/water';
 import type { SmsLogEntry } from '../../types/sms';
-import { SENSOR_ALERT_CATALOG } from '../../constants/sensorAlerts';
+import { apiClient, getApiErrorMessage } from '../../services/apiClient';
+import { downloadExcelWorkbook } from '../../utils/excelDownload';
 import { EmptyState, PageHead, Panel, StateMark, type MarkState } from '../../components/WaterQuality/Console';
 
 const maskPhone = (phone: string) => {
@@ -33,84 +34,166 @@ const getAlertTime = (alert: HealthAlert) => alert.createdAt || alert.timestamp 
 
 const getAlertValue = (alert: HealthAlert) => {
   const value = alert.currentValue ?? alert.value;
-  if (value === undefined) return '—';
-  return `${value.toFixed(2)}${alert.unit ? ` ${alert.unit}` : ''}`;
+  if (value === undefined || value === null) return '';
+  return Number(value);
 };
 
 const getAlertThreshold = (alert: HealthAlert) => {
   const threshold = alert.thresholdValue ?? alert.threshold;
-  if (threshold === undefined) return '—';
-  return `${threshold.toFixed(2)}${alert.unit ? ` ${alert.unit}` : ''}`;
+  if (threshold === undefined || threshold === null) return '';
+  return Number(threshold);
 };
 
 const getActionLabel = (alert: HealthAlert) => (alert.action || 'Review tank').replace(/_/g, ' ').toLowerCase();
 
-const AlertRow = ({ alert, showAction = false }: { alert: HealthAlert; showAction?: boolean }) => (
-  <li className="px-4 py-3.5 sm:px-5">
-    <div className="flex items-start justify-between gap-4">
-      <div className="min-w-0">
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-          <p className="text-sm font-semibold">{formatCategory(alert)}</p>
-          <StateMark state={getSeverityState(alert.severity)} className="!text-xs">{titleCase(normalizeSeverity(alert.severity))}</StateMark>
-        </div>
-        <p className="mt-1 text-[13px] leading-relaxed text-ink-2">{alert.message}</p>
-      </div>
-      <time className="num shrink-0 text-xs text-ink-3" dateTime={new Date(getAlertTime(alert)).toISOString()}>{new Date(getAlertTime(alert)).toLocaleTimeString()}</time>
-    </div>
-    <dl className="num mt-2 flex flex-wrap gap-x-5 gap-y-1 text-xs text-ink-3">
-      <div className="flex gap-1.5"><dt>Current</dt><dd className="font-semibold text-ink">{getAlertValue(alert)}</dd></div>
-      <div className="flex gap-1.5"><dt>Limit</dt><dd className="font-semibold text-ink">{getAlertThreshold(alert)}</dd></div>
-      {alert.status && <div className="flex gap-1.5"><dt>Status</dt><dd className="font-semibold text-ink">{titleCase(alert.status)}</dd></div>}
-    </dl>
-    {showAction && (
-      <p className="mt-2 text-[13px] text-ink">
-        <span className="text-ink-3">Recommended: </span>
-        <span className="font-semibold">{getActionLabel(alert).replace(/^\w/, (char) => char.toUpperCase())}</span>
-      </p>
-    )}
-  </li>
-);
-
-const SmsRow = ({ log }: { log: SmsLogEntry }) => {
-  const pending = ['pending', 'retrying', 'unknown'].includes(log.deliveryStatus || '');
-  const label = log.deliveryStatus === 'unknown' ? 'Unconfirmed' : (log.deliveryStatus || (log.success ? 'Sent' : 'Failed'));
-  return (
-    <li className="flex items-center justify-between gap-4 px-4 py-3 sm:px-5">
-      <div className="min-w-0">
-        <p className="truncate text-sm font-semibold">{titleCase(log.category)}</p>
-        <p className="num mt-0.5 text-xs text-ink-3">{new Date(log.sentAt).toLocaleString()} · {maskPhone(log.recipient)}</p>
-      </div>
-      <StateMark state={log.success ? 'ok' : pending ? 'warn' : 'alarm'} className="shrink-0 !text-xs">{label.charAt(0).toUpperCase() + label.slice(1)}</StateMark>
-    </li>
-  );
+const toDateInput = (date: Date) => {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
 };
 
-const ListPanel = ({ title, count, children }: { title: string; count: string; children: React.ReactNode }) => (
-  <Panel title={title} actions={<span className="num text-xs text-ink-3">{count}</span>} bodyClassName="max-h-[460px] overflow-y-auto">
-    {children}
-  </Panel>
-);
+const startOfMonth = (year: number, monthIndex: number) => new Date(year, monthIndex, 1);
+const endOfMonth = (year: number, monthIndex: number) => new Date(year, monthIndex + 1, 0);
+
+const monthOptions = (() => {
+  const now = new Date();
+  const options: Array<{ value: string; label: string; from: string; to: string }> = [];
+  for (let i = 0; i < 12; i += 1) {
+    const cursor = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const from = toDateInput(startOfMonth(cursor.getFullYear(), cursor.getMonth()));
+    const to = toDateInput(endOfMonth(cursor.getFullYear(), cursor.getMonth()));
+    const label = cursor.toLocaleString(undefined, { month: 'long', year: 'numeric' });
+    options.push({ value: `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}`, label, from, to });
+  }
+  return options;
+})();
+
+type StatusFilter = 'ALL' | AlertStatus;
 
 const DashboardAlertsPage: React.FC = () => {
-  const { activeAlerts, recentAlerts, smsLogs } = useDashboardData();
+  const { activeAlerts, smsLogs } = useDashboardData();
+  const thisMonth = monthOptions[0];
+
+  const [monthKey, setMonthKey] = useState(thisMonth.value);
+  const [from, setFrom] = useState(thisMonth.from);
+  const [to, setTo] = useState(thisMonth.to);
+  const [status, setStatus] = useState<StatusFilter>('ALL');
+  const [history, setHistory] = useState<HealthAlert[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const loadHistory = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const params = new URLSearchParams({ limit: '500' });
+      if (status !== 'ALL') params.set('status', status);
+      if (from) params.set('from', from);
+      if (to) params.set('to', to);
+      const response = await apiClient.get<HealthAlert[]>(`/alerts?${params.toString()}`);
+      setHistory(response.data || []);
+    } catch (cause) {
+      setError(getApiErrorMessage(cause, 'Unable to load alert history.'));
+      setHistory([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [from, to, status]);
+
+  useEffect(() => {
+    void loadHistory();
+  }, [loadHistory]);
+
+  const applyMonth = (value: string) => {
+    setMonthKey(value);
+    if (value === 'custom') return;
+    const match = monthOptions.find((option) => option.value === value);
+    if (!match) return;
+    setFrom(match.from);
+    setTo(match.to);
+  };
+
+  const onFromChange = (value: string) => {
+    setFrom(value);
+    setMonthKey('custom');
+  };
+
+  const onToChange = (value: string) => {
+    setTo(value);
+    setMonthKey('custom');
+  };
+
   const active = activeAlerts || [];
-  const recent = recentAlerts?.length ? recentAlerts : active;
-  const critical = active.filter(isCriticalAlert);
-  const sentSms = smsLogs.filter((log) => log.success || ['pending', 'retrying'].includes(log.deliveryStatus || '')).length;
-  const failedSms = smsLogs.filter((log) => !log.success && !['pending', 'retrying', 'unknown'].includes(log.deliveryStatus || '')).length;
-  const pendingSms = smsLogs.filter((log) => ['pending', 'retrying', 'unknown'].includes(log.deliveryStatus || '')).length;
-  const latestCritical = critical[0];
+  const criticalActive = active.filter(isCriticalAlert);
+  const filteredSms = useMemo(() => {
+    const start = from ? new Date(`${from}T00:00:00`).getTime() : null;
+    const end = to ? new Date(`${to}T23:59:59.999`).getTime() : null;
+    return smsLogs.filter((log) => {
+      const at = new Date(log.sentAt).getTime();
+      if (!Number.isFinite(at)) return false;
+      if (start != null && at < start) return false;
+      if (end != null && at > end) return false;
+      return true;
+    });
+  }, [smsLogs, from, to]);
+
+  const sentSms = filteredSms.filter((log) => log.success || ['pending', 'retrying'].includes(log.deliveryStatus || '')).length;
+  const failedSms = filteredSms.filter((log) => !log.success && !['pending', 'retrying', 'unknown'].includes(log.deliveryStatus || '')).length;
 
   const summary: Array<{ label: string; value: number; detail: string; state: MarkState }> = [
-    { label: 'Active alerts', value: active.length, detail: active.length ? 'Needs review' : 'No active issues', state: active.length ? 'warn' : 'ok' },
-    { label: 'Critical', value: critical.length, detail: critical.length ? 'Check the tank first' : 'Nothing urgent', state: critical.length ? 'alarm' : 'ok' },
-    { label: 'SMS sent', value: sentSms, detail: `${pendingSms} pending or unconfirmed`, state: 'info' },
-    { label: 'SMS failed', value: failedSms, detail: failedSms ? 'Check connection or SMS API' : 'No failed sends', state: failedSms ? 'warn' : 'ok' },
+    { label: 'Active now', value: active.length, detail: active.length ? 'Needs review' : 'All clear', state: active.length ? 'warn' : 'ok' },
+    { label: 'Critical now', value: criticalActive.length, detail: criticalActive.length ? 'Check the tank' : 'Nothing urgent', state: criticalActive.length ? 'alarm' : 'ok' },
+    { label: 'In range', value: history.length, detail: loading ? 'Loading…' : `${from || '…'} → ${to || '…'}`, state: 'info' },
+    { label: 'SMS in range', value: filteredSms.length, detail: failedSms ? `${failedSms} failed` : `${sentSms} sent/queued`, state: failedSms ? 'warn' : 'ok' },
   ];
+
+  const downloadExcel = () => {
+    const alertRows = history.map((alert) => [
+      new Date(getAlertTime(alert)).toLocaleString(),
+      formatCategory(alert),
+      titleCase(normalizeSeverity(alert.severity)),
+      alert.message || '',
+      getAlertValue(alert),
+      getAlertThreshold(alert),
+      alert.unit || '',
+      alert.status ? titleCase(alert.status) : '',
+      getActionLabel(alert),
+      alert.smsSentAt ? new Date(alert.smsSentAt).toLocaleString() : '',
+    ]);
+    const smsRows = filteredSms.map((log: SmsLogEntry) => [
+      new Date(log.sentAt).toLocaleString(),
+      titleCase(log.category),
+      titleCase(log.severity),
+      maskPhone(log.recipient),
+      log.deliveryStatus || (log.success ? 'sent' : 'failed'),
+      log.success ? 'Yes' : 'No',
+    ]);
+    downloadExcelWorkbook(`AquaSense-alerts-${from || 'all'}-to-${to || 'all'}`, [
+      {
+        name: 'Alerts',
+        headers: ['When', 'Sensor', 'Severity', 'Message', 'Current', 'Limit', 'Unit', 'Status', 'Action', 'SMS sent at'],
+        rows: alertRows,
+      },
+      {
+        name: 'SMS log',
+        headers: ['When', 'Category', 'Severity', 'Recipient', 'Delivery', 'Success'],
+        rows: smsRows,
+      },
+    ]);
+  };
 
   return (
     <div className="space-y-5">
-      <PageHead title="Alerts & logs" description="Each sensor warning or critical alert opens one active row, texts every saved SMS number, and is recorded in the SMS log." />
+      <PageHead
+        title="Alerts & logs"
+        description="Active problems and filtered alert history. Download the current filter as an Excel file."
+        actions={(
+          <button type="button" className="btn-secondary" disabled={loading || (!history.length && !filteredSms.length)} onClick={downloadExcel}>
+            Download Excel
+          </button>
+        )}
+      />
 
       <section aria-label="Summary" className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-line bg-line xl:grid-cols-4">
         {summary.map((item) => (
@@ -122,69 +205,152 @@ const DashboardAlertsPage: React.FC = () => {
         ))}
       </section>
 
-      <Panel title="Sensor alerts that auto-SMS" description="Warning, critical and emergency for each rule below. Attempts are stored in the SMS log." bodyClassName="p-0">
-        <ul className="divide-y divide-line-soft">
-          {SENSOR_ALERT_CATALOG.map((entry) => (
-            <li key={entry.category} className="px-4 py-3.5 sm:px-5">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <p className="text-sm font-semibold">{entry.sensor} · {titleCase(entry.category)}</p>
-                <StateMark state="ok" className="!text-xs">Auto SMS</StateMark>
-              </div>
-              <ul className="mt-2 space-y-1 text-xs text-ink-3">
-                {entry.triggers.map((trigger) => (
-                  <li key={`${entry.category}-${trigger.severity}-${trigger.limit}`} className="flex flex-wrap gap-x-3 gap-y-0.5">
-                    <span className="font-semibold text-ink">{titleCase(trigger.severity)}</span>
-                    <span>{trigger.when}</span>
-                    <span className="num">{trigger.limit} {entry.unit}</span>
-                  </li>
-                ))}
-              </ul>
-            </li>
-          ))}
-        </ul>
+      <Panel title="Filter" description="Pick a month or set your own dates. Status filters the history table.">
+        <div className="flex flex-wrap items-end gap-3">
+          <div>
+            <label className="field-label" htmlFor="alert-month">Month</label>
+            <select
+              id="alert-month"
+              className="field min-w-[180px]"
+              value={monthKey}
+              onChange={(event) => applyMonth(event.target.value)}
+            >
+              {monthOptions.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+              <option value="custom">Custom dates</option>
+            </select>
+          </div>
+          <div>
+            <label className="field-label" htmlFor="alert-from">From</label>
+            <input id="alert-from" type="date" className="field num" value={from} onChange={(event) => onFromChange(event.target.value)} />
+          </div>
+          <div>
+            <label className="field-label" htmlFor="alert-to">To</label>
+            <input id="alert-to" type="date" className="field num" value={to} onChange={(event) => onToChange(event.target.value)} />
+          </div>
+          <div>
+            <label className="field-label" htmlFor="alert-status">Status</label>
+            <select
+              id="alert-status"
+              className="field min-w-[140px]"
+              value={status}
+              onChange={(event) => setStatus(event.target.value as StatusFilter)}
+            >
+              <option value="ALL">All</option>
+              <option value="ACTIVE">Active</option>
+              <option value="ACKNOWLEDGED">Acknowledged</option>
+              <option value="RESOLVED">Resolved</option>
+            </select>
+          </div>
+          <button type="button" className="btn-primary" disabled={loading} onClick={() => void loadHistory()}>
+            {loading ? 'Loading…' : 'Apply'}
+          </button>
+        </div>
+        {error && <p role="alert" className="mt-3 text-[13px] text-alarm">{error}</p>}
       </Panel>
 
-      {latestCritical && (
-        <section aria-label="Most recent critical alert" className="rounded-lg border border-alarm/30 bg-alarm-bg">
-          <div className="flex items-baseline justify-between gap-3 px-4 pt-3 sm:px-5">
-            <h2 className="text-sm font-semibold text-alarm">Critical</h2>
-            {critical.length > 1 && <p className="text-xs text-[#7a1a12]">{critical.length - 1} more in active alerts</p>}
+      {criticalActive[0] && (
+        <section aria-label="Most recent critical alert" className="rounded-lg border border-alarm/30 bg-alarm-bg px-4 py-3.5 sm:px-5">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-alarm">Critical · {formatCategory(criticalActive[0])}</p>
+              <p className="mt-1 text-[13px] text-ink-2">{criticalActive[0].message}</p>
+              <p className="num mt-2 text-xs text-ink-3">
+                Current {getAlertValue(criticalActive[0]) || '—'}{criticalActive[0].unit ? ` ${criticalActive[0].unit}` : ''}
+                {' · '}Limit {getAlertThreshold(criticalActive[0]) || '—'}
+                {' · '}{new Date(getAlertTime(criticalActive[0])).toLocaleString()}
+              </p>
+            </div>
+            {criticalActive.length > 1 && <p className="text-xs text-[#7a1a12]">{criticalActive.length - 1} more active critical</p>}
           </div>
-          <ul><AlertRow alert={latestCritical} showAction /></ul>
         </section>
       )}
 
-      <div className="grid gap-4 xl:grid-cols-2">
-        <ListPanel title="Active alerts" count={`${active.length} active`}>
-          {active.length === 0 ? (
-            <div className="p-5"><EmptyState title="All clear">There are no active alerts for the tank.</EmptyState></div>
-          ) : (
-            <ul className="divide-y divide-line-soft">{active.slice(0, 8).map((alert) => <AlertRow key={alert.id} alert={alert} showAction />)}</ul>
-          )}
-        </ListPanel>
-
-        <ListPanel title="Recent alerts" count={`${recent.length} records`}>
-          {recent.length === 0 ? (
-            <div className="p-5"><EmptyState title="No alert history yet">Alerts appear here once sensor readings trigger a warning.</EmptyState></div>
-          ) : (
-            <ul className="divide-y divide-line-soft">{recent.slice(0, 10).map((alert) => <AlertRow key={alert.id} alert={alert} />)}</ul>
-          )}
-        </ListPanel>
-
-        <ListPanel title="SMS log" count={`${smsLogs.length} messages`}>
-          {smsLogs.length === 0 ? (
-            <div className="p-5"><EmptyState title="No SMS sent yet">Sent and failed SMS attempts are listed here.</EmptyState></div>
-          ) : (
-            <ul className="divide-y divide-line-soft">{smsLogs.slice(0, 10).map((log) => <SmsRow key={log.id} log={log} />)}</ul>
-          )}
-        </ListPanel>
-
-        {!latestCritical && (
-          <ListPanel title="Critical" count="0 urgent">
-            <div className="p-5"><EmptyState title="No urgent alert">Emergency and critical alerts are pinned to the top of this page when they happen.</EmptyState></div>
-          </ListPanel>
+      <Panel
+        title="Alert history"
+        description="Sensor alerts in the selected date range."
+        actions={<span className="num text-xs text-ink-3">{loading ? '…' : `${history.length} rows`}</span>}
+        bodyClassName="p-0"
+      >
+        {loading ? (
+          <div className="p-5 text-sm text-ink-3">Loading alerts…</div>
+        ) : history.length === 0 ? (
+          <div className="p-5"><EmptyState title="No alerts in this range">Try another month or widen the dates.</EmptyState></div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[720px] text-left text-sm">
+              <thead className="border-b border-line text-xs text-ink-3">
+                <tr>
+                  <th scope="col" className="px-5 py-2.5 font-medium">When</th>
+                  <th scope="col" className="px-3 py-2.5 font-medium">Sensor</th>
+                  <th scope="col" className="px-3 py-2.5 font-medium">Severity</th>
+                  <th scope="col" className="px-3 py-2.5 font-medium">Reading</th>
+                  <th scope="col" className="px-3 py-2.5 font-medium">Status</th>
+                  <th scope="col" className="px-5 py-2.5 font-medium">Message</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-line-soft">
+                {history.map((alert) => {
+                  const current = getAlertValue(alert);
+                  const limit = getAlertThreshold(alert);
+                  return (
+                    <tr key={alert.id} className="hover:bg-water">
+                      <td className="num whitespace-nowrap px-5 py-2.5 text-ink-2">{new Date(getAlertTime(alert)).toLocaleString()}</td>
+                      <td className="px-3 py-2.5 font-medium">{formatCategory(alert)}</td>
+                      <td className="px-3 py-2.5"><StateMark state={getSeverityState(alert.severity)} className="!text-xs">{titleCase(normalizeSeverity(alert.severity))}</StateMark></td>
+                      <td className="num px-3 py-2.5 text-ink-2">
+                        {current === '' ? '—' : current}{alert.unit ? ` ${alert.unit}` : ''}
+                        {limit !== '' && <span className="text-ink-3"> / {limit}</span>}
+                      </td>
+                      <td className="px-3 py-2.5 text-ink-2">{alert.status ? titleCase(alert.status) : '—'}</td>
+                      <td className="max-w-[280px] truncate px-5 py-2.5 text-ink-2" title={alert.message}>{alert.message}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         )}
-      </div>
+      </Panel>
+
+      <Panel
+        title="SMS log"
+        description="Texts in the same date range."
+        actions={<span className="num text-xs text-ink-3">{filteredSms.length} messages</span>}
+        bodyClassName="p-0"
+      >
+        {filteredSms.length === 0 ? (
+          <div className="p-5"><EmptyState title="No SMS in this range">Sent and failed attempts for these dates appear here.</EmptyState></div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[520px] text-left text-sm">
+              <thead className="border-b border-line text-xs text-ink-3">
+                <tr>
+                  <th scope="col" className="px-5 py-2.5 font-medium">When</th>
+                  <th scope="col" className="px-3 py-2.5 font-medium">Alert</th>
+                  <th scope="col" className="px-3 py-2.5 font-medium">Number</th>
+                  <th scope="col" className="px-5 py-2.5 font-medium">Result</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-line-soft">
+                {filteredSms.slice(0, 50).map((log) => {
+                  const pending = ['pending', 'retrying', 'unknown'].includes(log.deliveryStatus || '');
+                  const label = log.deliveryStatus === 'unknown' ? 'Unconfirmed' : (log.deliveryStatus || (log.success ? 'Sent' : 'Failed'));
+                  return (
+                    <tr key={log.id} className="hover:bg-water">
+                      <td className="num whitespace-nowrap px-5 py-2.5 text-ink-2">{new Date(log.sentAt).toLocaleString()}</td>
+                      <td className="px-3 py-2.5 font-medium">{titleCase(log.category)}</td>
+                      <td className="num px-3 py-2.5 text-ink-2">{maskPhone(log.recipient)}</td>
+                      <td className="px-5 py-2.5"><StateMark state={log.success ? 'ok' : pending ? 'warn' : 'alarm'} className="!text-xs">{label.charAt(0).toUpperCase() + label.slice(1)}</StateMark></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
     </div>
   );
 };

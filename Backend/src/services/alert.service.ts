@@ -122,8 +122,24 @@ class AlertService {
     return alert ? this.mapAlert(alert) : null;
   }
 
-  async getAlerts(limit: number = 50, status?: AlertStatus, deviceIds?: string[]): Promise<AlertRecord[]> {
-    const where = { ...(status ? { status } : {}), ...(deviceIds ? { deviceId: { [Op.in]: deviceIds } } : {}) };
+  async getAlerts(
+    limit: number = 50,
+    status?: AlertStatus,
+    deviceIds?: string[],
+    range?: { from?: Date; to?: Date }
+  ): Promise<AlertRecord[]> {
+    const createdAt =
+      range?.from || range?.to
+        ? {
+            ...(range.from ? { [Op.gte]: range.from } : {}),
+            ...(range.to ? { [Op.lte]: range.to } : {}),
+          }
+        : undefined;
+    const where = {
+      ...(status ? { status } : {}),
+      ...(deviceIds ? { deviceId: { [Op.in]: deviceIds } } : {}),
+      ...(createdAt ? { createdAt } : {}),
+    };
     const alerts = await AlertModel.findAll({
       where,
       order: [['createdAt', 'DESC']],
