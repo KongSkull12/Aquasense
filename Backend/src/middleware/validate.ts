@@ -111,7 +111,7 @@ export const registerDeviceSchema = z.object({
 
 export const smsTestSchema = z.object({
   recipient: z.string().trim().regex(/^\+[1-9]\d{7,14}$/).optional(),
-  message: z.string().trim().min(1).max(160).optional(),
+  message: z.string().trim().min(1).max(480).optional(),
 });
 
 export const smsRecipientsSchema = z.object({

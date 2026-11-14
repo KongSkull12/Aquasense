@@ -6,13 +6,14 @@ import { sendError, sendSuccess } from '../../../utils/response';
 import { logger } from '../../../utils/logger';
 import { alertService } from '../../../services/alert.service';
 import { smsNotificationService } from '../../../services/smsNotification.service';
-import { buildSmsTemplate } from '../../../services/smsTemplate.service';
+import { buildSmsSensorLines, buildSmsTemplate } from '../../../services/smsTemplate.service';
 import { config } from '../../../config/config';
 import { alertPhonesForDevice } from '../../../services/smsRecipients';
 import type { AlertStatus } from '../../../services/alert.service';
 import { SENSOR_ALERT_CATALOG, type AlertSeverity } from '../../../services/ruleEngine.service';
 import type { AuthenticatedRequest } from '../../../middleware/authMiddleware';
 import { accessibleDeviceIds } from '../../../services/deviceAccess';
+import { sensorReadingService } from '../../../services/sensorReadingService';
 
 const visibleDeviceIds = async (req: AuthenticatedRequest): Promise<string[] | undefined> => {
   if (!req.userId) return [];
@@ -130,6 +131,7 @@ export const resendAlert = async (req: AuthenticatedRequest, res: Response): Pro
     }
 
     const tankName = config.farm.tankName || alert.deviceId;
+    const latest = await sensorReadingService.getLatestReading([alert.deviceId]);
     const smsMessage = buildSmsTemplate({
       farmerName: config.farm.farmerName,
       farmName: config.farm.farmName,
@@ -139,6 +141,19 @@ export const resendAlert = async (req: AuthenticatedRequest, res: Response): Pro
       value: alert.currentValue,
       unit: alert.unit,
       action: alert.action,
+      alertAt: alert.createdAt,
+      sensors: buildSmsSensorLines({
+        temperature: latest?.temperature ?? null,
+        ph: latest?.ph ?? null,
+        dissolvedOxygen: latest?.do ?? null,
+        dissolvedOxygenMeasured: latest?.doMeasured,
+        turbidity: latest?.turbidity ?? null,
+        turbidityUnit: latest?.turbidityUnit,
+        orp: latest?.orp ?? null,
+        ammonia: latest?.ammonia ?? null,
+        tankLevel: latest?.tankLevel ?? null,
+        sensorHealth: latest?.sensorHealth,
+      }),
     });
 
     const results = await smsNotificationService.sendEach({

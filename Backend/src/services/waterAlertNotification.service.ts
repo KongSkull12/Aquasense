@@ -1,9 +1,9 @@
-import { decisionEligible, type HealthSummary } from './sensorHealth';
+import { decisionEligible, type HealthSummary, type UltrasonicReading } from './sensorHealth';
 import { alertService } from './alert.service';
 import { predictiveAnalyticsService } from './predictiveAnalytics.service';
 import { ruleEngine, type AlertSeverity, type RuleAlertResult } from './ruleEngine.service';
 import { smsNotificationService } from './smsNotification.service';
-import { buildPredictiveSmsTemplate, buildSmsTemplate } from './smsTemplate.service';
+import { buildPredictiveSmsTemplate, buildSmsSensorLines, buildSmsTemplate } from './smsTemplate.service';
 import { alertPhonesForDevice } from './smsRecipients';
 import { config } from '../config/config';
 import { logger } from '../utils/logger';
@@ -16,8 +16,12 @@ export interface WaterAlertNotificationInput {
   dissolvedOxygenMeasured?: boolean;
   turbidity: number | null;
   ammonia?: number | null;
+  orp?: number | null;
+  tankLevel?: UltrasonicReading | null;
   sensorHealth?: HealthSummary;
   turbidityUnit?: string;
+  /** Reading / alert time used in the SMS timestamp line. */
+  timestamp?: Date | string | number;
 }
 
 export interface WaterAlertNotificationResult {
@@ -75,7 +79,7 @@ class WaterAlertNotificationService {
     // warning still texts even if a temperature alert was sent recently.
     // Cooldown is tracked per category (15 min standard / 5 min emergency).
     for (const candidate of smsCandidates) {
-      const sent = await this.sendSingleRuleAlertSms(input.deviceId, candidate);
+      const sent = await this.sendSingleRuleAlertSms(input.deviceId, candidate, input);
       if (sent) smsSentCount += 1;
     }
 
@@ -89,7 +93,7 @@ class WaterAlertNotificationService {
         riskLevel: predictiveRiskLevel,
         cause: predictive.warningCard.cause,
         estimatedUnsafeInMinutes: predictive.warningCard.estimatedUnsafeInMinutes,
-      });
+      }, input);
       if (sent) {
         smsSentCount += 1;
       }
@@ -120,9 +124,25 @@ class WaterAlertNotificationService {
     });
   }
 
+  private sensorLinesFor(input: WaterAlertNotificationInput) {
+    return buildSmsSensorLines({
+      temperature: input.temperature,
+      ph: input.ph,
+      dissolvedOxygen: input.dissolvedOxygen,
+      dissolvedOxygenMeasured: input.dissolvedOxygenMeasured,
+      turbidity: input.turbidity,
+      turbidityUnit: input.turbidityUnit,
+      orp: input.orp,
+      ammonia: input.ammonia,
+      tankLevel: input.tankLevel,
+      sensorHealth: input.sensorHealth,
+    });
+  }
+
   private async sendSingleRuleAlertSms(
     deviceId: string,
-    entry: { alertId: string; alert: RuleAlertResult }
+    entry: { alertId: string; alert: RuleAlertResult },
+    input: WaterAlertNotificationInput,
   ): Promise<boolean> {
     const recipients = await alertPhonesForDevice(deviceId);
     if (!recipients.length) {
@@ -141,6 +161,8 @@ class WaterAlertNotificationService {
       value: alert.currentValue,
       unit: alert.unit,
       action: alert.action,
+      alertAt: input.timestamp ?? new Date(),
+      sensors: this.sensorLinesFor(input),
     });
 
     // Category = sensor rule (e.g. PH_LOW) so each parameter has its own cooldown.
@@ -161,7 +183,8 @@ class WaterAlertNotificationService {
       riskLevel: 'HIGH' | 'CRITICAL';
       cause: string;
       estimatedUnsafeInMinutes: number | null;
-    }
+    },
+    input?: WaterAlertNotificationInput,
   ): Promise<boolean> {
     const recipients = await alertPhonesForDevice(deviceId);
     if (!recipients.length) {
@@ -177,6 +200,8 @@ class WaterAlertNotificationService {
       riskLevel: warningCard.riskLevel,
       cause: warningCard.cause,
       etaMinutes: warningCard.estimatedUnsafeInMinutes,
+      alertAt: input?.timestamp ?? new Date(),
+      sensors: input ? this.sensorLinesFor(input) : undefined,
     });
 
     const results = await smsNotificationService.sendEach({

@@ -13,6 +13,13 @@ The running version is shown in the dashboard sidebar (App = frontend, API = bac
 3. Commit, tag and push: `git tag vX.Y.Z && git push kongskull main --tags`.
    Vercel and Render redeploy `main` automatically.
 
+## [1.10.4] - 2026-11-14
+
+### Changed
+- Alert SMS body lists each sensor reading (Temp, pH, DO, Turbidity, ORP, Depth). Sensors with
+  no usable reading show **Disconnected**. A **When:** line includes the alert timestamp
+  (Asia/Manila). Message length allowance raised to 480 characters for multi-segment texts.
+
 ## [1.10.3] - 2026-11-14
 
 ### Fixed

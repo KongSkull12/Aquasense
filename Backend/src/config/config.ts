@@ -201,7 +201,8 @@ export const config = {
     /** MensaheKo external blast endpoint (X-Api-Key). */
     mensahekoBlastUrl: (getEnv('MENSAHEKO_BLAST_URL', 'https://nssimssms.mensaheko.com/api/v1/blast')
       || 'https://nssimssms.mensaheko.com/api/v1/blast').replace(/\/$/, ''),
-    maxMessageLength: parseInt(getEnv('SMS_MAX_MESSAGE_LENGTH', '160') || '160', 10),
+    /** Up to 3 GSM segments so alert SMS can list every sensor reading. */
+    maxMessageLength: parseInt(getEnv('SMS_MAX_MESSAGE_LENGTH', '480') || '480', 10),
     failureThreshold: parseInt(getEnv('SMS_FAILURE_THRESHOLD', '5') || '5', 10),
     circuitCooldownMs: parseInt(getEnv('SMS_CIRCUIT_COOLDOWN_MS', '60000') || '60000', 10),
   },
@@ -277,7 +278,7 @@ const configSchema = z.object({
     iprogNetworkProvider: z.number().int().min(0).max(2),
     iprogBaseUrl: z.string().url(),
     mensahekoBlastUrl: z.string().url(),
-    maxMessageLength: z.number().int().min(1).max(160),
+    maxMessageLength: z.number().int().min(1).max(480),
     failureThreshold: z.number().int().min(1).max(20),
     circuitCooldownMs: z.number().int().min(1000).max(3600000),
   }),
