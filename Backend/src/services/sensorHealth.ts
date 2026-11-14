@@ -137,10 +137,19 @@ export function refreshHealth(summary: ExtendedHealthSummary, now = Date.now(), 
   }
   return refreshed;
 }
-export function decisionEligible(summary?: HealthSummary): boolean {
-  if (!summary) return false;
-  const health=refreshHealth(summary);
-  return SENSOR_NAMES.every(name=>health[name].valid && health[name].health==='VALID' && health[name].stability==='STABLE' && health[name].calibration==='CALIBRATED');
+/**
+ * True when at least one alertable water-quality sensor (temperature, pH, turbidity)
+ * is calibrated and stable. ORP has no alert/SMS policy and must not block texts —
+ * a missing temperature reading used to stop all SMS even for critical pH/turbidity.
+ */
+export function decisionEligible(summary?: HealthSummary, now = Date.now()): boolean {
+  if (!summary) return true;
+  const health = refreshHealth(summary, now);
+  const alertable: SensorName[] = ['temperature', 'ph', 'turbidity'];
+  return alertable.some((name) => {
+    const sensor = health[name];
+    return sensor.valid && sensor.health === 'VALID' && sensor.stability === 'STABLE' && sensor.calibration === 'CALIBRATED';
+  });
 }
 export interface TanMeasurement { value: number; unit: 'mg/L as N'; source: 'test_kit'|'laboratory'|'external_sensor'|'manual'; validated: true; timestamp: string }
 export function ammoniaSpeciation(health: HealthSummary, tan?: unknown, waterType = 'freshwater', now = Date.now()) {

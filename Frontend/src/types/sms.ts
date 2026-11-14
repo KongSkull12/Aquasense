@@ -10,4 +10,6 @@ export interface SmsLogEntry {
   deliveryStatus?: SmsDeliveryStatus;
   referenceId?: string;
   sentAt: string;
+  /** Plain-language reason when delivery was rejected or failed. */
+  failureReason?: string;
 }

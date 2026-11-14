@@ -1,7 +1,7 @@
 import { Op, type Transaction } from 'sequelize';
 import { SmsLog as SmsLogModel } from '../database/models/SmsLog';
 import { Alert } from '../database/models/Alert';
-import { smsService, type SmsSendResult, type SmsStatus } from './sms.service';
+import { describeSmsFailure, smsService, type SmsSendResult, type SmsStatus } from './sms.service';
 
 export interface SmsLogEntry {
   id: string;
@@ -19,6 +19,8 @@ export interface SmsLogEntry {
   updatedAt: Date;
   deliveryStatus?: SmsStatus;
   referenceId?: string;
+  /** Plain-language provider rejection / failure reason for the dashboard. */
+  failureReason?: string;
 }
 
 class SmsLogService {
@@ -129,6 +131,15 @@ class SmsLogService {
       deliveryStatus = details.deliveryStatus || details.message?.status || deliveryStatus;
       referenceId = details.referenceId || details.message?.reference_id;
     } catch { /* Legacy logs may contain plain text. */ }
+    const failureReason = !log.success && deliveryStatus !== 'pending' && deliveryStatus !== 'retrying'
+      ? describeSmsFailure([{
+        success: false,
+        accepted: false,
+        status: deliveryStatus || 'failed',
+        response: log.providerResponse,
+        retryCount: log.retryCount,
+      }])
+      : undefined;
     return {
       id: log.id,
       alertId: log.alertId,
@@ -145,6 +156,7 @@ class SmsLogService {
       updatedAt: log.updatedAt,
       deliveryStatus,
       referenceId,
+      failureReason: failureReason || undefined,
     };
   }
 }

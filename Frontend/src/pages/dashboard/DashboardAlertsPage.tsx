@@ -391,7 +391,10 @@ const DashboardAlertsPage: React.FC = () => {
                         <td className="num whitespace-nowrap px-5 py-2.5 text-ink-2">{new Date(log.sentAt).toLocaleString()}</td>
                         <td className="px-3 py-2.5 font-medium">{titleCase(log.category)}</td>
                         <td className="num px-3 py-2.5 text-ink-2">{maskPhone(log.recipient)}</td>
-                        <td className="px-5 py-2.5"><StateMark state={log.success ? 'ok' : pending ? 'warn' : 'alarm'} className="!text-xs">{label.charAt(0).toUpperCase() + label.slice(1)}</StateMark></td>
+                        <td className="px-5 py-2.5">
+                          <StateMark state={log.success ? 'ok' : pending ? 'warn' : 'alarm'} className="!text-xs">{label.charAt(0).toUpperCase() + label.slice(1)}</StateMark>
+                          {log.failureReason && <p className="mt-1 max-w-xs text-xs leading-snug text-ink-3">{log.failureReason}</p>}
+                        </td>
                       </tr>
                     );
                   })}

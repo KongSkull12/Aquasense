@@ -79,6 +79,18 @@ class AlertService {
       existing.smsSentAt = null;
     }
     await existing.save();
+    // Collapse older duplicate active rows for the same category (pre-dedupe flood).
+    await AlertModel.update(
+      { status: 'RESOLVED' },
+      {
+        where: {
+          deviceId: input.deviceId,
+          category: input.category,
+          status: { [Op.in]: ['ACTIVE', 'ACKNOWLEDGED'] },
+          id: { [Op.ne]: existing.id },
+        },
+      }
+    );
     return { alert: this.mapAlert(existing), created: false, escalated };
   }
 

@@ -13,6 +13,15 @@ The running version is shown in the dashboard sidebar (App = frontend, API = bac
 3. Commit, tag and push: `git tag vX.Y.Z && git push kongskull main --tags`.
    Vercel and Render redeploy `main` automatically.
 
+## [1.10.3] - 2026-11-14
+
+### Fixed
+- SMS and alert processing no longer require every sensor (including temperature and ORP) to be
+  calibrated. A missing temperature reading was blocking all texts even when pH/turbidity were
+  critical. Eligibility now needs any one of temperature, pH, or turbidity to be ready.
+- Duplicate active alert rows for the same sensor are collapsed when a reading is processed.
+- SMS log shows the provider rejection reason under Failed/Rejected rows.
+
 ## [1.10.2] - 2026-11-14
 
 ### Changed

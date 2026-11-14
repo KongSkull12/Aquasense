@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {SensorValidator, SENSOR_NAMES, ammoniaSpeciation, numeric, timestampMs, type HealthSummary, type SensorName} from './sensorHealth';
+import {SensorValidator, SENSOR_NAMES, ammoniaSpeciation, decisionEligible, numeric, timestampMs, type HealthSummary, type SensorName} from './sensorHealth';
 import {ruleEngine} from './ruleEngine.service';
 const now=Date.parse('2026-09-14T04:00:00Z');
 const stamp=(at=now)=>new Date(at).toISOString();
@@ -57,6 +57,14 @@ check('clipping hidden by averaging','mean 2047 but 10/10 rail hits','SATURATED'
 check('stable window','20 samples 7.10/7.11','STABLE',()=>{const v=new SensorValidator();let r;for(let i=0;i<20;i++)r=v.validate('test','ph',7.1+i%2*0.01,stamp(now+i*5000),{rawAdc:3000+i%2},now+i*5000);return r!.stability;});
 check('noisy window','7/9 alternating','UNSTABLE',()=>{const v=new SensorValidator();let r;for(let i=0;i<20;i++)r=v.validate('test','ph',7+i%2*2,stamp(now+i*5000),{},now+i*5000);return r!.health;});
 check('conservative stuck detection','10 minutes unchanged','POSSIBLY_STUCK',()=>{const v=new SensorValidator();let r;for(let i=0;i<=120;i++)r=v.validate('test','ph',7,stamp(now+i*5000),{rawAdc:3000},now+i*5000);return r!.health;});
+test('missing temperature does not block SMS eligibility when pH is calibrated', () => {
+  const health = calibratedSummary(25, 4.8);
+  health.temperature = validate('temperature', -127);
+  assert.equal(decisionEligible(health, now), true);
+  health.ph = validate('ph', null);
+  health.turbidity = validate('turbidity', null);
+  assert.equal(decisionEligible(health, now), false);
+});
 check('invalid sensor cannot trigger water alert',-127,0,()=>ruleEngine({temperature:-127,ph:null,turbidity:null,dissolvedOxygen:null}).length);
 check('raw ADC cannot trigger NTU alert',3000,0,()=>ruleEngine({temperature:27,ph:7,turbidity:3000,turbidityUnit:'raw_adc',dissolvedOxygen:null}).length);
 check('invalid pH blocks ammonia',15,'UNAVAILABLE',()=>ammoniaSpeciation(summary(25,15),undefined,'freshwater',now).status);
