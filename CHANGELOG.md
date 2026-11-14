@@ -13,6 +13,11 @@ The running version is shown in the dashboard sidebar (App = frontend, API = bac
 3. Commit, tag and push: `git tag vX.Y.Z && git push kongskull main --tags`.
    Vercel and Render redeploy `main` automatically.
 
+## [1.10.2] - 2026-11-14
+
+### Changed
+- Alerts & logs: alert history and SMS log show **10 rows per page** with Previous/Next controls.
+
 ## [1.10.1] - 2026-11-14
 
 ### Changed

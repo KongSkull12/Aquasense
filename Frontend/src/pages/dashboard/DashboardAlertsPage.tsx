@@ -71,6 +71,36 @@ const monthOptions = (() => {
 
 type StatusFilter = 'ALL' | AlertStatus;
 
+const PAGE_SIZE = 10;
+
+const LogPager = ({
+  page,
+  pageCount,
+  total,
+  onChange,
+  label,
+}: {
+  page: number;
+  pageCount: number;
+  total: number;
+  onChange: (page: number) => void;
+  label: string;
+}) => {
+  if (total <= PAGE_SIZE) return null;
+  const fromRow = (page - 1) * PAGE_SIZE + 1;
+  const toRow = Math.min(page * PAGE_SIZE, total);
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line-soft px-4 py-3 sm:px-5">
+      <p className="num text-xs text-ink-3">{fromRow}–{toRow} of {total} {label}</p>
+      <div className="flex items-center gap-2">
+        <button type="button" className="btn-secondary btn-sm" disabled={page <= 1} onClick={() => onChange(page - 1)}>Previous</button>
+        <span className="num text-xs text-ink-3">Page {page} / {pageCount}</span>
+        <button type="button" className="btn-secondary btn-sm" disabled={page >= pageCount} onClick={() => onChange(page + 1)}>Next</button>
+      </div>
+    </div>
+  );
+};
+
 const DashboardAlertsPage: React.FC = () => {
   const { activeAlerts, smsLogs } = useDashboardData();
   const thisMonth = monthOptions[0];
@@ -82,6 +112,8 @@ const DashboardAlertsPage: React.FC = () => {
   const [history, setHistory] = useState<HealthAlert[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [alertPage, setAlertPage] = useState(1);
+  const [smsPage, setSmsPage] = useState(1);
 
   const loadHistory = useCallback(async () => {
     setLoading(true);
@@ -93,9 +125,11 @@ const DashboardAlertsPage: React.FC = () => {
       if (to) params.set('to', to);
       const response = await apiClient.get<HealthAlert[]>(`/alerts?${params.toString()}`);
       setHistory(response.data || []);
+      setAlertPage(1);
     } catch (cause) {
       setError(getApiErrorMessage(cause, 'Unable to load alert history.'));
       setHistory([]);
+      setAlertPage(1);
     } finally {
       setLoading(false);
     }
@@ -104,6 +138,10 @@ const DashboardAlertsPage: React.FC = () => {
   useEffect(() => {
     void loadHistory();
   }, [loadHistory]);
+
+  useEffect(() => {
+    setSmsPage(1);
+  }, [from, to, smsLogs]);
 
   const applyMonth = (value: string) => {
     setMonthKey(value);
@@ -140,6 +178,13 @@ const DashboardAlertsPage: React.FC = () => {
 
   const sentSms = filteredSms.filter((log) => log.success || ['pending', 'retrying'].includes(log.deliveryStatus || '')).length;
   const failedSms = filteredSms.filter((log) => !log.success && !['pending', 'retrying', 'unknown'].includes(log.deliveryStatus || '')).length;
+
+  const alertPageCount = Math.max(1, Math.ceil(history.length / PAGE_SIZE));
+  const smsPageCount = Math.max(1, Math.ceil(filteredSms.length / PAGE_SIZE));
+  const safeAlertPage = Math.min(alertPage, alertPageCount);
+  const safeSmsPage = Math.min(smsPage, smsPageCount);
+  const pagedHistory = history.slice((safeAlertPage - 1) * PAGE_SIZE, safeAlertPage * PAGE_SIZE);
+  const pagedSms = filteredSms.slice((safeSmsPage - 1) * PAGE_SIZE, safeSmsPage * PAGE_SIZE);
 
   const summary: Array<{ label: string; value: number; detail: string; state: MarkState }> = [
     { label: 'Active now', value: active.length, detail: active.length ? 'Needs review' : 'All clear', state: active.length ? 'warn' : 'ok' },
@@ -269,7 +314,7 @@ const DashboardAlertsPage: React.FC = () => {
 
       <Panel
         title="Alert history"
-        description="Sensor alerts in the selected date range."
+        description="Sensor alerts in the selected date range · 10 per page."
         actions={<span className="num text-xs text-ink-3">{loading ? '…' : `${history.length} rows`}</span>}
         bodyClassName="p-0"
       >
@@ -278,77 +323,83 @@ const DashboardAlertsPage: React.FC = () => {
         ) : history.length === 0 ? (
           <div className="p-5"><EmptyState title="No alerts in this range">Try another month or widen the dates.</EmptyState></div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[720px] text-left text-sm">
-              <thead className="border-b border-line text-xs text-ink-3">
-                <tr>
-                  <th scope="col" className="px-5 py-2.5 font-medium">When</th>
-                  <th scope="col" className="px-3 py-2.5 font-medium">Sensor</th>
-                  <th scope="col" className="px-3 py-2.5 font-medium">Severity</th>
-                  <th scope="col" className="px-3 py-2.5 font-medium">Reading</th>
-                  <th scope="col" className="px-3 py-2.5 font-medium">Status</th>
-                  <th scope="col" className="px-5 py-2.5 font-medium">Message</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-line-soft">
-                {history.map((alert) => {
-                  const current = getAlertValue(alert);
-                  const limit = getAlertThreshold(alert);
-                  return (
-                    <tr key={alert.id} className="hover:bg-water">
-                      <td className="num whitespace-nowrap px-5 py-2.5 text-ink-2">{new Date(getAlertTime(alert)).toLocaleString()}</td>
-                      <td className="px-3 py-2.5 font-medium">{formatCategory(alert)}</td>
-                      <td className="px-3 py-2.5"><StateMark state={getSeverityState(alert.severity)} className="!text-xs">{titleCase(normalizeSeverity(alert.severity))}</StateMark></td>
-                      <td className="num px-3 py-2.5 text-ink-2">
-                        {current === '' ? '—' : current}{alert.unit ? ` ${alert.unit}` : ''}
-                        {limit !== '' && <span className="text-ink-3"> / {limit}</span>}
-                      </td>
-                      <td className="px-3 py-2.5 text-ink-2">{alert.status ? titleCase(alert.status) : '—'}</td>
-                      <td className="max-w-[280px] truncate px-5 py-2.5 text-ink-2" title={alert.message}>{alert.message}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+          <>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[720px] text-left text-sm">
+                <thead className="border-b border-line text-xs text-ink-3">
+                  <tr>
+                    <th scope="col" className="px-5 py-2.5 font-medium">When</th>
+                    <th scope="col" className="px-3 py-2.5 font-medium">Sensor</th>
+                    <th scope="col" className="px-3 py-2.5 font-medium">Severity</th>
+                    <th scope="col" className="px-3 py-2.5 font-medium">Reading</th>
+                    <th scope="col" className="px-3 py-2.5 font-medium">Status</th>
+                    <th scope="col" className="px-5 py-2.5 font-medium">Message</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-line-soft">
+                  {pagedHistory.map((alert) => {
+                    const current = getAlertValue(alert);
+                    const limit = getAlertThreshold(alert);
+                    return (
+                      <tr key={alert.id} className="hover:bg-water">
+                        <td className="num whitespace-nowrap px-5 py-2.5 text-ink-2">{new Date(getAlertTime(alert)).toLocaleString()}</td>
+                        <td className="px-3 py-2.5 font-medium">{formatCategory(alert)}</td>
+                        <td className="px-3 py-2.5"><StateMark state={getSeverityState(alert.severity)} className="!text-xs">{titleCase(normalizeSeverity(alert.severity))}</StateMark></td>
+                        <td className="num px-3 py-2.5 text-ink-2">
+                          {current === '' ? '—' : current}{alert.unit ? ` ${alert.unit}` : ''}
+                          {limit !== '' && <span className="text-ink-3"> / {limit}</span>}
+                        </td>
+                        <td className="px-3 py-2.5 text-ink-2">{alert.status ? titleCase(alert.status) : '—'}</td>
+                        <td className="max-w-[280px] truncate px-5 py-2.5 text-ink-2" title={alert.message}>{alert.message}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <LogPager page={safeAlertPage} pageCount={alertPageCount} total={history.length} onChange={setAlertPage} label="alerts" />
+          </>
         )}
       </Panel>
 
       <Panel
         title="SMS log"
-        description="Texts in the same date range."
+        description="Texts in the same date range · 10 per page."
         actions={<span className="num text-xs text-ink-3">{filteredSms.length} messages</span>}
         bodyClassName="p-0"
       >
         {filteredSms.length === 0 ? (
           <div className="p-5"><EmptyState title="No SMS in this range">Sent and failed attempts for these dates appear here.</EmptyState></div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[520px] text-left text-sm">
-              <thead className="border-b border-line text-xs text-ink-3">
-                <tr>
-                  <th scope="col" className="px-5 py-2.5 font-medium">When</th>
-                  <th scope="col" className="px-3 py-2.5 font-medium">Alert</th>
-                  <th scope="col" className="px-3 py-2.5 font-medium">Number</th>
-                  <th scope="col" className="px-5 py-2.5 font-medium">Result</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-line-soft">
-                {filteredSms.slice(0, 50).map((log) => {
-                  const pending = ['pending', 'retrying', 'unknown'].includes(log.deliveryStatus || '');
-                  const label = log.deliveryStatus === 'unknown' ? 'Unconfirmed' : (log.deliveryStatus || (log.success ? 'Sent' : 'Failed'));
-                  return (
-                    <tr key={log.id} className="hover:bg-water">
-                      <td className="num whitespace-nowrap px-5 py-2.5 text-ink-2">{new Date(log.sentAt).toLocaleString()}</td>
-                      <td className="px-3 py-2.5 font-medium">{titleCase(log.category)}</td>
-                      <td className="num px-3 py-2.5 text-ink-2">{maskPhone(log.recipient)}</td>
-                      <td className="px-5 py-2.5"><StateMark state={log.success ? 'ok' : pending ? 'warn' : 'alarm'} className="!text-xs">{label.charAt(0).toUpperCase() + label.slice(1)}</StateMark></td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+          <>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[520px] text-left text-sm">
+                <thead className="border-b border-line text-xs text-ink-3">
+                  <tr>
+                    <th scope="col" className="px-5 py-2.5 font-medium">When</th>
+                    <th scope="col" className="px-3 py-2.5 font-medium">Alert</th>
+                    <th scope="col" className="px-3 py-2.5 font-medium">Number</th>
+                    <th scope="col" className="px-5 py-2.5 font-medium">Result</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-line-soft">
+                  {pagedSms.map((log) => {
+                    const pending = ['pending', 'retrying', 'unknown'].includes(log.deliveryStatus || '');
+                    const label = log.deliveryStatus === 'unknown' ? 'Unconfirmed' : (log.deliveryStatus || (log.success ? 'Sent' : 'Failed'));
+                    return (
+                      <tr key={log.id} className="hover:bg-water">
+                        <td className="num whitespace-nowrap px-5 py-2.5 text-ink-2">{new Date(log.sentAt).toLocaleString()}</td>
+                        <td className="px-3 py-2.5 font-medium">{titleCase(log.category)}</td>
+                        <td className="num px-3 py-2.5 text-ink-2">{maskPhone(log.recipient)}</td>
+                        <td className="px-5 py-2.5"><StateMark state={log.success ? 'ok' : pending ? 'warn' : 'alarm'} className="!text-xs">{label.charAt(0).toUpperCase() + label.slice(1)}</StateMark></td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <LogPager page={safeSmsPage} pageCount={smsPageCount} total={filteredSms.length} onChange={setSmsPage} label="messages" />
+          </>
         )}
       </Panel>
     </div>
