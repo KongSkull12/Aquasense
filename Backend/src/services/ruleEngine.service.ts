@@ -1,6 +1,16 @@
-import { SensorValidator, refreshHealth, decisionEligible, type HealthSummary } from './sensorHealth';
+import { refreshHealth, type HealthSummary } from './sensorHealth';
+import { classifyBand, DEFAULT_THRESHOLD_BANDS, type ThresholdBands } from './thresholdBands';
 export type AlertSeverity = 'INFO' | 'WARNING' | 'CRITICAL' | 'EMERGENCY';
-export type AlertCategory = 'TEMP_HIGH' | 'TEMP_LOW' | 'PH_LOW' | 'PH_HIGH' | 'DO_LOW' | 'TURBIDITY_HIGH' | 'AMMONIA_HIGH';
+export type AlertCategory =
+  | 'TEMP_HIGH'
+  | 'TEMP_LOW'
+  | 'PH_LOW'
+  | 'PH_HIGH'
+  | 'DO_LOW'
+  | 'TURBIDITY_HIGH'
+  | 'ORP_LOW'
+  | 'ORP_HIGH'
+  | 'AMMONIA_HIGH';
 export type AlertAction =
   | 'DASHBOARD_ONLY'
   | 'WATER_CHANGE'
@@ -25,8 +35,11 @@ export interface RuleEngineInput {
   dissolvedOxygenMeasured?: boolean;
   turbidity: number | null;
   ammonia?: number | null;
+  orp?: number | null;
   sensorHealth?: HealthSummary;
   turbidityUnit?: string;
+  /** Saved dashboard Thresholds (ORP alert cuts). Defaults used when omitted. */
+  thresholdBands?: ThresholdBands;
 }
 
 /** Every commissioned water-quality sensor alert that can open a dashboard row and SMS. */
@@ -102,6 +115,26 @@ export const SENSOR_ALERT_CATALOG: SensorAlertCatalogEntry[] = [
       { severity: 'EMERGENCY', when: 'Dangerously low', limit: '< 2' },
     ],
   },
+  {
+    category: 'ORP_LOW',
+    sensor: 'ORP / redox',
+    unit: 'mV',
+    autoSms: true,
+    triggers: [
+      { severity: 'WARNING', when: 'Below normal range', limit: 'Thresholds normal min' },
+      { severity: 'CRITICAL', when: 'Below alert limit', limit: 'Thresholds alert min' },
+    ],
+  },
+  {
+    category: 'ORP_HIGH',
+    sensor: 'ORP / redox',
+    unit: 'mV',
+    autoSms: true,
+    triggers: [
+      { severity: 'WARNING', when: 'Above normal range', limit: 'Thresholds normal max' },
+      { severity: 'CRITICAL', when: 'Above alert limit', limit: 'Thresholds alert max' },
+    ],
+  },
 ];
 
 export const severityRank = (severity: AlertSeverity | string): number => {
@@ -116,11 +149,26 @@ export const severityRank = (severity: AlertSeverity | string): number => {
 export const ruleEngine = (input: RuleEngineInput): RuleAlertResult[] => {
   const alerts: RuleAlertResult[] = [];
 
-  const check = new SensorValidator();
   const health = input.sensorHealth ? refreshHealth(input.sensorHealth) : null;
-  const usable = (name: 'temperature'|'ph'|'turbidity', value: unknown) => health ? health[name].valid : check.validate('rule',name,value,new Date()).valid;
+  /**
+   * Each sensor is judged on its own reading. Missing/uncalibrated peers must not
+   * block SMS for a sensor that already has a finite, in-range value.
+   * SENSOR_ERROR / INVALID still skip that one channel (e.g. DS18B20 -127).
+   */
+  const usable = (name: 'temperature' | 'ph' | 'turbidity' | 'orp', value: unknown): value is number => {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return false;
+    if (name === 'temperature' && (value === -127 || value < -55 || value > 125)) return false;
+    if (name === 'ph' && (value < 0 || value > 14)) return false;
+    if (name === 'turbidity' && value < 0) return false;
+    if (name === 'orp' && (value < -500 || value > 1500)) return false;
+    if (health) {
+      const state = health[name === 'orp' ? 'orp' : name];
+      if (state?.health === 'SENSOR_ERROR' || state?.health === 'INVALID') return false;
+    }
+    return true;
+  };
   // Temperature (aligned with DEFAULT_THRESHOLD_BANDS: normal 26–29 °C)
-  if (input.temperature !== null && usable('temperature', input.temperature)) {
+  if (usable('temperature', input.temperature)) {
   if (input.temperature < 10) {
     alerts.push({
       category: 'TEMP_LOW',
@@ -184,7 +232,7 @@ export const ruleEngine = (input: RuleEngineInput): RuleAlertResult[] => {
   }
 
   }
-  if (input.ph !== null && usable('ph', input.ph)) {
+  if (usable('ph', input.ph)) {
   // pH Low
   if (input.ph < 6.0) {
     alerts.push({
@@ -267,7 +315,7 @@ export const ruleEngine = (input: RuleEngineInput): RuleAlertResult[] => {
   }
 
   }
-  if (input.turbidity !== null && input.turbidityUnit === 'NTU' && usable('turbidity', input.turbidity)) {
+  if (input.turbidityUnit === 'NTU' && usable('turbidity', input.turbidity)) {
   // Turbidity
   if (input.turbidity > 100) {
     alerts.push({
@@ -292,7 +340,32 @@ export const ruleEngine = (input: RuleEngineInput): RuleAlertResult[] => {
   }
 
   }
+
+  // ORP uses saved Thresholds bands (same cuts as Overview Normal/Warning/Alert).
+  const orpBand = input.thresholdBands?.orp ?? DEFAULT_THRESHOLD_BANDS.orp;
+  if (usable('orp', input.orp)) {
+    const level = classifyBand(input.orp, orpBand);
+    if (level === 'alert' || level === 'warning') {
+      const high = orpBand.alertMax != null && input.orp > (orpBand.normalMax ?? orpBand.alertMax);
+      const severity: AlertSeverity = level === 'alert' ? 'CRITICAL' : 'WARNING';
+      alerts.push({
+        category: high ? 'ORP_HIGH' : 'ORP_LOW',
+        severity,
+        currentValue: input.orp,
+        thresholdValue: high
+          ? (level === 'alert' ? (orpBand.alertMax ?? orpBand.normalMax!) : orpBand.normalMax!)
+          : (level === 'alert' ? (orpBand.alertMin ?? orpBand.normalMin!) : orpBand.normalMin!),
+        unit: 'mV',
+        action: severity === 'CRITICAL' ? 'WATER_CHANGE' : 'DASHBOARD_ONLY',
+        message: high
+          ? (severity === 'CRITICAL' ? 'ORP critically high' : 'ORP above normal range')
+          : (severity === 'CRITICAL' ? 'ORP critically low' : 'ORP below normal range'),
+      });
+    }
+  }
+
   // No ammonia toxicity thresholds until a policy with explicit NH3-N units is commissioned.
   // Speciation percentage alone must never create a toxicity alert.
-  return alerts.map(alert => decisionEligible(input.sensorHealth) ? alert : ({...alert, action: 'DASHBOARD_ONLY', message: alert.message + ' (preliminary; calibration required)'}));
+  // Alerts and SMS are not demoted when other sensors are missing or uncalibrated.
+  return alerts;
 };

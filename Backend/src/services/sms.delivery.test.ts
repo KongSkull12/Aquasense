@@ -178,11 +178,11 @@ test('missing oxygen does not trigger DO emergency; measured zero still does', (
 
 test('sensor alert catalog lists every auto-SMS water-quality rule', async () => {
   const { SENSOR_ALERT_CATALOG, severityRank } = await import('./ruleEngine.service');
-  assert.equal(SENSOR_ALERT_CATALOG.length, 6);
+  assert.equal(SENSOR_ALERT_CATALOG.length, 8);
   assert.ok(SENSOR_ALERT_CATALOG.every((entry) => entry.autoSms));
   assert.deepEqual(
     SENSOR_ALERT_CATALOG.map((entry) => entry.category).sort(),
-    ['DO_LOW', 'PH_HIGH', 'PH_LOW', 'TEMP_HIGH', 'TEMP_LOW', 'TURBIDITY_HIGH']
+    ['DO_LOW', 'ORP_HIGH', 'ORP_LOW', 'PH_HIGH', 'PH_LOW', 'TEMP_HIGH', 'TEMP_LOW', 'TURBIDITY_HIGH']
   );
   assert.ok(severityRank('EMERGENCY') > severityRank('CRITICAL'));
   assert.ok(ruleEngine({ temperature: 24, ph: 7.2, dissolvedOxygen: null, turbidity: null }).some(

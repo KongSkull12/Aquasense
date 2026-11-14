@@ -138,14 +138,14 @@ export function refreshHealth(summary: ExtendedHealthSummary, now = Date.now(), 
   return refreshed;
 }
 /**
- * True when at least one alertable water-quality sensor (temperature, pH, turbidity)
- * is calibrated and stable. ORP has no alert/SMS policy and must not block texts —
- * a missing temperature reading used to stop all SMS even for critical pH/turbidity.
+ * True when at least one water-quality probe looks calibrated and stable.
+ * Alert/SMS processing no longer gates on this — each sensor is evaluated alone —
+ * but analytics callers may still use it as a readiness hint.
  */
 export function decisionEligible(summary?: HealthSummary, now = Date.now()): boolean {
   if (!summary) return true;
   const health = refreshHealth(summary, now);
-  const alertable: SensorName[] = ['temperature', 'ph', 'turbidity'];
+  const alertable: SensorName[] = ['temperature', 'ph', 'turbidity', 'orp'];
   return alertable.some((name) => {
     const sensor = health[name];
     return sensor.valid && sensor.health === 'VALID' && sensor.stability === 'STABLE' && sensor.calibration === 'CALIBRATED';

@@ -1,10 +1,11 @@
-import { decisionEligible, type HealthSummary, type UltrasonicReading } from './sensorHealth';
+import { type HealthSummary, type UltrasonicReading } from './sensorHealth';
 import { alertService } from './alert.service';
 import { predictiveAnalyticsService } from './predictiveAnalytics.service';
 import { ruleEngine, type AlertSeverity, type RuleAlertResult } from './ruleEngine.service';
 import { smsNotificationService } from './smsNotification.service';
 import { buildPredictiveSmsTemplate, buildSmsSensorLines, buildSmsTemplate } from './smsTemplate.service';
 import { alertPhonesForDevice } from './smsRecipients';
+import { loadThresholdBands } from './thresholdBands';
 import { config } from '../config/config';
 import { logger } from '../utils/logger';
 
@@ -34,11 +35,15 @@ const shouldSendSmsForSeverity = (severity: AlertSeverity): boolean => {
   return severity === 'WARNING' || severity === 'CRITICAL' || severity === 'EMERGENCY';
 };
 
+/** Match standard SMS cooldown so an active problem can remind after the cool-down window. */
+const SMS_REMINDER_MS = 15 * 60 * 1000;
+
 class WaterAlertNotificationService {
   async processReading(input: WaterAlertNotificationInput): Promise<WaterAlertNotificationResult> {
-    // Diagnostics are displayed with the reading; they are not commissioned incidents.
-    if (!decisionEligible(input.sensorHealth)) return { alertsCreated: 0, smsSentCount: 0 };
-    const alerts = ruleEngine(input);
+    // Do not wait for other sensors to be calibrated. Each out-of-range reading
+    // opens its own alert and SMS path independently.
+    const thresholdBands = await loadThresholdBands();
+    const alerts = ruleEngine({ ...input, thresholdBands });
     let alertsCreated = 0;
     let smsSentCount = 0;
     let triggeredAlertId: string | undefined;
@@ -63,8 +68,10 @@ class WaterAlertNotificationService {
         continue;
       }
 
-      // SMS on first open, severity escalate, or when a prior send never landed.
-      const needsSms = upserted.created || upserted.escalated || !upserted.alert.smsSentAt;
+      const sentAtMs = upserted.alert.smsSentAt ? new Date(upserted.alert.smsSentAt).getTime() : 0;
+      const reminderDue = sentAtMs > 0 && Number.isFinite(sentAtMs) && Date.now() - sentAtMs >= SMS_REMINDER_MS;
+      // SMS on first open, severity escalate, never-sent, or reminder after cooldown.
+      const needsSms = upserted.created || upserted.escalated || !upserted.alert.smsSentAt || reminderDue;
       if (needsSms) {
         smsCandidates.push({ alertId: upserted.alert.id, alert });
       }
@@ -75,9 +82,8 @@ class WaterAlertNotificationService {
       alerts.map((alert) => alert.category)
     );
 
-    // One SMS per sensor category (TEMP_*, PH_*, DO_*, TURBIDITY_*) so a pH
-    // warning still texts even if a temperature alert was sent recently.
-    // Cooldown is tracked per category (15 min standard / 5 min emergency).
+    // One SMS per sensor category so a pH warning still texts even if temperature
+    // was sent recently. Cooldown is tracked per category.
     for (const candidate of smsCandidates) {
       const sent = await this.sendSingleRuleAlertSms(input.deviceId, candidate, input);
       if (sent) smsSentCount += 1;

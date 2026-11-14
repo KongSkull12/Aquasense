@@ -13,6 +13,14 @@ The running version is shown in the dashboard sidebar (App = frontend, API = bac
 3. Commit, tag and push: `git tag vX.Y.Z && git push kongskull main --tags`.
    Vercel and Render redeploy `main` automatically.
 
+## [1.10.7] - 2026-11-14
+
+### Fixed
+- Alert SMS no longer waits for other sensors to be calibrated or stable. Each out-of-range
+  reading (pH, temperature, turbidity, ORP) opens its own alert and text independently.
+- ORP Threshold Alerts now create `ORP_HIGH` / `ORP_LOW` rows and auto-SMS.
+- Active alerts can send a reminder SMS after the 15-minute cooldown if the problem remains.
+
 ## [1.10.6] - 2026-11-14
 
 ### Changed
