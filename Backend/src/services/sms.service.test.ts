@@ -70,7 +70,7 @@ test('rule alert template lists sensors, Disconnected, and alert timestamp', () 
   assert.match(message, /When: /);
   assert.match(message, /Temp: Disconnected/);
   assert.match(message, /pH: 3\.07/);
-  assert.match(message, /DO: Disconnected/);
+  assert.doesNotMatch(message, /\bDO:/);
   assert.match(message, /Turbidity: 114\.4 NTU/);
   assert.match(message, /ORP: Disconnected/);
   assert.match(message, /Depth: Disconnected/);
@@ -116,7 +116,8 @@ test('long labels still keep the action and sensor list', () => {
   });
   assert.ok(message.length <= config.sms.maxMessageLength);
   assert.match(message, /emergency alert/);
-  assert.match(message, /DO: 1\.5 mg\/L/);
+  assert.match(message, /1\.5 mg\/L|Dissolved oxygen/i);
+  assert.doesNotMatch(message, /\bDO:/);
   assert.ok(message.includes('Please turn on the aerator immediately.'));
   assert.doesNotMatch(message, /EMERGENCY|\|/);
 });
@@ -185,7 +186,7 @@ test('combined alerts include sensor list and timestamp', () => {
   assert.match(message, /When: /);
   assert.match(message, /Temp: 36 C/);
   assert.match(message, /pH: 5\.80\b/);
-  assert.match(message, /DO: 1\.5 mg\/L/);
+  assert.doesNotMatch(message, /\bDO:/);
   assert.match(message, /Turbidity: Disconnected/);
   assert.ok(message.includes('Please turn on the aerator immediately.'));
 });

@@ -152,15 +152,6 @@ export const buildSmsSensorLines = (input: {
       connected: sensorConnected(health, 'ph', input.ph),
     },
     {
-      label: 'DO',
-      value: input.dissolvedOxygenMeasured === false ? null : (input.dissolvedOxygen ?? null),
-      unit: 'mg/L',
-      connected: input.dissolvedOxygenMeasured !== false
-        && input.dissolvedOxygen !== null
-        && input.dissolvedOxygen !== undefined
-        && Number.isFinite(input.dissolvedOxygen),
-    },
-    {
       label: 'Turbidity',
       value: input.turbidity ?? null,
       unit: turbUnit,
