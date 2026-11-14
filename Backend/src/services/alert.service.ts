@@ -1,5 +1,6 @@
 import { Op } from 'sequelize';
 import { Alert as AlertModel } from '../database/models/Alert';
+import { severityRank } from './ruleEngine.service';
 
 export type AlertStatus = 'ACTIVE' | 'ACKNOWLEDGED' | 'RESOLVED';
 
@@ -30,6 +31,12 @@ export interface CreateAlertInput {
   message: string;
 }
 
+export interface UpsertActiveAlertResult {
+  alert: AlertRecord;
+  created: boolean;
+  escalated: boolean;
+}
+
 class AlertService {
   async createAlert(input: CreateAlertInput): Promise<AlertRecord> {
     const alert = await AlertModel.create({
@@ -39,6 +46,56 @@ class AlertService {
     });
 
     return this.mapAlert(alert);
+  }
+
+  /**
+   * One active row per device + sensor category. Re-readings update the same
+   * alert instead of flooding the log; severity escalations are flagged for SMS.
+   */
+  async upsertActiveAlert(input: CreateAlertInput): Promise<UpsertActiveAlertResult> {
+    const existing = await AlertModel.findOne({
+      where: {
+        deviceId: input.deviceId,
+        category: input.category,
+        status: { [Op.in]: ['ACTIVE', 'ACKNOWLEDGED'] },
+      },
+      order: [['createdAt', 'DESC']],
+    });
+
+    if (!existing) {
+      const created = await this.createAlert(input);
+      return { alert: created, created: true, escalated: false };
+    }
+
+    const escalated = severityRank(input.severity) > severityRank(existing.severity);
+    existing.severity = input.severity;
+    existing.currentValue = input.currentValue;
+    existing.thresholdValue = input.thresholdValue;
+    existing.unit = input.unit;
+    existing.action = input.action;
+    existing.message = input.message;
+    existing.status = 'ACTIVE';
+    if (escalated) {
+      existing.smsSentAt = null;
+    }
+    await existing.save();
+    return { alert: this.mapAlert(existing), created: false, escalated };
+  }
+
+  /** Clear open alerts for categories that are no longer out of range. */
+  async resolveClearedCategories(deviceId: string, activeCategories: string[]): Promise<number> {
+    const where: Record<string, unknown> = {
+      deviceId,
+      status: { [Op.in]: ['ACTIVE', 'ACKNOWLEDGED'] },
+    };
+    if (activeCategories.length) {
+      where.category = { [Op.notIn]: activeCategories };
+    }
+    const [count] = await AlertModel.update(
+      { status: 'RESOLVED' },
+      { where }
+    );
+    return count;
   }
 
   async updateStatus(alertId: string, status: AlertStatus, deviceIds?: string[]): Promise<AlertRecord | null> {

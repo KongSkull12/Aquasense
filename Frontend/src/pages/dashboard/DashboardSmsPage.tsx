@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { apiClient, getApiErrorMessage } from '../../services/apiClient';
+import { SENSOR_ALERT_CATALOG } from '../../constants/sensorAlerts';
 import { Notice, PageHead, Panel, StateMark } from '../../components/WaterQuality/Console';
 
 const SLOTS = 4;
@@ -114,7 +115,7 @@ const DashboardSmsPage: React.FC = () => {
     <div className="space-y-5">
       <PageHead
         title="SMS alerts"
-        description="Up to four mobile numbers. Warning, critical and emergency readings for each sensor (temperature, pH, turbidity, dissolved oxygen) automatically text every saved number."
+        description="Up to four mobile numbers. Temperature (high/low), pH (high/low), turbidity high, and dissolved oxygen low each auto-text on warning, critical, or emergency. Every attempt is recorded under Alerts & logs."
         meta={saved ? <StateMark state="ok" className="!text-sm !font-semibold">Saved</StateMark> : undefined}
       />
 
@@ -207,6 +208,17 @@ const DashboardSmsPage: React.FC = () => {
           </ul>
         </Panel>
       )}
+
+      <Panel title="Auto-SMS sensor alerts" description="Each rule below texts every saved number and is recorded in Alerts & logs." bodyClassName="p-0">
+        <ul className="divide-y divide-line-soft">
+          {SENSOR_ALERT_CATALOG.map((entry) => (
+            <li key={entry.category} className="flex flex-wrap items-baseline justify-between gap-2 px-5 py-3 text-sm">
+              <span className="font-semibold">{entry.sensor}</span>
+              <span className="num text-xs text-ink-3">{entry.triggers.map((t) => t.severity.toLowerCase()).join(' · ')} · {entry.unit}</span>
+            </li>
+          ))}
+        </ul>
+      </Panel>
     </div>
   );
 };

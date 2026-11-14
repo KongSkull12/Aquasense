@@ -48,7 +48,9 @@ class SmsLogService {
       retryCount: result.retryCount,
       providerResponse: JSON.stringify({ ...JSON.parse(result.response), alertIds }),
     }, { where: { id } });
-    if (result.success && alertIds.length) {
+    // Mark the alert when the provider accepted the message (sent or pending).
+    // Failed/rejected attempts stay open so cooldown + retries can try again.
+    if (result.accepted && alertIds.length) {
       await Alert.update({ smsSentAt: new Date() }, { where: { id: { [Op.in]: alertIds } } });
     }
   }

@@ -10,7 +10,7 @@ import { buildSmsTemplate } from '../../../services/smsTemplate.service';
 import { config } from '../../../config/config';
 import { alertPhonesForDevice } from '../../../services/smsRecipients';
 import type { AlertStatus } from '../../../services/alert.service';
-import type { AlertSeverity } from '../../../services/ruleEngine.service';
+import { SENSOR_ALERT_CATALOG, type AlertSeverity } from '../../../services/ruleEngine.service';
 import type { AuthenticatedRequest } from '../../../middleware/authMiddleware';
 import { accessibleDeviceIds } from '../../../services/deviceAccess';
 
@@ -37,6 +37,15 @@ export const getAlerts = async (req: AuthenticatedRequest, res: Response): Promi
     logger.error('Failed to fetch alerts', error);
     sendError(res, 500, 'Failed to fetch alerts');
   }
+};
+
+/** Static list of every sensor rule that can open an alert and auto-send SMS. */
+export const getAlertCatalog = async (_req: AuthenticatedRequest, res: Response): Promise<void> => {
+  sendSuccess(res, 200, 'Sensor alert catalog', {
+    autoSms: 'WARNING, CRITICAL, and EMERGENCY readings text every saved SMS number (per-category cooldown).',
+    recordedIn: ['alerts table (active/resolved)', 'sms_logs (every send attempt)'],
+    sensors: SENSOR_ALERT_CATALOG,
+  });
 };
 
 export const getAlertById = async (req: AuthenticatedRequest, res: Response): Promise<void> => {

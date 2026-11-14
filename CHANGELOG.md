@@ -13,6 +13,21 @@ The running version is shown in the dashboard sidebar (App = frontend, API = bac
 3. Commit, tag and push: `git tag vX.Y.Z && git push kongskull main --tags`.
    Vercel and Render redeploy `main` automatically.
 
+## [1.9.9] - 2026-11-14
+
+### Added
+- Alerts & logs and SMS pages list every sensor rule that auto-texts: temperature high/low, pH
+  high/low, turbidity high, and dissolved oxygen low (warning, critical, emergency).
+- `GET /api/v1/alerts/catalog` returns the same catalog for clients.
+
+### Fixed
+- Repeated out-of-range readings no longer flood the alerts table: one active row per device and
+  sensor category is updated in place, cleared categories auto-resolve, and SMS still fires on
+  first open, severity escalate, or when a prior send was not accepted.
+- Accepted (pending) provider responses now mark `alerts.smsSentAt` so the send is recorded even
+  before final delivery confirmation.
+- Temperature below 26 °C now opens a TEMP_LOW warning, matching the Thresholds normal band.
+
 ## [1.9.1] - 2026-11-12
 
 ### Fixed

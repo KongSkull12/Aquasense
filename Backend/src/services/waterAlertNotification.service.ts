@@ -41,7 +41,7 @@ class WaterAlertNotificationService {
     const smsCandidates: Array<{ alertId: string; alert: RuleAlertResult }> = [];
 
     for (const alert of alerts) {
-      const created = await alertService.createAlert({
+      const upserted = await alertService.upsertActiveAlert({
         deviceId: input.deviceId,
         category: alert.category,
         severity: alert.severity,
@@ -52,15 +52,24 @@ class WaterAlertNotificationService {
         message: alert.message,
       });
 
-      alertsCreated += 1;
-      triggeredAlertId = created.id;
+      if (upserted.created) alertsCreated += 1;
+      triggeredAlertId = upserted.alert.id;
 
       if (!shouldSendSmsForSeverity(alert.severity)) {
         continue;
       }
 
-      smsCandidates.push({ alertId: created.id, alert });
+      // SMS on first open, severity escalate, or when a prior send never landed.
+      const needsSms = upserted.created || upserted.escalated || !upserted.alert.smsSentAt;
+      if (needsSms) {
+        smsCandidates.push({ alertId: upserted.alert.id, alert });
+      }
     }
+
+    await alertService.resolveClearedCategories(
+      input.deviceId,
+      alerts.map((alert) => alert.category)
+    );
 
     // One SMS per sensor category (TEMP_*, PH_*, DO_*, TURBIDITY_*) so a pH
     // warning still texts even if a temperature alert was sent recently.

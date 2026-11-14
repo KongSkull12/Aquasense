@@ -175,6 +175,20 @@ test('missing oxygen does not trigger DO emergency; measured zero still does', (
   assert.equal(ruleEngine({ ...reading, dissolvedOxygenMeasured: false }).some((alert) => alert.category === 'DO_LOW'), false);
   assert.equal(ruleEngine({ ...reading, dissolvedOxygenMeasured: true }).some((alert) => alert.category === 'DO_LOW' && alert.severity === 'EMERGENCY'), true);
 });
+
+test('sensor alert catalog lists every auto-SMS water-quality rule', async () => {
+  const { SENSOR_ALERT_CATALOG, severityRank } = await import('./ruleEngine.service');
+  assert.equal(SENSOR_ALERT_CATALOG.length, 6);
+  assert.ok(SENSOR_ALERT_CATALOG.every((entry) => entry.autoSms));
+  assert.deepEqual(
+    SENSOR_ALERT_CATALOG.map((entry) => entry.category).sort(),
+    ['DO_LOW', 'PH_HIGH', 'PH_LOW', 'TEMP_HIGH', 'TEMP_LOW', 'TURBIDITY_HIGH']
+  );
+  assert.ok(severityRank('EMERGENCY') > severityRank('CRITICAL'));
+  assert.ok(ruleEngine({ temperature: 24, ph: 7.2, dissolvedOxygen: null, turbidity: null }).some(
+    (alert) => alert.category === 'TEMP_LOW' && alert.severity === 'WARNING'
+  ));
+});
 test('MQTT tags missing oxygen before persistence and notifications', async () => {
   setup();
   const store = mock.method(sensorReadingService, 'ingestWithStatus', async (_device:string, _payload:Record<string,any>) => ({ reading:{ id: 'reading-test', do:null, doMeasured:false } as any, inserted:true }));

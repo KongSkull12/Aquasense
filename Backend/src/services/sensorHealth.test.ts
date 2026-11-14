@@ -58,7 +58,7 @@ check('stable window','20 samples 7.10/7.11','STABLE',()=>{const v=new SensorVal
 check('noisy window','7/9 alternating','UNSTABLE',()=>{const v=new SensorValidator();let r;for(let i=0;i<20;i++)r=v.validate('test','ph',7+i%2*2,stamp(now+i*5000),{},now+i*5000);return r!.health;});
 check('conservative stuck detection','10 minutes unchanged','POSSIBLY_STUCK',()=>{const v=new SensorValidator();let r;for(let i=0;i<=120;i++)r=v.validate('test','ph',7,stamp(now+i*5000),{rawAdc:3000},now+i*5000);return r!.health;});
 check('invalid sensor cannot trigger water alert',-127,0,()=>ruleEngine({temperature:-127,ph:null,turbidity:null,dissolvedOxygen:null}).length);
-check('raw ADC cannot trigger NTU alert',3000,0,()=>ruleEngine({temperature:25,ph:7,turbidity:3000,turbidityUnit:'raw_adc',dissolvedOxygen:null}).length);
+check('raw ADC cannot trigger NTU alert',3000,0,()=>ruleEngine({temperature:27,ph:7,turbidity:3000,turbidityUnit:'raw_adc',dissolvedOxygen:null}).length);
 check('invalid pH blocks ammonia',15,'UNAVAILABLE',()=>ammoniaSpeciation(summary(25,15),undefined,'freshwater',now).status);
 check('invalid temperature blocks ammonia',-127,'UNAVAILABLE',()=>ammoniaSpeciation(summary(-127),undefined,'freshwater',now).status);
 check('stale source blocks ammonia','16 seconds','UNAVAILABLE',()=>ammoniaSpeciation(summary(25,8,now-16000),undefined,'freshwater',now).status);

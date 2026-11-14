@@ -1,6 +1,6 @@
 {
   "name": "capstone-frontend",
-  "version": "1.9.1",
+  "version": "1.9.9",
   "description": "Capstone project frontend with React, TypeScript, and Tailwind CSS",
   "type": "module",
   "scripts": {

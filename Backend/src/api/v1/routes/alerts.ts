@@ -4,6 +4,7 @@
 import { Router } from 'express';
 import {
   getAlerts,
+  getAlertCatalog,
   getAlertById,
   acknowledgeAlert,
   resolveAlert,
@@ -15,6 +16,7 @@ import { validateParams, validateQuery, alertQuerySchema, idParamSchema } from '
 const router = Router();
 
 router.get('/alerts', authenticateToken, requireRole(['admin', 'farmer', 'staff', 'guest']), validateQuery(alertQuerySchema), getAlerts);
+router.get('/alerts/catalog', authenticateToken, requireRole(['admin', 'farmer', 'staff', 'guest']), getAlertCatalog);
 router.get('/alerts/:id', authenticateToken, requireRole(['admin', 'farmer', 'staff', 'guest']), validateParams(idParamSchema), getAlertById);
 router.post('/alerts/:id/ack', authenticateToken, requireRole(['admin', 'farmer']), validateParams(idParamSchema), acknowledgeAlert);
 router.patch('/alerts/:id/resolve', authenticateToken, requireRole(['admin', 'farmer']), validateParams(idParamSchema), resolveAlert);

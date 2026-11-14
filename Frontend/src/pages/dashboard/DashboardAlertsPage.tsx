@@ -2,6 +2,7 @@ import React from 'react';
 import { useDashboardData } from '../../components/WaterQuality/useDashboardData';
 import type { AlertSeverity, HealthAlert } from '../../types/water';
 import type { SmsLogEntry } from '../../types/sms';
+import { SENSOR_ALERT_CATALOG } from '../../constants/sensorAlerts';
 import { EmptyState, PageHead, Panel, StateMark, type MarkState } from '../../components/WaterQuality/Console';
 
 const maskPhone = (phone: string) => {
@@ -95,7 +96,7 @@ const DashboardAlertsPage: React.FC = () => {
   const active = activeAlerts || [];
   const recent = recentAlerts?.length ? recentAlerts : active;
   const critical = active.filter(isCriticalAlert);
-  const sentSms = smsLogs.filter((log) => log.success).length;
+  const sentSms = smsLogs.filter((log) => log.success || ['pending', 'retrying'].includes(log.deliveryStatus || '')).length;
   const failedSms = smsLogs.filter((log) => !log.success && !['pending', 'retrying', 'unknown'].includes(log.deliveryStatus || '')).length;
   const pendingSms = smsLogs.filter((log) => ['pending', 'retrying', 'unknown'].includes(log.deliveryStatus || '')).length;
   const latestCritical = critical[0];
@@ -109,7 +110,7 @@ const DashboardAlertsPage: React.FC = () => {
 
   return (
     <div className="space-y-5">
-      <PageHead title="Alerts & logs" description="Active problems, critical warnings, and the SMS notification history." />
+      <PageHead title="Alerts & logs" description="Each sensor warning or critical alert opens one active row, texts every saved SMS number, and is recorded in the SMS log." />
 
       <section aria-label="Summary" className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-line bg-line xl:grid-cols-4">
         {summary.map((item) => (
@@ -120,6 +121,28 @@ const DashboardAlertsPage: React.FC = () => {
           </div>
         ))}
       </section>
+
+      <Panel title="Sensor alerts that auto-SMS" description="Warning, critical and emergency for each rule below. Attempts are stored in the SMS log." bodyClassName="p-0">
+        <ul className="divide-y divide-line-soft">
+          {SENSOR_ALERT_CATALOG.map((entry) => (
+            <li key={entry.category} className="px-4 py-3.5 sm:px-5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-sm font-semibold">{entry.sensor} · {titleCase(entry.category)}</p>
+                <StateMark state="ok" className="!text-xs">Auto SMS</StateMark>
+              </div>
+              <ul className="mt-2 space-y-1 text-xs text-ink-3">
+                {entry.triggers.map((trigger) => (
+                  <li key={`${entry.category}-${trigger.severity}-${trigger.limit}`} className="flex flex-wrap gap-x-3 gap-y-0.5">
+                    <span className="font-semibold text-ink">{titleCase(trigger.severity)}</span>
+                    <span>{trigger.when}</span>
+                    <span className="num">{trigger.limit} {entry.unit}</span>
+                  </li>
+                ))}
+              </ul>
+            </li>
+          ))}
+        </ul>
+      </Panel>
 
       {latestCritical && (
         <section aria-label="Most recent critical alert" className="rounded-lg border border-alarm/30 bg-alarm-bg">
