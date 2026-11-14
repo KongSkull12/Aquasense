@@ -136,12 +136,12 @@ const DashboardFeedingPage: React.FC = () => {
         </Panel>
 
         {!staffView && (
-          <Panel title="Add a schedule" description="Leave the date empty for a daily feed.">
+          <Panel title="Add a schedule" description="Leave the date empty to feed every day at that time (Asia/Manila). A date makes it a one-time feed on that day only.">
             <form onSubmit={(event) => { event.preventDefault(); void saveSchedule(); }} className="space-y-4">
               <div className="grid gap-3 sm:grid-cols-2">
                 <div>
-                  <label className="field-label" htmlFor="schedule-date">Date <span className="font-normal text-ink-3">(optional)</span></label>
-                  <input id="schedule-date" type="date" value={scheduleDate} onChange={(e) => setScheduleDate(e.target.value)} className="field" />
+                  <label className="field-label" htmlFor="schedule-date">One-time date <span className="font-normal text-ink-3">(optional)</span></label>
+                  <input id="schedule-date" type="date" min={new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Manila' })} value={scheduleDate} onChange={(e) => setScheduleDate(e.target.value)} className="field" />
                 </div>
                 <div>
                   <label className="field-label" htmlFor="schedule-time">Time</label>
@@ -188,7 +188,7 @@ const DashboardFeedingPage: React.FC = () => {
                         <p className="num w-14 shrink-0 text-base font-semibold">{item.time}</p>
                         <div className="min-w-0">
                           <p className="truncate text-sm text-ink">{item.label || 'Feed'}</p>
-                          <p className="text-xs text-ink-3">{item.date ? item.date : 'Daily'}</p>
+                          <p className="text-xs text-ink-3">{item.date ? `One-time · ${item.date}` : 'Every day'}</p>
                         </div>
                       </div>
                       <div className="flex items-center gap-1">

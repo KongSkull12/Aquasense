@@ -1906,11 +1906,14 @@ void checkSchedules() {
   snprintf(minute, sizeof(minute), "%s %s", date, hm);
   if (!strcmp(minute, lastFedMinute) || !strcmp(minute, feedSuppressedMinute)) return;
   for (uint8_t i = 0; i < scheduleCount; i++) {
-    const bool dateMatches = schedules[i].date[0] == '\0' || !strcmp(schedules[i].date, date);
+    // Empty date = every day. A past one-shot date (YYYY-MM-DD < today) is also
+    // treated as daily so a mistyped/old calendar date does not silence the feeder.
+    const bool pastOneShot = schedules[i].date[0] && strcmp(schedules[i].date, date) < 0;
+    const bool dateMatches = schedules[i].date[0] == '\0' || !strcmp(schedules[i].date, date) || pastOneShot;
     if (dateMatches && !strncmp(schedules[i].time, hm, 5)) {
       strlcpy(lastFedMinute, minute, sizeof(lastFedMinute));
       prefs.putString("lastFed", lastFedMinute);   // survives reboot: no double feed
-      Serial.printf("[FEED] scheduled feed %s\n", minute);
+      Serial.printf("[FEED] scheduled feed %s%s\n", minute, pastOneShot ? " (past date→daily)" : "");
       feederTrigger();
       return;
     }

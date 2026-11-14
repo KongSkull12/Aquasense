@@ -188,10 +188,11 @@ export const deviceSync = async (req: DeviceAuthenticatedRequest, res: Response)
     sendSuccess(res, 200, 'Feeding config synced', {
       timezone: FEEDING_TIMEZONE,
       ntpServers: ['pool.ntp.org', 'time.nist.gov', 'asia.pool.ntp.org'],
-      schedules: schedules.filter((item) => item.enabled).map((item) => ({
+      // null date = daily. Past one-shot dates are healed to null in listSchedules.
+      schedules: schedules.filter((item) => item.enabled).slice(0, 20).map((item) => ({
         id: item.id,
         date: item.date,
-        time: item.time,
+        time: item.time.slice(0, 5),
         label: item.label,
       })),
       serverTimeIso: new Date().toISOString(),

@@ -13,6 +13,14 @@ The running version is shown in the dashboard sidebar (App = frontend, API = bac
 3. Commit, tag and push: `git tag vX.Y.Z && git push kongskull main --tags`.
    Vercel and Render redeploy `main` automatically.
 
+## [1.10.9] - 2026-11-14
+
+### Fixed
+- Feeding schedules with a past one-time date (e.g. `2024-11-13`) never matched the ESP32 clock,
+  so the feeder stayed idle at the set time. Past dates are converted to **daily**, device sync
+  sends them as daily, and firmware also treats past dates as every-day. Leave Date empty for
+  recurring feeds.
+
 ## [1.10.8] - 2026-11-14
 
 ### Fixed

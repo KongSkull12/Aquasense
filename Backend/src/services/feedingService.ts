@@ -3,6 +3,8 @@ import { FeedingSchedule } from '../database/models/FeedingSchedule';
 import { FeedingCommand, FeedingCommandAction } from '../database/models/FeedingCommand';
 import { HardwareCommand } from '../database/models/HardwareControl';
 import { DeviceStopPendingError, withHardwareDeviceLock } from './hardwareControlLock';
+import { config } from '../config/config';
+import { logger } from '../utils/logger';
 
 interface CreateScheduleInput {
   userId: string;
@@ -22,6 +24,7 @@ interface UpdateScheduleInput {
 
 const TIME_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const FEEDING_TZ = config.feeding.timezone || 'Asia/Manila';
 
 const assertValidTime = (time: string): void => {
   if (!TIME_RE.test(time)) {
@@ -35,19 +38,46 @@ const assertValidDate = (date: string): void => {
   }
 };
 
+/** Calendar date in the farm feeding timezone (YYYY-MM-DD). */
+export const feedingCalendarDate = (now = new Date(), timeZone = FEEDING_TZ): string =>
+  new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
+
+/**
+ * One-time dates that already passed never match the ESP32 clock, so the feeder
+ * never runs. Treat them as daily (null) — the usual farmer intent for "schedule".
+ */
+export const effectiveScheduleDate = (date: string | null | undefined, now = new Date()): string | null => {
+  if (!date) return null;
+  assertValidDate(date);
+  return date < feedingCalendarDate(now) ? null : date;
+};
+
 export const feedingService = {
+  /** Clear expired one-shot dates so schedules keep firing every day. */
+  async healPastDatedSchedules(userId?: string): Promise<number> {
+    const today = feedingCalendarDate();
+    const where: Record<string, unknown> = {
+      date: { [Op.and]: [{ [Op.ne]: null }, { [Op.lt]: today }] },
+    };
+    if (userId) where.userId = userId;
+    const [count] = await FeedingSchedule.update({ date: null }, { where });
+    if (count > 0) {
+      logger.info('Converted past one-time feeding dates to daily', { userId: userId || 'all', count, today });
+    }
+    return count;
+  },
+
   async listSchedules(userId: string): Promise<FeedingSchedule[]> {
+    await this.healPastDatedSchedules(userId);
     return FeedingSchedule.findAll({ where: { userId }, order: [['time', 'ASC']] });
   },
 
   async createSchedule(input: CreateScheduleInput): Promise<FeedingSchedule> {
     assertValidTime(input.time);
-    if (input.date) {
-      assertValidDate(input.date);
-    }
+    const date = input.date ? effectiveScheduleDate(input.date) : null;
     return FeedingSchedule.create({
       userId: input.userId,
-      date: input.date || null,
+      date,
       time: input.time,
       enabled: input.enabled ?? true,
       label: input.label?.trim() || null,
@@ -63,12 +93,7 @@ export const feedingService = {
       schedule.time = input.time;
     }
     if (input.date !== undefined) {
-      if (input.date) {
-        assertValidDate(input.date);
-        schedule.date = input.date;
-      } else {
-        schedule.date = null;
-      }
+      schedule.date = input.date ? effectiveScheduleDate(input.date) : null;
     }
     if (input.enabled !== undefined) {
       schedule.enabled = input.enabled;
