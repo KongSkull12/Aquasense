@@ -299,7 +299,7 @@ function setupIprog(): SmsService {
   config.sms.apiSecretKey = 'iprog-unit-token';
   config.sms.senderId = undefined;
   config.sms.iprogNetworkProvider = 2;
-  config.sms.iprogBaseUrl = 'https://www.iprogsms.com/api/v1';
+  config.sms.iprogBaseUrl = 'https://sms.iprogtech.com/api/v1';
   return service;
 }
 
@@ -315,14 +315,16 @@ const iprogQueued = () => ({
 test('IPROG SMS: posts JSON with api_token, 63 number, sms_provider 2 and Bearer auth', async () => {
   const service = setupIprog();
   const post = mock.method(axios, 'post', async () => iprogQueued());
+  const get = mock.method(axios, 'get', async () => ({ status: 200, data: { status: 200, message_status: 'completed' } }));
   const result = await service.sendSms(phone, message);
   assert.equal(post.mock.callCount(), 1);
+  assert.ok(get.mock.callCount() >= 1);
   const [url, body, options] = post.mock.calls[0].arguments as unknown as [
     string,
     Record<string, unknown>,
     { headers: Record<string, string> },
   ];
-  assert.equal(url, 'https://www.iprogsms.com/api/v1/sms_messages');
+  assert.equal(url, 'https://sms.iprogtech.com/api/v1/sms_messages');
   assert.deepEqual(body, {
     api_token: 'iprog-unit-token',
     phone_number: '639171234567',
@@ -330,7 +332,7 @@ test('IPROG SMS: posts JSON with api_token, 63 number, sms_provider 2 and Bearer
     sms_provider: 2,
   });
   assert.equal(options.headers.Authorization, 'Bearer iprog-unit-token');
-  assert.equal(result.status, 'pending');
+  assert.equal(result.status, 'sent');
   assert.equal(result.accepted, true);
   assert.equal(result.referenceId, 'iSms-XHYBk');
   assert.equal(result.response.includes('iprog-unit-token'), false);
@@ -364,11 +366,34 @@ test('IPROG SMS: status lookup reads message_id and never resubmits', async () =
   const get = mock.method(axios, 'get', async () => ({ status: 200, data: { status: 200, message_status: 'completed' } }));
   const result = await service.getStatus('iSms-XHYBk');
   const [url, options] = get.mock.calls[0].arguments as unknown as [string, { params: Record<string, string>; headers: Record<string, string> }];
-  assert.equal(url, 'https://www.iprogsms.com/api/v1/sms_messages/status');
+  assert.equal(url, `${config.sms.iprogBaseUrl}/sms_messages/status`);
   assert.equal(options.params.api_token, 'iprog-unit-token');
   assert.equal(options.params.message_id, 'iSms-XHYBk');
   assert.equal(options.headers.Authorization, 'Bearer iprog-unit-token');
   assert.equal(result.status, 'sent');
   assert.equal(post.mock.callCount(), 0);
+});
+
+test('IPROG SMS: Smart/TNT shared-sender refusal is rejected with a clear reason', async () => {
+  const service = setupIprog();
+  const body = {
+    status: 500,
+    message: ['Smart/TNT networks do not accept shared sender names. Please get your own sender name approved at https://www.iprogsms.com/sender-names/new to support all networks.'],
+  };
+  const post = mock.method(axios, 'post', async () => ({ status: 500, data: body }));
+  const result = await service.sendSms('+639388953972', message);
+  assert.equal(result.status, 'rejected');
+  assert.equal(result.accepted, false);
+  assert.equal(post.mock.callCount(), 1);
+  assert.match(describeSmsFailure([result]), /Smart, TNT or Sun|sender name/i);
+});
+
+test('IPROG SMS: parse helpers map Smart/TNT body rejection', () => {
+  const rejected = parseIprogSendResponse({
+    status: 500,
+    message: ['Smart/TNT networks do not accept shared sender names.'],
+  }, 500, 0);
+  assert.equal(rejected.status, 'rejected');
+  assert.match(rejected.response, /Smart\/TNT/);
 });
 

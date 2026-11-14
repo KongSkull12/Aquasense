@@ -66,6 +66,24 @@ const IPROG_STATUS: Record<string, SmsStatus> = {
   rejected: 'rejected',
 };
 
+/** IPROG returns `{ status: 500, message: ["…"] }` for sender/network rules. */
+export const iprogMessageLines = (data: unknown): string[] => {
+  if (!data || typeof data !== 'object') return [];
+  const msg = (data as { message?: unknown }).message;
+  if (Array.isArray(msg)) return msg.filter((line): line is string => typeof line === 'string' && line.trim().length > 0);
+  if (typeof msg === 'string' && msg.trim()) return [msg.trim()];
+  const err = (data as { error?: unknown }).error;
+  if (typeof err === 'string' && err.trim()) return [err.trim()];
+  return [];
+};
+
+export const isIprogRejectionPayload = (data: unknown): boolean => {
+  if (!data || typeof data !== 'object') return false;
+  const status = (data as { status?: unknown }).status;
+  if (status === 500 || status === '500' || status === 'error') return true;
+  return iprogMessageLines(data).some((line) => /sender name|smart\s*\/\s*tnt|insufficient|invalid|api[_ ]?token|unauthorized/i.test(line));
+};
+
 /** Field errors such as { sendername: ['…'] } with no message_id mean nothing was sent. */
 const semaphoreFieldErrors = (data: unknown): Record<string, unknown> | undefined => {
   if (!data || typeof data !== 'object' || Array.isArray(data)) return undefined;
@@ -97,9 +115,18 @@ export const parseIprogSendResponse = (data: unknown, httpStatus: number, retrie
     status?: unknown;
     message?: unknown;
     message_id?: unknown;
+    message_status?: unknown;
     error?: unknown;
     errors?: unknown;
   };
+  const lines = iprogMessageLines(data);
+  if (isIprogRejectionPayload(data) || (httpStatus >= 400 && lines.length > 0 && !payload.message_id)) {
+    return smsResult('rejected', retries, {
+      httpStatus,
+      errors: { detail: lines.length ? lines : ['IPROG SMS rejected the request'] },
+      reason: lines[0] || 'Provider rejected the SMS; review validation errors',
+    });
+  }
   const rawId = payload.message_id;
   const referenceId = typeof rawId === 'string' && rawId.trim() ? rawId.trim()
     : typeof rawId === 'number' ? String(rawId) : undefined;
@@ -107,12 +134,17 @@ export const parseIprogSendResponse = (data: unknown, httpStatus: number, retrie
   const ok = bodyStatus === 200 || bodyStatus === '200' || bodyStatus === 'success'
     || (httpStatus >= 200 && httpStatus < 300 && Boolean(referenceId));
   if (referenceId && ok) {
+    // Some responses already include message_status (e.g. completed).
+    if (typeof payload.message_status === 'string') {
+      const mapped = IPROG_STATUS[payload.message_status.trim().toLowerCase()];
+      if (mapped === 'sent' || mapped === 'failed') {
+        return smsResult(mapped, retries, { referenceId, httpStatus });
+      }
+    }
     return smsResult('pending', retries, { referenceId, httpStatus });
   }
   const errors = payload.errors
-    ?? (typeof payload.error === 'string' || typeof payload.message === 'string'
-      ? { detail: [String(payload.error || payload.message)] }
-      : undefined);
+    ?? (lines.length ? { detail: lines } : undefined);
   return smsResult('unknown', retries, {
     referenceId, httpStatus, errors,
     reason: 'Unrecognized IPROG SMS response; verify before resending',
@@ -168,6 +200,9 @@ export const describeSmsFailure = (results: SmsSendResult[]): string => {
       }
       if (config.sms.provider === 'iprogsms' && errors.some((line) => /api[_ ]?token|unauthorized|unauthenticated|invalid token/i.test(line))) {
         return 'IPROG SMS rejected the API token. Check IPROG_SMS_API_TOKEN.';
+      }
+      if (config.sms.provider === 'iprogsms' && errors.some((line) => /smart\s*\/\s*tnt|sender name/i.test(line))) {
+        return 'IPROG SMS cannot text Smart, TNT or Sun numbers with the shared sender name. Use a Globe or DITO number, or register your own sender name at iprogsms.com/sender-names/new.';
       }
       if (config.sms.provider === 'iprogsms' && errors.some((line) => /credit|balance|load/i.test(line))) {
         return 'IPROG SMS reports insufficient credits. Top up at iprogsms.com.';
@@ -260,10 +295,14 @@ export class SmsService {
           message: message.trim(),
           sms_provider: config.sms.iprogNetworkProvider,
         }, {
-          timeout: 10000,
+          timeout: 15000,
+          // Cloudflare in front of IPROG rejects bare Node clients without a UA.
+          validateStatus: (status) => status < 600,
           headers: {
             'Content-Type': 'application/json',
             Authorization: `Bearer ${apiKey}`,
+            'User-Agent': 'AquaSense/1.9 (IPROG SMS client)',
+            Accept: 'application/json',
           },
         });
       }
@@ -279,24 +318,41 @@ export class SmsService {
       try {
         const response = await submit();
         this.consecutiveFailures = 0;
-        const result = provider === 'semaphore'
+        // IPROG may return HTTP 500 with a JSON body explaining Smart/TNT sender rules.
+        if (provider === 'iprogsms' && (response.status >= 400 || isIprogRejectionPayload(response.data))) {
+          const rejected = parseIprogSendResponse(response.data, response.status, attempt);
+          logger.warn(`${name} submission rejected`, { status: rejected.status, httpStatus: response.status });
+          return rejected;
+        }
+        let result = provider === 'semaphore'
           ? parseSemaphoreResponse(response.data, response.status, attempt)
           : provider === 'iprogsms'
             ? parseIprogSendResponse(response.data, response.status, attempt)
             : this.parseUnismsResponse(response.data, response.status, attempt);
+        // IPROG often completes within a second; poll once so the UI can show Sent.
+        if (provider === 'iprogsms' && result.status === 'pending' && result.referenceId) {
+          await new Promise((resolve) => setTimeout(resolve, 1200));
+          const polled = await this.getStatus(result.referenceId);
+          if (polled.status === 'sent' || polled.status === 'failed') {
+            result = { ...polled, retryCount: attempt };
+          }
+        }
         logger.info(`${name} submission result`, { status: result.status, referenceId: result.referenceId });
         return result;
       } catch (error) {
         const providerError = axios.isAxiosError(error) ? error : undefined;
         const httpStatus = providerError?.response?.status;
         const responseData = providerError?.response?.data;
+        const iprogLines = provider === 'iprogsms' ? iprogMessageLines(responseData) : [];
         const errors = provider === 'semaphore'
           ? semaphoreFieldErrors(responseData) ?? (responseData as { errors?: unknown } | undefined)?.errors
-          : (responseData as { errors?: unknown; error?: unknown; message?: unknown } | undefined)?.errors
-            ?? (responseData && typeof responseData === 'object'
-              ? { detail: [String((responseData as { error?: unknown; message?: unknown }).error
-                || (responseData as { message?: unknown }).message || 'request failed')] }
-              : undefined);
+          : provider === 'iprogsms' && (iprogLines.length || isIprogRejectionPayload(responseData))
+            ? { detail: iprogLines.length ? iprogLines : ['IPROG SMS rejected the request'] }
+            : (responseData as { errors?: unknown; error?: unknown; message?: unknown } | undefined)?.errors
+              ?? (responseData && typeof responseData === 'object'
+                ? { detail: [String((responseData as { error?: unknown; message?: unknown }).error
+                  || (responseData as { message?: unknown }).message || 'request failed')] }
+                : undefined);
         // Only retry failures known to precede submission. A timeout/reset/5xx
         // may follow acceptance and must not cause a duplicate SMS.
         const safeToRetry = !httpStatus && ['ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED'].includes(providerError?.code || '');
@@ -304,7 +360,8 @@ export class SmsService {
           await new Promise((resolve) => setTimeout(resolve, 300 * 2 ** attempt));
           continue;
         }
-        const rejected = Boolean(httpStatus && httpStatus >= 400 && httpStatus < 500 && httpStatus !== 408);
+        const iprogRejected = provider === 'iprogsms' && (httpStatus === 500 || isIprogRejectionPayload(responseData) || iprogLines.length > 0);
+        const rejected = Boolean(iprogRejected || (httpStatus && httpStatus >= 400 && httpStatus < 500 && httpStatus !== 408));
         const status = rejected ? 'rejected' : safeToRetry ? 'unavailable' : 'unknown';
         if (!rejected && ++this.consecutiveFailures >= config.sms.failureThreshold) {
           this.circuitOpenUntil = Date.now() + config.sms.circuitCooldownMs;
@@ -312,7 +369,9 @@ export class SmsService {
         }
         logger.warn(`${name} submission not sent`, { status, httpStatus, code: providerError?.code });
         return smsResult(status, attempt, { httpStatus, errors,
-          reason: rejected ? 'Provider rejected the SMS; review validation errors' : 'Submission not confirmed; verify provider history before resending' });
+          reason: rejected
+            ? (iprogLines[0] || 'Provider rejected the SMS; review validation errors')
+            : 'Submission not confirmed; verify provider history before resending' });
       }
     }
     return smsResult('unavailable');
@@ -338,7 +397,11 @@ export class SmsService {
         const response = await axios.get(`${config.sms.iprogBaseUrl}/sms_messages/status`, {
           params: { api_token: apiKey, message_id: referenceId },
           timeout: 10000,
-          headers: { Authorization: `Bearer ${apiKey}` },
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            'User-Agent': 'AquaSense/1.9 (IPROG SMS client)',
+            Accept: 'application/json',
+          },
         });
         return parseIprogStatusResponse(response.data, response.status, referenceId);
       } catch {

@@ -63,7 +63,8 @@ const composeSms = (header: string, farmName: string, tankName: string, details:
   return `${header} ${action}`;
 };
 
-export const DEFAULT_TEST_SMS = 'AquaSense notification test. This message checks SMS delivery to your registered number. No action is required.';
+// Keep under ~100 chars so free-tier / single-credit IPROG sends stay reliable.
+export const DEFAULT_TEST_SMS = 'AquaSense test: SMS delivery works. No action needed.';
 
 export const buildSmsTemplate = (input: SmsTemplateInput): string => {
   return composeSms(

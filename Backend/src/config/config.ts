@@ -192,7 +192,8 @@ export const config = {
     /** IPROG sms_provider: 0/1/2. Use 2 for broad PH network coverage. */
     iprogNetworkProvider,
     /** Override only if IPROG publishes a different API host. */
-    iprogBaseUrl: (getEnv('IPROG_SMS_BASE_URL', 'https://www.iprogsms.com/api/v1') || 'https://www.iprogsms.com/api/v1').replace(/\/$/, ''),
+    // sms.iprogtech.com is the API host IPROG documents for programmatic clients.
+    iprogBaseUrl: (getEnv('IPROG_SMS_BASE_URL', 'https://sms.iprogtech.com/api/v1') || 'https://sms.iprogtech.com/api/v1').replace(/\/$/, ''),
     maxMessageLength: parseInt(getEnv('SMS_MAX_MESSAGE_LENGTH', '160') || '160', 10),
     failureThreshold: parseInt(getEnv('SMS_FAILURE_THRESHOLD', '5') || '5', 10),
     circuitCooldownMs: parseInt(getEnv('SMS_CIRCUIT_COOLDOWN_MS', '60000') || '60000', 10),

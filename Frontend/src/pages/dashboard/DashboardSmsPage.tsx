@@ -175,14 +175,16 @@ const DashboardSmsPage: React.FC = () => {
           <Notice tone="info" title="Test send">
             The test goes to every saved number, including while alert texts are off. Save first. A second test soon after may wait on the SMS cooldown.{' '}
             {provider === 'iprogsms'
-              ? 'Texts are sent through IPROG SMS to Philippine mobile numbers.'
+              ? 'Texts are sent through IPROG SMS to Philippine mobile numbers. Shared sender names reach Globe and DITO; Smart/TNT need your own approved sender name.'
               : provider === 'semaphore'
                 ? 'Texts are sent through Semaphore, under the sender name approved on that account, to Philippine mobile numbers.'
                 : 'This account sends as Unisoft, which reaches Globe and DITO. Smart, TNT, and Sun numbers are refused.'}
           </Notice>
-          {provider === 'unisms' && filled && phones.some((phone) => phone.trim() && !reachesDefaultSender(phone)) && (
+          {(provider === 'unisms' || provider === 'iprogsms') && filled && phones.some((phone) => phone.trim() && !reachesDefaultSender(phone)) && (
             <Notice tone="warn" title="Network">
-              A saved number uses a Smart, TNT, or Sun prefix. Unisoft will refuse it unless that SIM was moved to Globe or DITO.
+              {provider === 'iprogsms'
+                ? 'A saved number looks like Smart, TNT, or Sun. IPROG will refuse it until you register a sender name at iprogsms.com/sender-names/new, or use a Globe/DITO number for tests.'
+                : 'A saved number uses a Smart, TNT, or Sun prefix. Unisoft will refuse it unless that SIM was moved to Globe or DITO.'}
             </Notice>
           )}
         </div>
