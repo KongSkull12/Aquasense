@@ -39,4 +39,6 @@ test('calibration commands validate their param', () => {
   assert.equal(ok({ deviceId: 'd', action: 'FILL_TO_TARGET' }), true);
   assert.equal(ok({ deviceId: 'd', action: 'FILL_TO_TARGET', durationMs: 30000 }), true);
   assert.equal(ok({ deviceId: 'd', action: 'FILL_TO_TARGET', durationMs: 30000, param: 'tank' }), false);
+  assert.equal(ok({ deviceId: 'd', action: 'DRAIN_TO_TARGET' }), true);
+  assert.equal(ok({ deviceId: 'd', action: 'DRAIN_TO_TARGET', durationMs: 30000 }), true);
 });

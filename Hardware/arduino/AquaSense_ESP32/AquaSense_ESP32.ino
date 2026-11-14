@@ -125,18 +125,18 @@ const uint32_t EXCHANGE_FILL_MS     = 0;
 
 // AERATOR_AUTO: temperature hysteresis. On at or above AERATOR_ON_ABOVE_C, off at
 // or below AERATOR_OFF_BELOW_C. A missing temperature reading turns the aerator
-// on. Turn on / Turn off leave automatic mode.
+// on. Critical water quality always forces it on; Warning forces it when this
+// mode or water automation is on. Turn on / Turn off leave automatic mode.
 const bool  AERATOR_POLICY_CONFIGURED = true;
 const float AERATOR_ON_ABOVE_C  = 29.5;
 const float AERATOR_OFF_BELOW_C = 28.5;
 
-// AUTOMATION_ON: automatic partial water exchange (AquaSense exchange policy).
-//   Normal   -> 0%   no draining, keep monitoring
-//   Warning  -> 5%   partial exchange, keep monitoring
-//   Critical -> 10%  urgent partial exchange + aerator on (the backend sends the SMS)
-// The level comes from the dashboard Thresholds for temperature, pH and turbidity.
-// Water depth never starts a drain. Run times come from the tank volume and the
-// measured pump flow rates set with the 'exchange' Serial Monitor command.
+// AUTOMATION_ON: automatic water level + quality policy.
+//   Low depth  (< Thresholds normalMin)  -> fill to calibrated target
+//   High depth (> Thresholds normalMax)  -> drain to calibrated target
+//   Quality Warning  -> 5%  partial exchange (volume/flows from 'exchange')
+//   Quality Critical -> 10% urgent partial exchange + aerator on (backend SMS)
+// Temperature/pH/turbidity drive quality exchange; depth drives fill/drain only.
 const float    WARNING_EXCHANGE_PERCENT  = 5.0f;
 const float    CRITICAL_EXCHANGE_PERCENT = 10.0f;   // policy range 10-15%
 const uint32_t AUTO_EXCHANGE_CONFIRM_READS = 60;    // ~1 min of out-of-range readings first
@@ -247,6 +247,7 @@ TankCalibration tankCal = DEFAULT_TANK_CAL;
 const char* const TANK_NVS_KEY = "tank1";
 float tankDepthCm = NAN;
 bool fillToTargetActive = false;
+bool drainToTargetActive = false;
 
 // Water-quality alarm types (used by the buzzer section below).
 struct ThresholdBand { float alertMin, normalMin, normalMax, alertMax; };
@@ -685,6 +686,7 @@ void waterFaultLatch(const char* reason) {
   pumpsOff();
   exchangeRunning = false;
   fillToTargetActive = false;
+  drainToTargetActive = false;
   waterAutomation = false;
   strlcpy(waterFault, reason, sizeof(waterFault));
   enterPhase("FAULT", 0);
@@ -701,12 +703,14 @@ void waterStop() {
   pumpsOff();
   exchangeRunning = false;
   fillToTargetActive = false;
+  drainToTargetActive = false;
   waterAutomation = false;
   if (strcmp(waterPhase, "FAULT")) enterPhase(wasRunning ? "COOLDOWN" : "IDLE", wasRunning ? PUMP_COOLDOWN_MS : 0);
 }
 
 void startDrain(uint32_t ms) {
   fillToTargetActive = false;
+  drainToTargetActive = false;
   setRelay(RELAY_FILL_PIN, false, fillOn);
   setRelay(RELAY_DRAIN_PIN, true, drainOn);
   enterPhase("DRAINING", ms);
@@ -715,6 +719,7 @@ void startDrain(uint32_t ms) {
 }
 void startFill(uint32_t ms)  {
   fillToTargetActive = false;
+  drainToTargetActive = false;
   setRelay(RELAY_DRAIN_PIN, false, drainOn);
   setRelay(RELAY_FILL_PIN, true, fillOn);
   enterPhase("REFILLING", ms);
@@ -722,12 +727,24 @@ void startFill(uint32_t ms)  {
                 (unsigned long)ms, RELAY_FILL_PIN, fillOn ? "driven" : "blocked: relays disabled");
 }
 
-// User-started closed-loop fill: stops at target depth, bad echo, or hard max.
+// Closed-loop fill: stops at target depth, bad echo, or hard max.
 void startFillToTarget(uint32_t maxMs) {
   fillToTargetActive = true;
+  drainToTargetActive = false;
   setRelay(RELAY_DRAIN_PIN, false, drainOn);
   setRelay(RELAY_FILL_PIN, true, fillOn);
   enterPhase("REFILLING", maxMs);
+}
+
+// Closed-loop drain: stops at or just above target depth, bad echo, or hard max.
+void startDrainToTarget(uint32_t maxMs) {
+  fillToTargetActive = false;
+  drainToTargetActive = true;
+  setRelay(RELAY_FILL_PIN, false, fillOn);
+  setRelay(RELAY_DRAIN_PIN, true, drainOn);
+  enterPhase("DRAINING", maxMs);
+  Serial.printf("[WATER] drain-to-target ON (max %lu ms, GPIO%d %s)\n",
+                (unsigned long)maxMs, RELAY_DRAIN_PIN, drainOn ? "driven" : "blocked: relays disabled");
 }
 
 uint32_t exchangeFillMs = 0;
@@ -769,10 +786,29 @@ void updateWater() {
     }
   }
 
+  // Drain-to-target: stop when depth is back at or just above the calibrated target.
+  if (drainToTargetActive && !strcmp(waterPhase, "DRAINING") && drainOn) {
+    if (!ultraS.connected || !isfinite(ultraS.value) || !isfinite(tankDepthCm)) {
+      pumpsOff();
+      drainToTargetActive = false;
+      waterFaultLatch("drain_target_no_echo");
+      return;
+    }
+    const float stopAt = tankCal.targetDepthCm + (isfinite(tankCal.stopHysteresisCm) ? tankCal.stopHysteresisCm : 0.2f);
+    if (tankDepthCm <= stopAt) {
+      setRelay(RELAY_DRAIN_PIN, false, drainOn);
+      drainToTargetActive = false;
+      enterPhase("COOLDOWN", PUMP_COOLDOWN_MS);
+      Serial.printf("[WATER] drain-to-target reached depth %.2f cm\n", tankDepthCm);
+      return;
+    }
+  }
+
   if (phaseDurationMs == 0 || elapsed < phaseDurationMs) return;
 
   if (!strcmp(waterPhase, "DRAINING")) {
     setRelay(RELAY_DRAIN_PIN, false, drainOn);
+    drainToTargetActive = false;
     if (exchangeRunning) enterPhase("SETTLING_AFTER_DRAIN", max<uint32_t>(EXCHANGE_SETTLING_MS, 1));
     else enterPhase("COOLDOWN", PUMP_COOLDOWN_MS);
   } else if (!strcmp(waterPhase, "SETTLING_AFTER_DRAIN")) {
@@ -805,20 +841,24 @@ bool aeratorForcedByAlarm = false;   // Critical water quality switched the aera
 bool aeratorOnBeforeForce = false;
 
 void updateAerator() {
-  // Exchange policy: Critical water quality with automation on keeps the aerator
-  // running until the water recovers, then hands back to its previous mode.
-  if (waterAutomation && exchangeLevel == ALARM_ALERT && relaysEnabled) {
+  // Stock protection: Critical water quality (temp/pH/turbidity Alert band) forces
+  // the aerator on. Warning forces it when water automation or AERATOR_AUTO is on.
+  // Hands back to the previous mode once quality returns to Normal.
+  const bool forceCritical = relaysEnabled && qualityLevelNow == ALARM_ALERT;
+  const bool forceWarning = relaysEnabled && qualityLevelNow == ALARM_WARNING
+    && (waterAutomation || aeratorAuto);
+  if (forceCritical || forceWarning) {
     if (!aeratorForcedByAlarm) {
       aeratorForcedByAlarm = true;
       aeratorOnBeforeForce = aeratorOn;
-      Serial.println("[AIR] critical water quality: aerator ON");
+      Serial.printf("[AIR] %s water quality: aerator ON\n", forceCritical ? "critical" : "warning");
     }
     if (!aeratorOn) setRelay(RELAY_AERATOR_PIN, true, aeratorOn);
     return;
   }
   if (aeratorForcedByAlarm) {
     aeratorForcedByAlarm = false;
-    Serial.println("[AIR] water quality no longer critical: aerator back to its previous mode");
+    Serial.println("[AIR] water quality recovered: aerator back to its previous mode");
     if (!aeratorAuto && !aeratorOnBeforeForce) setRelay(RELAY_AERATOR_PIN, false, aeratorOn);
   }
   if (!aeratorAuto) return;
@@ -959,13 +999,16 @@ bool automationPossible() {
   return exchangeCommissioned() || (tankMountCalibrated() && tankTargetConfigured());
 }
 
-// Low water (depth below the Thresholds normal range, Warning or Alert) is fixed
-// by filling to the calibrated target depth, never by draining.
-const uint32_t AUTO_FILL_CONFIRM_READS = 60;               // ~1 min below normal first
-const uint32_t AUTO_FILL_GAP_MS = 30UL * 60UL * 1000UL;    // at most one automatic fill per 30 min
+// Low water (depth below Thresholds normalMin) fills to the calibrated target.
+// High water (depth above Thresholds normalMax) drains to the calibrated target.
+const uint32_t AUTO_LEVEL_CONFIRM_READS = 60;               // ~1 min outside normal first
+const uint32_t AUTO_LEVEL_GAP_MS = 30UL * 60UL * 1000UL;    // at most one auto fill/drain per 30 min
 uint32_t lowDepthReads = 0;
+uint32_t highDepthReads = 0;
 uint32_t lastAutoFillAt = 0;
+uint32_t lastAutoDrainAt = 0;
 bool autoFillEverRan = false;
+bool autoDrainEverRan = false;
 
 // Returns true when it started (or is waiting to start) a low-water fill, so the
 // exchange below does not drain a tank that is already low.
@@ -974,9 +1017,9 @@ bool evaluateLowWaterFill(uint32_t now) {
   const bool depthKnown = tankMountCalibrated() && tankTargetConfigured() && isfinite(tankDepthCm) && isfinite(normalMin);
   const bool low = depthKnown && tankDepthCm < normalMin;
   if (!low) { lowDepthReads = 0; return false; }
-  if (lowDepthReads < AUTO_FILL_CONFIRM_READS) lowDepthReads++;
-  if (lowDepthReads < AUTO_FILL_CONFIRM_READS) return true;
-  if (autoFillEverRan && now - lastAutoFillAt < AUTO_FILL_GAP_MS) return true;
+  if (lowDepthReads < AUTO_LEVEL_CONFIRM_READS) lowDepthReads++;
+  if (lowDepthReads < AUTO_LEVEL_CONFIRM_READS) return true;
+  if (autoFillEverRan && now - lastAutoFillAt < AUTO_LEVEL_GAP_MS) return true;
 
   static uint32_t lastFillSkipLogAt = 0;
   const float stopAt = tankCal.targetDepthCm - (isfinite(tankCal.stopHysteresisCm) ? tankCal.stopHysteresisCm : 0.2f);
@@ -998,8 +1041,39 @@ bool evaluateLowWaterFill(uint32_t now) {
   return true;
 }
 
+// Returns true when it started (or is waiting to start) a high-water drain, so a
+// quality exchange does not also drain while level correction is in progress.
+bool evaluateHighWaterDrain(uint32_t now) {
+  const float normalMax = thresholdBands.waterDepth.normalMax;
+  const bool depthKnown = tankMountCalibrated() && tankTargetConfigured() && isfinite(tankDepthCm) && isfinite(normalMax);
+  const bool high = depthKnown && tankDepthCm > normalMax;
+  if (!high) { highDepthReads = 0; return false; }
+  if (highDepthReads < AUTO_LEVEL_CONFIRM_READS) highDepthReads++;
+  if (highDepthReads < AUTO_LEVEL_CONFIRM_READS) return true;
+  if (autoDrainEverRan && now - lastAutoDrainAt < AUTO_LEVEL_GAP_MS) return true;
+
+  static uint32_t lastDrainSkipLogAt = 0;
+  const float stopAt = tankCal.targetDepthCm + (isfinite(tankCal.stopHysteresisCm) ? tankCal.stopHysteresisCm : 0.2f);
+  if (stopAt >= normalMax) {
+    if (!lastDrainSkipLogAt || now - lastDrainSkipLogAt >= 600000UL) {
+      lastDrainSkipLogAt = now | 1;
+      Serial.printf("[WATER] high-water drain skipped: target %.2f cm is not below the normal maximum %.2f cm\n",
+                    tankCal.targetDepthCm, normalMax);
+    }
+    return true;
+  }
+  lastAutoDrainAt = now;
+  autoDrainEverRan = true;
+  highDepthReads = 0;
+  Serial.printf("[WATER] %s: water depth %.2f cm is above normal (%.2f cm): draining to target %.2f cm\n",
+                classifyBand(tankDepthCm, thresholdBands.waterDepth) == ALARM_ALERT ? "CRITICAL" : "WARNING",
+                tankDepthCm, normalMax, tankCal.targetDepthCm);
+  startDrainToTarget(PUMP_HARD_MAX_MS);
+  return true;
+}
+
 // Automatic water policy. Runs after evaluateWaterAlarm() on every sensor read:
-// first a low-water fill, then the partial exchange for water quality.
+// low-water fill, high-water drain, then partial exchange for water quality.
 void evaluateWaterAutomation() {
   // Confirm the water-quality level over ~1 min so a short spike never pumps.
   if (qualityLevelNow == ALARM_NORMAL) { outOfRangeSamples = 0; exchangeLevel = ALARM_NORMAL; }
@@ -1015,6 +1089,7 @@ void evaluateWaterAutomation() {
 
   const uint32_t now = millis();
   if (evaluateLowWaterFill(now)) return;
+  if (evaluateHighWaterDrain(now)) return;
   if (exchangeLevel == ALARM_NORMAL) return;
 
   const bool critical = exchangeLevel == ALARM_ALERT;
@@ -1035,6 +1110,9 @@ void evaluateWaterAutomation() {
   if (!exchangeCommissioned()) { skip("tank volume and pump flow not set (type 'exchange')"); return; }
   if (isfinite(tankDepthCm) && isfinite(thresholdBands.waterDepth.normalMin) && tankDepthCm < thresholdBands.waterDepth.normalMin) {
     skip("water level is already below normal"); return;
+  }
+  if (isfinite(tankDepthCm) && isfinite(thresholdBands.waterDepth.normalMax) && tankDepthCm > thresholdBands.waterDepth.normalMax) {
+    skip("water level is already above normal"); return;
   }
   const uint32_t drainMs = exchangeRunMs(percent, exchangeSetup.drainLpm);
   const uint32_t fillMs = exchangeRunMs(percent, exchangeSetup.fillLpm);
@@ -1555,7 +1633,7 @@ const char* executeCommand(const PendingCommand& c) {
   }
 
   if (a == "ALL_OFF") {
-    pumpsOff(); exchangeRunning = false; fillToTargetActive = false; waterAutomation = false;
+    pumpsOff(); exchangeRunning = false; fillToTargetActive = false; drainToTargetActive = false; waterAutomation = false;
     if (strcmp(waterPhase, "FAULT")) enterPhase("IDLE", 0);
     aeratorAuto = false; setRelay(RELAY_AERATOR_PIN, false, aeratorOn);
     buzzerManual = false; feederStop(); suppressFeedingThisMinute();
@@ -1592,7 +1670,7 @@ const char* executeCommand(const PendingCommand& c) {
   }
   if (a == "AUTOMATION_OFF") { waterAutomation = false; return "accepted"; }
 
-  if (a == "FILL" || a == "DRAIN" || a == "WATER_EXCHANGE" || a == "FILL_TO_TARGET") {
+  if (a == "FILL" || a == "DRAIN" || a == "WATER_EXCHANGE" || a == "FILL_TO_TARGET" || a == "DRAIN_TO_TARGET") {
     if (!strcmp(waterPhase, "FAULT")) return "rejected_fault_latched";
     if (waterBusy()) return "rejected_water_busy";
     // Automation stays on: it never starts while this manual run or its cooldown is active.
@@ -1602,14 +1680,19 @@ const char* executeCommand(const PendingCommand& c) {
       if (!drainMs || !fillMs) return "rejected_duration_out_of_range";
       startExchange(drainMs, fillMs); return "accepted";
     }
-    if (a == "FILL_TO_TARGET") {
+    if (a == "FILL_TO_TARGET" || a == "DRAIN_TO_TARGET") {
       if (!tankMountCalibrated() || !tankTargetConfigured()) return "rejected_tank_not_calibrated";
       if (!ultraS.connected || !isfinite(ultraS.value) || !isfinite(tankDepthCm)) return "rejected_no_ultrasonic";
-      if (tankDepthCm >= tankCal.targetDepthCm - (isfinite(tankCal.stopHysteresisCm) ? tankCal.stopHysteresisCm : 0.2f)) {
-        return "rejected_already_at_target";
+      const float hyst = isfinite(tankCal.stopHysteresisCm) ? tankCal.stopHysteresisCm : 0.2f;
+      if (a == "FILL_TO_TARGET") {
+        if (tankDepthCm >= tankCal.targetDepthCm - hyst) return "rejected_already_at_target";
+        const uint32_t maxMs = (c.durationMs >= 1 && c.durationMs <= PUMP_HARD_MAX_MS) ? c.durationMs : PUMP_HARD_MAX_MS;
+        startFillToTarget(maxMs);
+        return "accepted";
       }
+      if (tankDepthCm <= tankCal.targetDepthCm + hyst) return "rejected_already_at_target";
       const uint32_t maxMs = (c.durationMs >= 1 && c.durationMs <= PUMP_HARD_MAX_MS) ? c.durationMs : PUMP_HARD_MAX_MS;
-      startFillToTarget(maxMs);
+      startDrainToTarget(maxMs);
       return "accepted";
     }
     if (c.durationMs < 1 || c.durationMs > PUMP_HARD_MAX_MS) return "rejected_duration_out_of_range";
@@ -2964,7 +3047,7 @@ void lcdFmtRemaining(char* out, size_t outSize, uint32_t remainingMs) {
 }
 
 const char* lcdPhaseLabel() {
-  if (!strcmp(waterPhase, "DRAINING")) return "Drain";
+  if (!strcmp(waterPhase, "DRAINING")) return drainToTargetActive ? "Drain->tgt" : "Drain";
   if (!strcmp(waterPhase, "REFILLING")) return fillToTargetActive ? "Fill->tgt" : "Fill";
   if (!strcmp(waterPhase, "SETTLING_AFTER_DRAIN")) return "Settle";
   if (!strcmp(waterPhase, "COOLDOWN")) return "Cooldown";

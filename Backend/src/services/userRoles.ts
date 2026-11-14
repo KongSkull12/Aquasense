@@ -4,7 +4,7 @@ export const USER_ROLES: UserRole[] = ['admin', 'farmer', 'staff', 'guest'];
 
 /** Staff may view readings, feed, drain / fill, and switch the aerator only. */
 export const STAFF_HARDWARE_ACTIONS = new Set([
-  'DRAIN', 'FILL', 'WATER_EXCHANGE', 'FILL_TO_TARGET', 'WATER_STOP',
+  'DRAIN', 'FILL', 'WATER_EXCHANGE', 'FILL_TO_TARGET', 'DRAIN_TO_TARGET', 'WATER_STOP',
   'AERATOR_ON', 'AERATOR_OFF', 'AERATOR_AUTO',
 ]);
 

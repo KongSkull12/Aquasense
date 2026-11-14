@@ -18,7 +18,7 @@ const COPY: Record<BandKey, { label: string; unit: string; digits: number; highO
   temperature: { label: 'Temperature', unit: '°C', digits: 1, highOnly: false },
   ph: { label: 'pH', unit: '', digits: 2, highOnly: false },
   turbidity: { label: 'Turbidity', unit: 'NTU', digits: 1, highOnly: true, hint: 'Starting values, not a species limit.' },
-  waterDepth: { label: 'Water depth', unit: 'cm', digits: 1, highOnly: false, hint: 'Needs the empty-tub step on the Calibration page.' },
+  waterDepth: { label: 'Water depth', unit: 'cm', digits: 1, highOnly: false, hint: 'Needs Calibration → Tank. With automatic control on: below normal min fills to target; above normal max drains to target.' },
 };
 
 type BandDraft = Record<keyof ParameterBand, string>;

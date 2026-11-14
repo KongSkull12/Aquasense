@@ -12,7 +12,7 @@ const deviceResultText: Record<string, string> = {
   rejected_duration_out_of_range: 'Pump duration must be between 1 and 600 seconds (10 minutes).',
   rejected_tank_not_calibrated: 'Capture the empty tub (mount height) and set a target depth on Calibration before Fill to target.',
   rejected_no_ultrasonic: 'No valid ultrasonic echo. Check the sensor wiring and that the surface is in range.',
-  rejected_already_at_target: 'Water is already at or above the calibrated target depth.',
+  rejected_already_at_target: 'Water is already at the calibrated target depth for that pump direction.',
   rejected_feeder_busy: 'The feeder is already running a cycle.',
   rejected_expired: 'Cancelled: the feeder command was more than 1 minute old when it reached the device.',
   rejected_device_restarted: 'Cancelled: the device was switched off or restarted after this command was sent, so the feeder did not move.',

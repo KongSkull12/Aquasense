@@ -1,7 +1,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
 
-export const hardwareActions = ['FILL', 'DRAIN', 'WATER_EXCHANGE', 'FILL_TO_TARGET', 'WATER_STOP', 'AERATOR_ON',
+export const hardwareActions = ['FILL', 'DRAIN', 'WATER_EXCHANGE', 'FILL_TO_TARGET', 'DRAIN_TO_TARGET', 'WATER_STOP', 'AERATOR_ON',
   'AERATOR_OFF', 'AERATOR_AUTO', 'AUTOMATION_ON', 'AUTOMATION_OFF', 'BUZZER_ON',
   'BUZZER_OFF', 'ALL_OFF', 'CLEAR_FAULT',
   'CAL_CAPTURE', 'CAL_CLEAR', 'CAL_RESET', 'CAL_STATUS'] as const;
@@ -22,10 +22,10 @@ export const hardwareCommandSchema = z.object({ deviceId, action: z.enum(hardwar
   durationMs: z.number().int().min(1).max(MAX_PUMP_RUNTIME_MS).optional(),
   param: z.string().trim().toLowerCase().max(24).optional() }).strict().superRefine((value, context) => {
   const timedPump = ['FILL', 'DRAIN', 'WATER_EXCHANGE'].includes(value.action);
-  const fillToTarget = value.action === 'FILL_TO_TARGET';
+  const levelToTarget = value.action === 'FILL_TO_TARGET' || value.action === 'DRAIN_TO_TARGET';
   if (timedPump && value.durationMs === undefined) context.addIssue({ code: z.ZodIssueCode.custom,
     message: 'durationMs is required only for pump commands (per phase for an exchange)' });
-  if (!timedPump && !fillToTarget && value.durationMs !== undefined) context.addIssue({ code: z.ZodIssueCode.custom,
+  if (!timedPump && !levelToTarget && value.durationMs !== undefined) context.addIssue({ code: z.ZodIssueCode.custom,
     message: 'durationMs is required only for pump commands (per phase for an exchange)' });
   const calibration = calibrationActions.includes(value.action);
   if (!calibration && value.param !== undefined) context.addIssue({ code: z.ZodIssueCode.custom,

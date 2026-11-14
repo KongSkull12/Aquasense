@@ -13,6 +13,19 @@ The running version is shown in the dashboard sidebar (App = frontend, API = bac
 3. Commit, tag and push: `git tag vX.Y.Z && git push kongskull main --tags`.
    Vercel and Render redeploy `main` automatically.
 
+## [1.10.0] - 2026-11-14
+
+### Added
+- Firmware automatic water control: depth above Thresholds normal max drains to the calibrated
+  target; depth below normal min still fills to target (~1 min confirm, 30 min gap).
+- Manual `DRAIN_TO_TARGET` command (API + Water change page), matching Fill to target.
+- Aerator: Critical water-quality (temp/pH/turbidity Alert) forces the aerator on; Warning forces
+  it when Automatic or water automation is on. Temperature hysteresis unchanged.
+
+### Changed
+- Water change and Thresholds copy describe high-water drain and quality-driven aerator behavior.
+- Flash firmware after deploy so the device runs the new level and aerator policy.
+
 ## [1.9.9] - 2026-11-14
 
 ### Added

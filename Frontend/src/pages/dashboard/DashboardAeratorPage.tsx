@@ -107,11 +107,11 @@ const DashboardAeratorPage: React.FC = () => {
             { label: 'Device network', value: fresh && state ? `${state.wifiConnected ? 'Wi-Fi' : 'Wi-Fi disconnected'} · ${state.mqttConnected ? 'MQTT' : 'MQTT disconnected'}` : 'Unknown' },
             { label: 'Last report', value: hardware?.receivedAt ? new Date(hardware.receivedAt).toLocaleString() : 'Not yet reported' },
           ]} />
-          <p className="text-[13px] leading-relaxed text-ink-3">Automatic turns the aerator on at 29.5 °C and off at 28.5 °C. If the temperature reading drops out, the aerator stays on. It does not use dissolved oxygen, and ORP is never treated as a dissolved-oxygen reading.</p>
+          <p className="text-[13px] leading-relaxed text-ink-3">Automatic follows temperature (on at 29.5 °C, off at 28.5 °C) and also turns on for a Thresholds water-quality warning. Critical temperature, pH or turbidity always forces the aerator on even in manual mode. A missing temperature reading keeps it on. ORP is never treated as dissolved oxygen.</p>
         </div>
       </Panel>
 
-      <Panel title="Aerator control" description="On or off switches the device to manual mode. Automatic follows temperature: on at 29.5 °C, off at 28.5 °C.">
+      <Panel title="Aerator control" description="On or off is manual. Automatic follows temperature hysteresis and water-quality warnings from your Thresholds.">
         <div className="space-y-4">
           {/* Only the mode the device reports is shown as selected. */}
           <div className="grid gap-2 sm:grid-cols-3" role="group" aria-label="Aerator mode">

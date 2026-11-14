@@ -8,7 +8,7 @@ import { noteCalibrationResult } from './deviceCalibration';
 import { loadThresholdBands } from './thresholdBands';
 import type { Transaction } from 'sequelize';
 
-const WATER_START_ACTIONS: HardwareAction[] = ['FILL', 'DRAIN', 'WATER_EXCHANGE', 'FILL_TO_TARGET', 'AUTOMATION_ON'];
+const WATER_START_ACTIONS: HardwareAction[] = ['FILL', 'DRAIN', 'WATER_EXCHANGE', 'FILL_TO_TARGET', 'DRAIN_TO_TARGET', 'AUTOMATION_ON'];
 const ALL_START_ACTIONS: HardwareAction[] = [...WATER_START_ACTIONS, 'AERATOR_ON', 'AERATOR_AUTO', 'BUZZER_ON'];
 
 const acknowledgeInTransaction = async (userId: string, deviceId: string, receipt: CommandReceipt,
@@ -72,7 +72,7 @@ export const hardwareService = {
     void receipt;
     await HardwareDeviceState.upsert({ deviceId, state, receivedAt: new Date() });
     const [schedules, thresholdBands] = await Promise.all([feedingService.listSchedules(userId), loadThresholdBands()]);
-    // thresholdBands drive the device buzzer (Alert: 3 beeps, Warning: 2), matching the dashboard marks.
+    // thresholdBands drive device buzzer + automatic fill/drain level bands (synced on heartbeat).
     return { command: null, schedules: schedules.filter(s => s.enabled).slice(0, 20).map(s => ({ id: s.id, date: s.date, time: s.time })),
       timezone: 'Asia/Manila', serverTimeIso: new Date().toISOString(), thresholdBands };
   },
