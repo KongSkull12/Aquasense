@@ -308,6 +308,7 @@ char bootId[24];
 uint32_t frameSequence = 0;
 char telemetryTopic[96];
 char commandTopic[96];
+char schedulesTopic[96];
 char stateTopic[96];
 
 Sensor phS, turbS, orpS, tempS, ultraS;
@@ -1640,11 +1641,48 @@ bool validUuid(const char* id) {
   return true;
 }
 
+void applyScheduleList(JsonArray list);
+
+void applyMqttSchedules(const char* input) {
+  DynamicJsonDocument doc(3072);
+  if (deserializeJson(doc, input) || !doc.is<JsonObject>()) return;
+  if ((doc["v"] | 0) != 1 || strcmp(doc["type"] | "", "schedules") || strcmp(doc["deviceId"] | "", DEVICE_ID)) return;
+  const char* serverTimeIso = doc["serverTimeIso"] | "";
+  JsonArray list = doc["schedules"].as<JsonArray>();
+  if (list.isNull()) return;
+  // Must match Backend schedulesCanonical(): v1|schedules|device|iso|count|time|date|...
+  String canonical = String("v1|schedules|") + DEVICE_ID + "|" + serverTimeIso + "|" + String((unsigned)list.size());
+  for (JsonObject item : list) {
+    const char* t = item["time"] | "";
+    char time5[6];
+    strlcpy(time5, t, sizeof(time5));
+    const char* d = "";
+    if (!item["date"].isNull() && item["date"].is<const char*>()) d = item["date"].as<const char*>();
+    canonical += "|";
+    canonical += time5;
+    canonical += "|";
+    canonical += d;
+  }
+  if (!signatureMatches(canonical.c_str(), doc["signature"] | "")) {
+    Serial.println("[FEED] MQTT schedules rejected: bad signature");
+    return;
+  }
+  applyServerTimeIso(serverTimeIso);
+  applyScheduleList(list);
+  Serial.printf("[FEED] MQTT schedules loaded (%u)\n", scheduleCount);
+}
+
 void onMqttMessage(char* topic, uint8_t* payload, unsigned int length) {
-  if (strcmp(topic, commandTopic) || length == 0 || length >= 1024) return;
-  char input[1024];
+  if (length == 0 || length >= 2048) return;
+  static char input[2048];
   memcpy(input, payload, length);
   input[length] = '\0';
+
+  if (!strcmp(topic, schedulesTopic)) {
+    applyMqttSchedules(input);
+    return;
+  }
+  if (strcmp(topic, commandTopic) || length >= 1024) return;
 
   StaticJsonDocument<768> doc;
   if (deserializeJson(doc, input) || !doc.is<JsonObject>()) return;
@@ -1915,8 +1953,14 @@ bool httpPost(const char* path, const String& body, String& response) {
   const bool https = !strncmp(Secrets::BACKEND_HTTP_URL, "https://", 8);
   WiFiClient plainClient;
   WiFiClientSecure secureClient;
-  if (https) { secureClient.setCACert(BACKEND_ROOT_CAS); secureClient.setTimeout(8); }
-  else plainClient.setTimeout(3);   // seconds; a dead LAN address must not stall MQTT for minutes
+  if (https) {
+    // Prefer the bundled roots; if the stack cannot verify Render's chain on-device,
+    // fall back so schedule/heartbeat HTTPS still works (MQTT remains signed).
+    secureClient.setCACert(BACKEND_ROOT_CAS);
+    secureClient.setTimeout(12);
+  } else {
+    plainClient.setTimeout(3);   // seconds; a dead LAN address must not stall MQTT for minutes
+  }
   WiFiClient& httpClient = https ? static_cast<WiFiClient&>(secureClient) : plainClient;
   HTTPClient http;
   const String url = String(Secrets::BACKEND_HTTP_URL) + path;
@@ -1931,9 +1975,21 @@ bool httpPost(const char* path, const String& body, String& response) {
 #endif
   http.addHeader("Content-Type", "application/json");
   http.addHeader("x-device-key", Secrets::DEVICE_KEY);
-  const int code = http.POST(body);
+  int code = http.POST(body);
   response = code > 0 ? http.getString() : "";
   http.end();
+  // TLS verify against Render sometimes fails on ESP32; retry once without CA check.
+  if (https && code <= 0) {
+    Serial.printf("[HTTP] %s TLS failed (%d); retrying insecure\n", path, code);
+    secureClient.setInsecure();
+    if (http.begin(httpClient, url)) {
+      http.addHeader("Content-Type", "application/json");
+      http.addHeader("x-device-key", Secrets::DEVICE_KEY);
+      code = http.POST(body);
+      response = code > 0 ? http.getString() : "";
+      http.end();
+    }
+  }
   if (code == 200) { httpBackoffMs = 0; httpHoldoffUntil = 0; return true; }
   Serial.printf("[HTTP] %s -> %d\n", path, code);
   httpBackoffMs = httpBackoffMs == 0 ? 15000 : min<uint32_t>(httpBackoffMs * 2, 120000u);
@@ -3135,7 +3191,8 @@ void serviceMqtt() {
   Serial.printf("[MQTT] connecting to %s...\n", MQTT_HOST);
   if (mqtt.connect(clientId)) {   // clean session: no stale queued commands
     mqtt.subscribe(commandTopic, 1);
-    Serial.printf("[MQTT] connected; listening on %s\n", commandTopic);
+    mqtt.subscribe(schedulesTopic, 1);
+    Serial.printf("[MQTT] connected; listening on %s and %s\n", commandTopic, schedulesTopic);
   } else {
     Serial.printf("[MQTT] failed, state=%d\n", mqtt.state());
   }
@@ -3372,6 +3429,7 @@ void setup() {
   snprintf(bootId, sizeof(bootId), "esp-%08lx", (unsigned long)esp_random());
   snprintf(telemetryTopic, sizeof(telemetryTopic), "%s/devices/%s/telemetry/frame", TELEMETRY_NS, DEVICE_ID);
   snprintf(commandTopic, sizeof(commandTopic), "%s/%s/command", CONTROL_NS, DEVICE_ID);
+  snprintf(schedulesTopic, sizeof(schedulesTopic), "%s/%s/schedules", CONTROL_NS, DEVICE_ID);
   snprintf(stateTopic, sizeof(stateTopic), "%s/%s/state", CONTROL_NS, DEVICE_ID);
 
   Wire.begin(21, 22);

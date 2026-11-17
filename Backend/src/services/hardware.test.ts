@@ -6,7 +6,7 @@ import { Op } from 'sequelize';
 import type { AddressInfo } from 'node:net';
 import hardwareRoutes from '../api/v1/routes/hardware';
 import feedingRoutes from '../api/v1/routes/feeding';
-import { ackCanonical, commandCanonical, hardwareCommandSchema, hardwareStateSchema, hardwareSyncSchema, parseSignedAck, parseSignedCommand, signCanonical, verifyCanonical, type HardwareState } from './hardwareProtocol';
+import { ackCanonical, commandCanonical, hardwareCommandSchema, hardwareStateSchema, hardwareSyncSchema, parseSignedAck, parseSignedCommand, schedulesCanonical, signCanonical, verifyCanonical, type HardwareState } from './hardwareProtocol';
 import { hardwareService } from './hardwareService';
 import { HardwareCommand, HardwareDeviceState } from '../database/models/HardwareControl';
 import { FeedingCommand } from '../database/models/FeedingCommand';
@@ -232,6 +232,11 @@ test('signed actuator command and state ACK canonical strings verify HMAC-SHA256
   assert.equal(ackCanonical(ack), `v1|board|${id}|hardware|DRAIN|accepted|123456|0|0|0|0|0|0|IDLE||0|0|1|1|123`);
   assert.equal(ackCanonical({ ...ack, state: { ...state, aeratorAuto: true } }), `v1|board|${id}|hardware|DRAIN|accepted|123456|0|0|0|0|0|0|IDLE||0|0|1|1|123|1`);
   assert.equal(hardwareStateSchema.safeParse({ ...state, aeratorAuto: false }).success, true);
+  assert.equal(hardwareStateSchema.safeParse({ ...state, scheduleCount: 2 }).success, true);
+  assert.equal(
+    schedulesCanonical('esp32-feeder-1', '2026-11-17T10:00:00.000Z', [{ time: '18:32', date: null }, { time: '19:53', date: '2026-11-17' }]),
+    'v1|schedules|esp32-feeder-1|2026-11-17T10:00:00.000Z|2|18:32||19:53|2026-11-17',
+  );
   const ackSignature = signCanonical(ackCanonical(ack), key);
   assert.equal(verifyCanonical(ackCanonical(ack), ackSignature, key), true);
   assert.equal(verifyCanonical(ackCanonical({ ...ack, state: { ...state, drainPump: true } }), ackSignature, key), false);

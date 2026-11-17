@@ -90,6 +90,17 @@ export const verifyCanonical = (canonical: string, signature: string, key: strin
   const supplied = Buffer.from(signature, 'hex');
   return expected.length === supplied.length && timingSafeEqual(expected, supplied);
 };
+
+/** Signed MQTT feeding-schedule sync (topic …/{deviceId}/schedules). */
+export type FeedingScheduleSyncItem = { time: string; date: string | null };
+export const schedulesCanonical = (
+  deviceId: string,
+  serverTimeIso: string,
+  schedules: FeedingScheduleSyncItem[],
+): string => {
+  const parts = schedules.slice(0, 20).map((item) => `${String(item.time).slice(0, 5)}|${item.date ?? ''}`);
+  return `v1|schedules|${deviceId}|${serverTimeIso}|${parts.length}|${parts.join('|')}`;
+};
 export const parseSignedAck = (raw: string): SignedHardwareAck | null => {
   try { const parsed = signedAckSchema.safeParse(JSON.parse(raw)); return parsed.success ? parsed.data : null; }
   catch { return null; }

@@ -51,6 +51,7 @@ export const createSchedule = async (req: AuthenticatedRequest, res: Response): 
       return;
     }
     const schedule = await feedingService.createSchedule({ userId: req.userId, date: date || null, time, enabled, label });
+    void mqttService.publishFeedingSchedulesForUser(req.userId);
     sendSuccess(res, 201, 'Feeding schedule created', schedule);
   } catch (error) {
     sendError(res, 400, error instanceof Error ? error.message : 'Invalid schedule input');
@@ -68,6 +69,7 @@ export const updateSchedule = async (req: AuthenticatedRequest, res: Response): 
       sendError(res, 404, 'Feeding schedule not found');
       return;
     }
+    void mqttService.publishFeedingSchedulesForUser(req.userId);
     sendSuccess(res, 200, 'Feeding schedule updated', updated);
   } catch (error) {
     sendError(res, 400, error instanceof Error ? error.message : 'Invalid schedule input');
@@ -85,6 +87,7 @@ export const deleteSchedule = async (req: AuthenticatedRequest, res: Response): 
       sendError(res, 404, 'Feeding schedule not found');
       return;
     }
+    void mqttService.publishFeedingSchedulesForUser(req.userId);
     sendSuccess(res, 200, 'Feeding schedule deleted');
   } catch (error) {
     logger.error('Failed to delete feeding schedule', error);

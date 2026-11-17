@@ -15,8 +15,9 @@ import { config as appConfig } from '../config/config';
 import { HardwareCommand } from '../database/models/HardwareControl';
 import { FeedingCommand } from '../database/models/FeedingCommand';
 import { deviceService } from './device.service';
-import { ackCanonical, commandCanonical, FEEDING_COMMAND_TTL_MS, parseSignedAck, signCanonical, verifyCanonical } from './hardwareProtocol';
+import { ackCanonical, commandCanonical, FEEDING_COMMAND_TTL_MS, parseSignedAck, schedulesCanonical, signCanonical, verifyCanonical } from './hardwareProtocol';
 import { hardwareService } from './hardwareService';
+import { feedingService } from './feedingService';
 
 interface MQTTConfig {
   brokerUrl: string;
@@ -81,6 +82,7 @@ export class MQTTService {
   private lastPublicFrameVerifiedAt: string | null = null;
   // Why the most recent frame was dropped, so /health can tell a key mismatch from a bad frame.
   private lastPublicFrameRejectedReason: 'no_device_key' | 'bad_signature' | 'invalid_frame' | null = null;
+  private lastSchedulePushAt = new Map<string, number>();
 
   constructor(config?: Partial<MQTTConfig>) {
     this.config = {
@@ -321,10 +323,80 @@ export class MQTTService {
       this.latestDeviceId = parts[2];
       this.lastPublicFrameVerifiedAt = new Date().toISOString();
       void this.persistPublicMqttFrame(JSON.stringify(frame), frame.bootId, frame.sequence);
+      // HTTPS schedule sync often fails on the ESP32 TLS stack; push over MQTT instead.
+      void this.publishFeedingSchedules(parts[2]);
       return;
     }
     // Legacy scalar publications lack cycle identity and source timestamps.
     // They remain available to broker subscribers but are ignored for storage.
+  }
+
+  /**
+   * Push enabled feeding schedules to the device over the signed control channel.
+   * Used because device HTTPS to Render is unreliable on ESP32; MQTT already works.
+   */
+  async publishFeedingSchedules(deviceId: string, options?: { force?: boolean }): Promise<boolean> {
+    if (!appConfig.mqtt.actuatorCommandsEnabled) return false;
+    const now = Date.now();
+    const last = this.lastSchedulePushAt.get(deviceId) || 0;
+    if (!options?.force && now - last < 45_000) return false;
+    const publisher = appConfig.mqtt.publicTelemetryOnly && !appConfig.mqtt.publicCommandsEnabled
+      ? this.controlClient : this.client;
+    if (!publisher?.connected) return false;
+    const key = appConfig.device.keys[deviceId];
+    if (!key) return false;
+    try {
+      const device = await deviceService.getActiveDevice(deviceId);
+      if (!device) return false;
+      const schedules = (await feedingService.listSchedules(device.userId))
+        .filter((item) => item.enabled)
+        .slice(0, 20)
+        .map((item) => ({ time: String(item.time).slice(0, 5), date: item.date ?? null }));
+      const serverTimeIso = new Date().toISOString();
+      const payload = {
+        v: 1 as const,
+        type: 'schedules' as const,
+        deviceId,
+        serverTimeIso,
+        schedules,
+        signature: signCanonical(schedulesCanonical(deviceId, serverTimeIso, schedules), key),
+      };
+      const topic = `${appConfig.mqtt.controlTopicNamespace}/${deviceId}/schedules`;
+      const body = JSON.stringify(payload);
+      return await new Promise((resolve) => {
+        publisher.publish(topic, body, { qos: 1, retain: false }, (error) => {
+          if (error) {
+            logger.warn('Feeding schedule MQTT publish failed', { deviceId, error: error.message });
+            resolve(false);
+            return;
+          }
+          this.lastSchedulePushAt.set(deviceId, now);
+          logger.info('Published feeding schedules over MQTT', { deviceId, count: schedules.length });
+          resolve(true);
+        });
+      });
+    } catch (error) {
+      logger.warn('Feeding schedule MQTT publish error', {
+        deviceId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return false;
+    }
+  }
+
+  /** Publish schedules for every active device owned by this user. */
+  async publishFeedingSchedulesForUser(userId: string): Promise<void> {
+    try {
+      const devices = await deviceService.listByUser(userId);
+      await Promise.all(
+        devices.filter((device) => device.isActive).map((device) => this.publishFeedingSchedules(device.deviceId, { force: true })),
+      );
+    } catch (error) {
+      logger.warn('Failed to push feeding schedules for user', {
+        userId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   /** Publish one non-retained, signed actuator command. Publishing means queued, never confirmed. */

@@ -13,6 +13,13 @@ The running version is shown in the dashboard sidebar (App = frontend, API = bac
 3. Commit, tag and push: `git tag vX.Y.Z && git push kongskull main --tags`.
    Vercel and Render redeploy `main` automatically.
 
+## [1.10.14] - 2026-11-17
+
+### Fixed
+- Feeding schedules are pushed to the ESP32 over signed MQTT (same channel as Feed now), because
+  device HTTPS to Render often never loaded schedules. Firmware subscribes to `…/schedules`, and
+  HTTPS sync retries once with insecure TLS if certificate verify fails.
+
 ## [1.10.13] - 2026-11-17
 
 ### Fixed

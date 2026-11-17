@@ -124,7 +124,7 @@ const DashboardFeedingPage: React.FC = () => {
               { label: 'Schedules on device', value: hardwareState?.state && typeof hardwareState.state.scheduleCount === 'number'
                 ? (hardwareState.state.scheduleCount > 0
                   ? `${hardwareState.state.scheduleCount} loaded`
-                  : 'None loaded yet — device must reach the cloud API over HTTPS')
+                  : 'None loaded yet — waiting for MQTT schedule sync (keep device online)')
                 : 'Unknown' },
               { label: 'Latest command', value: feedingState?.lastCommand ? `${feedingState.lastCommand.action}: ${feedingState.lastCommand.status.toLowerCase()}${feedingState.lastCommand.metadata?.deviceResult ? ` · ${describeDeviceResult(String(feedingState.lastCommand.metadata.deviceResult))}` : ''}${manualBusy ? ' · pending' : ''}` : 'None reported' },
             ]} />

@@ -49,7 +49,10 @@ export const feedingCalendarDate = (now = new Date(), timeZone = FEEDING_TZ): st
 export const effectiveScheduleDate = (date: string | null | undefined, now = new Date()): string | null => {
   if (!date) return null;
   assertValidDate(date);
-  return date < feedingCalendarDate(now) ? null : date;
+  const today = feedingCalendarDate(now);
+  // Past calendar dates (including wrong years like 2024-…) become daily.
+  if (date < today) return null;
+  return date;
 };
 
 export const feedingService = {
