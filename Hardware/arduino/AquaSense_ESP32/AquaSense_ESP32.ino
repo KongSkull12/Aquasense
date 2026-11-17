@@ -132,8 +132,9 @@ const float AERATOR_ON_ABOVE_C  = 29.5;
 const float AERATOR_OFF_BELOW_C = 28.5;
 
 // AUTOMATION_ON: automatic water level + quality policy.
-//   Low depth  (< Thresholds normalMin)  -> fill to calibrated target
-//   High depth (> Thresholds normalMax)  -> drain to calibrated target
+//   Low depth  (< Thresholds normalMin)  -> fill until depth reaches the level goal
+//     (calibrated target clamped into the Thresholds normal band), then pumps off
+//   High depth (> Thresholds normalMax)  -> drain until depth reaches that same goal
 //   Quality Warning  -> 5%  partial exchange (volume/flows from 'exchange')
 //   Quality Critical -> 10% urgent partial exchange + aerator on (backend SMS)
 // Temperature/pH/turbidity drive quality exchange; depth drives fill/drain only.
@@ -248,6 +249,7 @@ const char* const TANK_NVS_KEY = "tank1";
 float tankDepthCm = NAN;
 bool fillToTargetActive = false;
 bool drainToTargetActive = false;
+float levelControlGoalCm = NAN;   // stop depth for the active fill/drain-to-target run
 
 // Water-quality alarm types (used by the buzzer section below).
 struct ThresholdBand { float alertMin, normalMin, normalMax, alertMax; };
@@ -712,6 +714,7 @@ void waterFaultLatch(const char* reason) {
   exchangeRunning = false;
   fillToTargetActive = false;
   drainToTargetActive = false;
+  levelControlGoalCm = NAN;
   waterAutomation = false;
   strlcpy(waterFault, reason, sizeof(waterFault));
   enterPhase("FAULT", 0);
@@ -729,6 +732,7 @@ void waterStop() {
   exchangeRunning = false;
   fillToTargetActive = false;
   drainToTargetActive = false;
+  levelControlGoalCm = NAN;
   waterAutomation = false;
   if (strcmp(waterPhase, "FAULT")) enterPhase(wasRunning ? "COOLDOWN" : "IDLE", wasRunning ? PUMP_COOLDOWN_MS : 0);
 }
@@ -736,6 +740,7 @@ void waterStop() {
 void startDrain(uint32_t ms) {
   fillToTargetActive = false;
   drainToTargetActive = false;
+  levelControlGoalCm = NAN;
   setRelay(RELAY_FILL_PIN, false, fillOn);
   setRelay(RELAY_DRAIN_PIN, true, drainOn);
   enterPhase("DRAINING", ms);
@@ -745,6 +750,7 @@ void startDrain(uint32_t ms) {
 void startFill(uint32_t ms)  {
   fillToTargetActive = false;
   drainToTargetActive = false;
+  levelControlGoalCm = NAN;
   setRelay(RELAY_DRAIN_PIN, false, drainOn);
   setRelay(RELAY_FILL_PIN, true, fillOn);
   enterPhase("REFILLING", ms);
@@ -752,24 +758,35 @@ void startFill(uint32_t ms)  {
                 (unsigned long)ms, RELAY_FILL_PIN, fillOn ? "driven" : "blocked: relays disabled");
 }
 
-// Closed-loop fill: stops at target depth, bad echo, or hard max.
+float levelControlGoal();
+float levelStopHysteresis();
+
+// Closed-loop fill: stops at levelControlGoalCm, bad echo, or hard max.
 void startFillToTarget(uint32_t maxMs) {
+  levelControlGoalCm = levelControlGoal();
+  if (!isfinite(levelControlGoalCm)) levelControlGoalCm = tankCal.targetDepthCm;
   fillToTargetActive = true;
   drainToTargetActive = false;
   setRelay(RELAY_DRAIN_PIN, false, drainOn);
   setRelay(RELAY_FILL_PIN, true, fillOn);
   enterPhase("REFILLING", maxMs);
+  Serial.printf("[WATER] fill-to-target ON (goal %.2f cm, max %lu ms, GPIO%d %s)\n",
+                levelControlGoalCm, (unsigned long)maxMs, RELAY_FILL_PIN,
+                fillOn ? "driven" : "blocked: relays disabled");
 }
 
-// Closed-loop drain: stops at or just above target depth, bad echo, or hard max.
+// Closed-loop drain: stops at or just above levelControlGoalCm, bad echo, or hard max.
 void startDrainToTarget(uint32_t maxMs) {
+  levelControlGoalCm = levelControlGoal();
+  if (!isfinite(levelControlGoalCm)) levelControlGoalCm = tankCal.targetDepthCm;
   fillToTargetActive = false;
   drainToTargetActive = true;
   setRelay(RELAY_FILL_PIN, false, fillOn);
   setRelay(RELAY_DRAIN_PIN, true, drainOn);
   enterPhase("DRAINING", maxMs);
-  Serial.printf("[WATER] drain-to-target ON (max %lu ms, GPIO%d %s)\n",
-                (unsigned long)maxMs, RELAY_DRAIN_PIN, drainOn ? "driven" : "blocked: relays disabled");
+  Serial.printf("[WATER] drain-to-target ON (goal %.2f cm, max %lu ms, GPIO%d %s)\n",
+                levelControlGoalCm, (unsigned long)maxMs, RELAY_DRAIN_PIN,
+                drainOn ? "driven" : "blocked: relays disabled");
 }
 
 uint32_t exchangeFillMs = 0;
@@ -793,38 +810,51 @@ void updateWater() {
   // Independent watchdog: no pump may run past the hard maximum.
   if ((fillOn || drainOn) && elapsed > PUMP_HARD_MAX_MS + 2000) { waterFaultLatch(fillOn ? "fill_timeout" : "drain_timeout"); return; }
 
-  // Fill-to-target: stop when depth reaches the calibrated target (or abort on bad echo).
+  // Fill-to-target: stop when depth reaches the level goal (Thresholds/target).
   if (fillToTargetActive && !strcmp(waterPhase, "REFILLING") && fillOn) {
     if (!ultraS.connected || !isfinite(ultraS.value) || !isfinite(tankDepthCm)) {
       pumpsOff();
       fillToTargetActive = false;
-      waterFaultLatch("fill_target_no_echo");
+      // Automation: pause and retry later. Manual: latch a fault so the farmer notices.
+      if (waterAutomation) {
+        enterPhase("COOLDOWN", PUMP_COOLDOWN_MS);
+        Serial.println("[WATER] fill-to-target paused: no echo (will retry if still low)");
+      } else {
+        waterFaultLatch("fill_target_no_echo");
+      }
       return;
     }
-    const float stopAt = tankCal.targetDepthCm - (isfinite(tankCal.stopHysteresisCm) ? tankCal.stopHysteresisCm : 0.2f);
+    const float goal = isfinite(levelControlGoalCm) ? levelControlGoalCm : tankCal.targetDepthCm;
+    const float stopAt = goal - levelStopHysteresis();
     if (tankDepthCm >= stopAt) {
       setRelay(RELAY_FILL_PIN, false, fillOn);
       fillToTargetActive = false;
       enterPhase("COOLDOWN", PUMP_COOLDOWN_MS);
-      Serial.printf("[WATER] fill-to-target reached depth %.2f cm\n", tankDepthCm);
+      Serial.printf("[WATER] fill-to-target reached depth %.2f cm (goal %.2f)\n", tankDepthCm, goal);
       return;
     }
   }
 
-  // Drain-to-target: stop when depth is back at or just above the calibrated target.
+  // Drain-to-target: stop when depth is back at or just above the level goal.
   if (drainToTargetActive && !strcmp(waterPhase, "DRAINING") && drainOn) {
     if (!ultraS.connected || !isfinite(ultraS.value) || !isfinite(tankDepthCm)) {
       pumpsOff();
       drainToTargetActive = false;
-      waterFaultLatch("drain_target_no_echo");
+      if (waterAutomation) {
+        enterPhase("COOLDOWN", PUMP_COOLDOWN_MS);
+        Serial.println("[WATER] drain-to-target paused: no echo (will retry if still high)");
+      } else {
+        waterFaultLatch("drain_target_no_echo");
+      }
       return;
     }
-    const float stopAt = tankCal.targetDepthCm + (isfinite(tankCal.stopHysteresisCm) ? tankCal.stopHysteresisCm : 0.2f);
+    const float goal = isfinite(levelControlGoalCm) ? levelControlGoalCm : tankCal.targetDepthCm;
+    const float stopAt = goal + levelStopHysteresis();
     if (tankDepthCm <= stopAt) {
       setRelay(RELAY_DRAIN_PIN, false, drainOn);
       drainToTargetActive = false;
       enterPhase("COOLDOWN", PUMP_COOLDOWN_MS);
-      Serial.printf("[WATER] drain-to-target reached depth %.2f cm\n", tankDepthCm);
+      Serial.printf("[WATER] drain-to-target reached depth %.2f cm (goal %.2f)\n", tankDepthCm, goal);
       return;
     }
   }
@@ -910,6 +940,23 @@ const ThresholdBandSet DEFAULT_THRESHOLD_BANDS = {
 ThresholdBandSet thresholdBands = DEFAULT_THRESHOLD_BANDS;
 // bands2: struct grew when ORP was added; old bands1 blobs are ignored safely.
 const char* const BANDS_NVS_KEY = "bands2";
+
+// Goal depth inside the Thresholds normal band (falls back to calibrated target).
+float levelControlGoal() {
+  float goal = tankTargetConfigured() ? tankCal.targetDepthCm : NAN;
+  const float nMin = thresholdBands.waterDepth.normalMin;
+  const float nMax = thresholdBands.waterDepth.normalMax;
+  if (isfinite(nMin) && isfinite(nMax) && nMin <= nMax) {
+    if (!isfinite(goal)) goal = (nMin + nMax) * 0.5f;
+    if (goal < nMin) goal = nMin;
+    if (goal > nMax) goal = nMax;
+  }
+  return goal;
+}
+
+float levelStopHysteresis() {
+  return isfinite(tankCal.stopHysteresisCm) ? tankCal.stopHysteresisCm : 0.2f;
+}
 
 const uint8_t ALARM_CONFIRM_READS = 5;   // ~5 s at one read per second: one noisy sample never beeps
 AlarmLevel alarmLevel = ALARM_NORMAL;      // confirmed level; this drives the buzzer
@@ -1030,10 +1077,11 @@ bool automationPossible() {
   return exchangeCommissioned() || (tankMountCalibrated() && tankTargetConfigured());
 }
 
-// Low water (depth below Thresholds normalMin) fills to the calibrated target.
-// High water (depth above Thresholds normalMax) drains to the calibrated target.
-const uint32_t AUTO_LEVEL_CONFIRM_READS = 60;               // ~1 min outside normal first
-const uint32_t AUTO_LEVEL_GAP_MS = 30UL * 60UL * 1000UL;    // at most one auto fill/drain per 30 min
+// Low water (depth below Thresholds normalMin) fills to the level goal.
+// High water (depth above Thresholds normalMax) drains to the level goal.
+const uint32_t AUTO_LEVEL_CONFIRM_READS = 10;               // ~10 s outside normal first
+const uint32_t AUTO_LEVEL_RETRY_MS = 15000UL;               // settle before another attempt while still out of band
+const uint32_t AUTO_LEVEL_GAP_MS = 30UL * 60UL * 1000UL;    // hold after depth is back in the normal band
 uint32_t lowDepthReads = 0;
 uint32_t highDepthReads = 0;
 uint32_t lastAutoFillAt = 0;
@@ -1045,60 +1093,73 @@ bool autoDrainEverRan = false;
 // exchange below does not drain a tank that is already low.
 bool evaluateLowWaterFill(uint32_t now) {
   const float normalMin = thresholdBands.waterDepth.normalMin;
-  const bool depthKnown = tankMountCalibrated() && tankTargetConfigured() && isfinite(tankDepthCm) && isfinite(normalMin);
+  const float normalMax = thresholdBands.waterDepth.normalMax;
+  const bool depthKnown = tankMountCalibrated() && isfinite(tankDepthCm) && isfinite(normalMin);
   const bool low = depthKnown && tankDepthCm < normalMin;
   if (!low) { lowDepthReads = 0; return false; }
   if (lowDepthReads < AUTO_LEVEL_CONFIRM_READS) lowDepthReads++;
   if (lowDepthReads < AUTO_LEVEL_CONFIRM_READS) return true;
-  if (autoFillEverRan && now - lastAutoFillAt < AUTO_LEVEL_GAP_MS) return true;
 
   static uint32_t lastFillSkipLogAt = 0;
-  const float stopAt = tankCal.targetDepthCm - (isfinite(tankCal.stopHysteresisCm) ? tankCal.stopHysteresisCm : 0.2f);
-  if (stopAt <= normalMin) {
+  const float goal = levelControlGoal();
+  if (!isfinite(goal) || goal <= tankDepthCm + levelStopHysteresis()) {
     if (!lastFillSkipLogAt || now - lastFillSkipLogAt >= 600000UL) {
       lastFillSkipLogAt = now | 1;
-      Serial.printf("[WATER] low-water fill skipped: target %.2f cm is not above the normal minimum %.2f cm\n",
-                    tankCal.targetDepthCm, normalMin);
+      Serial.printf("[WATER] low-water fill skipped: need Calibration → Tank (empty + target inside Thresholds %.2f–%.2f cm)\n",
+                    normalMin, isfinite(normalMax) ? normalMax : normalMin);
     }
     return true;
   }
+
+  // Still empty/low after a timed-out fill: retry soon. Only hold 30 min once normal.
+  if (autoFillEverRan && now - lastAutoFillAt < AUTO_LEVEL_GAP_MS) {
+    if (tankDepthCm >= normalMin) return true;
+    if (now - lastAutoFillAt < AUTO_LEVEL_RETRY_MS) return true;
+  }
+
   lastAutoFillAt = now;
   autoFillEverRan = true;
   lowDepthReads = 0;
-  Serial.printf("[WATER] %s: water depth %.2f cm is below normal (%.2f cm): filling to target %.2f cm\n",
+  Serial.printf("[WATER] %s: depth %.2f cm < normal min %.2f cm — filling to %.2f cm (auto off at goal)\n",
                 classifyBand(tankDepthCm, thresholdBands.waterDepth) == ALARM_ALERT ? "CRITICAL" : "WARNING",
-                tankDepthCm, normalMin, tankCal.targetDepthCm);
-  startFillToTarget(PUMP_HARD_MAX_MS);   // stops at target, on a bad echo, or at the 10 min ceiling
+                tankDepthCm, normalMin, goal);
+  startFillToTarget(PUMP_HARD_MAX_MS);   // stops at goal / bad echo / 10 min ceiling
   return true;
 }
 
 // Returns true when it started (or is waiting to start) a high-water drain, so a
 // quality exchange does not also drain while level correction is in progress.
 bool evaluateHighWaterDrain(uint32_t now) {
+  const float normalMin = thresholdBands.waterDepth.normalMin;
   const float normalMax = thresholdBands.waterDepth.normalMax;
-  const bool depthKnown = tankMountCalibrated() && tankTargetConfigured() && isfinite(tankDepthCm) && isfinite(normalMax);
+  const bool depthKnown = tankMountCalibrated() && isfinite(tankDepthCm) && isfinite(normalMax);
   const bool high = depthKnown && tankDepthCm > normalMax;
   if (!high) { highDepthReads = 0; return false; }
   if (highDepthReads < AUTO_LEVEL_CONFIRM_READS) highDepthReads++;
   if (highDepthReads < AUTO_LEVEL_CONFIRM_READS) return true;
-  if (autoDrainEverRan && now - lastAutoDrainAt < AUTO_LEVEL_GAP_MS) return true;
 
   static uint32_t lastDrainSkipLogAt = 0;
-  const float stopAt = tankCal.targetDepthCm + (isfinite(tankCal.stopHysteresisCm) ? tankCal.stopHysteresisCm : 0.2f);
-  if (stopAt >= normalMax) {
+  const float goal = levelControlGoal();
+  if (!isfinite(goal) || goal + levelStopHysteresis() >= tankDepthCm) {
     if (!lastDrainSkipLogAt || now - lastDrainSkipLogAt >= 600000UL) {
       lastDrainSkipLogAt = now | 1;
-      Serial.printf("[WATER] high-water drain skipped: target %.2f cm is not below the normal maximum %.2f cm\n",
-                    tankCal.targetDepthCm, normalMax);
+      Serial.printf("[WATER] high-water drain skipped: need Calibration → Tank (target inside Thresholds %.2f–%.2f cm)\n",
+                    isfinite(normalMin) ? normalMin : normalMax, normalMax);
     }
     return true;
   }
+
+  if (autoDrainEverRan && now - lastAutoDrainAt < AUTO_LEVEL_GAP_MS) {
+    if (tankDepthCm <= normalMax) return true;
+    if (now - lastAutoDrainAt < AUTO_LEVEL_RETRY_MS) return true;
+  }
+
   lastAutoDrainAt = now;
   autoDrainEverRan = true;
   highDepthReads = 0;
-  Serial.printf("[WATER] %s: water depth %.2f cm is above normal (%.2f cm): draining to target %.2f cm\n",
+  Serial.printf("[WATER] %s: depth %.2f cm > normal max %.2f cm — draining to %.2f cm (auto off at goal)\n",
                 classifyBand(tankDepthCm, thresholdBands.waterDepth) == ALARM_ALERT ? "CRITICAL" : "WARNING",
-                tankDepthCm, normalMax, tankCal.targetDepthCm);
+                tankDepthCm, normalMax, goal);
   startDrainToTarget(PUMP_HARD_MAX_MS);
   return true;
 }

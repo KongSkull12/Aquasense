@@ -13,6 +13,14 @@ The running version is shown in the dashboard sidebar (App = frontend, API = bac
 3. Commit, tag and push: `git tag vX.Y.Z && git push kongskull main --tags`.
    Vercel and Render redeploy `main` automatically.
 
+## [1.10.11] - 2026-11-17
+
+### Fixed
+- Automatic level control for an empty or overfilled pond: after ~10 s below Thresholds normal
+  min, fill runs until depth reaches the tank target inside the normal band, then pumps off
+  (same for drain above normal max). Retries while still out of band instead of waiting 30 min;
+  a brief ultrasonic glitch pauses and retries instead of latching a fault under automation.
+
 ## [1.10.10] - 2026-11-17
 
 ### Fixed

@@ -19,7 +19,7 @@ const COPY: Record<BandKey, { label: string; unit: string; digits: number; highO
   ph: { label: 'pH', unit: '', digits: 2, highOnly: false },
   turbidity: { label: 'Turbidity', unit: 'NTU', digits: 1, highOnly: true, hint: 'Starting values, not a species limit.' },
   orp: { label: 'ORP / redox', unit: 'mV', digits: 0, highOnly: false, hint: 'Starting redox band. Needs Calibration → ORP. Not dissolved oxygen.' },
-  waterDepth: { label: 'Water depth', unit: 'cm', digits: 1, highOnly: false, hint: 'Needs Calibration → Tank. With automatic control on: below normal min fills to target; above normal max drains to target.' },
+  waterDepth: { label: 'Water depth', unit: 'cm', digits: 1, highOnly: false, hint: 'Needs Calibration → Tank. Auto control: below normal min → fill until target (in this band) then off; above normal max → drain until target then off.' },
 };
 
 type BandDraft = Record<keyof ParameterBand, string>;

@@ -329,7 +329,7 @@ const WaterChangePage: React.FC = () => {
     <Panel
       title="Automatic water control"
       id="auto-exchange-heading"
-      description="With automation on, the device corrects water level from your Thresholds and runs a partial exchange when temperature, pH or turbidity stay out of range."
+      description="With automation on: below Thresholds normal min the fill pump runs until depth reaches the tank target (inside the normal band), then turns off. Above normal max the drain pump does the same. Quality out of range can still start a partial exchange."
       actions={<StateMark state={fresh && state?.automation ? 'ok' : 'off'}>{!fresh ? 'Device offline' : state?.automation ? 'On' : 'Off'}</StateMark>}
     >
       <div className="space-y-4">
@@ -344,8 +344,8 @@ const WaterChangePage: React.FC = () => {
             </thead>
             <tbody className="divide-y divide-line-soft">
               <tr><td className="py-2 pr-3"><StateMark state="ok">Normal</StateMark></td><td className="num px-3 py-2 text-right">0%</td><td className="py-2 pl-3 text-ink-2">Keep monitoring</td></tr>
-              <tr><td className="py-2 pr-3"><StateMark state="warn">Low water</StateMark></td><td className="num px-3 py-2 text-right">—</td><td className="py-2 pl-3 text-ink-2">Depth below Thresholds normal min: fill to target (~1 min confirm, at most every 30 min)</td></tr>
-              <tr><td className="py-2 pr-3"><StateMark state="warn">High water</StateMark></td><td className="num px-3 py-2 text-right">—</td><td className="py-2 pl-3 text-ink-2">Depth above Thresholds normal max: drain to target (~1 min confirm, at most every 30 min)</td></tr>
+              <tr><td className="py-2 pr-3"><StateMark state="warn">Low water</StateMark></td><td className="num px-3 py-2 text-right">—</td><td className="py-2 pl-3 text-ink-2">Depth below Thresholds normal min (~10 s): fill on until depth meets the tank target in the normal band, then fill off. Retries if still low.</td></tr>
+              <tr><td className="py-2 pr-3"><StateMark state="warn">High water</StateMark></td><td className="num px-3 py-2 text-right">—</td><td className="py-2 pl-3 text-ink-2">Depth above Thresholds normal max (~10 s): drain on until depth meets the tank target in the normal band, then drain off. Retries if still high.</td></tr>
               <tr><td className="py-2 pr-3"><StateMark state="warn">Quality warning</StateMark></td><td className="num px-3 py-2 text-right">5%</td><td className="py-2 pl-3 text-ink-2">Partial exchange (at most every 6 h); aerator on if Automatic or water automation is on</td></tr>
               <tr><td className="py-2 pr-3"><StateMark state="alarm">Quality critical</StateMark></td><td className="num px-3 py-2 text-right">10%</td><td className="py-2 pl-3 text-ink-2">Urgent partial exchange (at most every 2 h), aerator on, SMS alert</td></tr>
             </tbody>
@@ -357,7 +357,7 @@ const WaterChangePage: React.FC = () => {
             : <button type="button" disabled={!deviceId || pending || !fresh} title={!fresh ? offlineReason : undefined} onClick={() => void command('AUTOMATION_ON')} className="btn-primary">Turn on automatic control</button>}
         </div>
         <p className="text-[13px] leading-relaxed text-ink-3">
-          Never more than 30% exchanged in 24 hours. Level correction (fill/drain to target) runs before quality exchange, and pumps only start while the device is online. You can turn automation on before tank setup; fill/drain and partial exchange stay idle until Calibration → Tank (and Serial <span className="num">exchange volume/drain/fill</span> for quality swaps). If Automation on says the firmware does not support that action, flash the latest <span className="num">AquaSense_ESP32.ino.bin</span> from Firmware update. Stop pumps turns automation off.
+          Empty pond: after Calibration → Tank (capture empty + set target inside Thresholds water-depth normal), turn automation on — fill starts when depth stays below normal min and stops when the target/normal band is met. Overfill drains the same way. Level correction runs before quality exchange. Partial exchange still needs Serial <span className="num">exchange volume/drain/fill</span>. Stop pumps turns automation off.
         </p>
       </div>
     </Panel>
