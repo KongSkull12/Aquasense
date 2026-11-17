@@ -13,6 +13,13 @@ The running version is shown in the dashboard sidebar (App = frontend, API = bac
 3. Commit, tag and push: `git tag vX.Y.Z && git push kongskull main --tags`.
    Vercel and Render redeploy `main` automatically.
 
+## [1.10.13] - 2026-11-17
+
+### Fixed
+- Feeder MQTT acknowledgements were rejected after `scheduleCount` was added to device state
+  (strict schema). Feed now expired without running. The API accepts `scheduleCount`, first-boot
+  marks the servo commissioned, and schedule sync publishes state so “Schedules on device” updates.
+
 ## [1.10.12] - 2026-11-17
 
 ### Fixed

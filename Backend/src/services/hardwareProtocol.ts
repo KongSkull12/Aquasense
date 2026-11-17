@@ -49,6 +49,8 @@ export const hardwareStateSchema = z.object({
   uptimeMs: z.number().int().min(0).max(0xffffffff),
   // Display-only countdown; not part of the signed ACK canonical.
   phaseRemainingMs: z.number().int().min(0).max(MAX_PUMP_RUNTIME_MS).optional(),
+  // Display-only: how many feeding schedules the ESP32 has loaded. Not signed.
+  scheduleCount: z.number().int().min(0).max(20).optional(),
 }).strict().superRefine((value, context) => {
   if (value.fillPump && value.drainPump) context.addIssue({ code: z.ZodIssueCode.custom, message: 'Fill and drain cannot both be on' });
 });

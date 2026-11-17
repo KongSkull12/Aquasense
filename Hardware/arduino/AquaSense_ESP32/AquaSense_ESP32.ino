@@ -1943,6 +1943,7 @@ bool httpPost(const char* path, const String& body, String& response) {
 
 void applyScheduleList(JsonArray list) {
   if (list.isNull()) return;
+  const uint8_t previous = scheduleCount;
   scheduleCount = 0;
   for (JsonObject item : list) {
     if (scheduleCount >= 20) break;
@@ -1956,6 +1957,8 @@ void applyScheduleList(JsonArray list) {
   }
   saveSchedules();
   Serial.printf("[FEED] applied %u schedule(s)\n", scheduleCount);
+  // Push MQTT state so the dashboard "Schedules on device" updates without a pump cycle.
+  if (scheduleCount != previous) waterStateDirty = true;
 }
 
 void syncSchedules() {
@@ -3319,6 +3322,7 @@ void runSelfTest() {
   restoreRelayOutputs();
   if (lcdPresent) lcdLine(1, servoOk ? "Done" : "Servo failed");
   buzzerQuiet();
+  if (servoOk) prefs.putBool("servoBoot", true);
   if (!servoOk) {
     Serial.println("[TEST] servo did not move. Use a separate 5-6 V supply for the SG90 and join its GND to the ESP32 GND.");
   } else {
@@ -3378,18 +3382,26 @@ void setup() {
 
   selfTestEnabled = prefs.getBool("selfTest", true);
   const bool servoNeverTested = !prefs.getBool("servoBoot", false);
-  if (selfTestEnabled && selfTestAfterThisReset()) runSelfTest();
-  else if (selfTestEnabled && servoNeverTested) {
+  // Full relay self-test only on a real power-on / manual reset. Always home the
+  // feeder once on first boot so Feed now works without waiting for a dashboard click.
+  if (selfTestEnabled && selfTestAfterThisReset()) {
+    runSelfTest();
+  } else if (servoNeverTested) {
     Serial.printf("[TEST] first boot (reset %d): testing the feeder servo. Relays stay off.\n", (int)esp_reset_reason());
     if (lcdPresent) { lcd.clear(); lcdLine(0, "Self-test"); }
-    if (!sweepFeederServo()) {
+    if (sweepFeederServo()) {
+      prefs.putBool("servoBoot", true);
+      Serial.println("[TEST] feeder servo OK; Feed now / schedules can run.");
+    } else {
       Serial.println("[TEST] servo did not move. Use a separate 5-6 V supply for the SG90 and join its GND to the ESP32 GND.");
     }
   } else {
     // The servo was already parked closed above.
     Serial.printf("[TEST] boot self-test skipped (%s, reset %d)\n",
-                  selfTestEnabled ? "restart after a fault" : "disabled", (int)esp_reset_reason());
+                  selfTestEnabled ? "already commissioned" : "disabled", (int)esp_reset_reason());
   }
+  // Leave the feeder closed and idle so the first Feed now is never blocked.
+  feederStep = FEED_IDLE;
   buzzerQuiet();
 
   analogReadResolution(12);
@@ -3468,11 +3480,13 @@ void loop() {
 
   if (now - lastSchedCheck >= 1000) { lastSchedCheck = now; checkSchedules(); }
 
-  // HTTP calls block for up to 4 s, so never while the feeder or pumps move.
+  // HTTPS to Render can block several seconds; keep MQTT responsive by never
+  // syncing while the feeder/pumps move, and by pumping mqtt.loop afterward.
   const bool actuatorsIdle = !feederBusy() && !fillOn && !drainOn;
   if (httpEnabled() && WiFi.status() == WL_CONNECTED && actuatorsIdle && (int32_t)(now - httpHoldoffUntil) >= 0) {
     if (lastSchedSync == 0 || now - lastSchedSync >= SCHEDULE_SYNC_MS) { lastSchedSync = now; syncSchedules(); }
     else if (now - lastHeartbeat >= STATE_HEARTBEAT_MS) { lastHeartbeat = now; sendStateHeartbeat(); }
+    mqtt.loop();
   }
 
   if (feederStateChanged) {
