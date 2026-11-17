@@ -19,7 +19,7 @@ const deviceResultText: Record<string, string> = {
   cancelled_device_offline: 'Cancelled: the device stopped reporting (switched off or offline), so the feeder command was dropped.',
   expired_before_delivery: 'Cancelled: the device did not receive the command before it expired (1 minute for the feeder).',
   rejected_servo_pwm: 'The ESP32 could not start the servo signal on GPIO 18. Check the servo 5 V supply and that its ground joins the ESP32 ground, then flash the latest sketch.',
-  rejected_unsupported_action: 'This firmware does not support that action.',
+  rejected_unsupported_action: 'This firmware does not support that action. Flash the latest AquaSense_ESP32.ino.bin from Firmware update, then try again.',
   queue_full: 'The device was busy; the command will be redelivered.',
   rejected_busy: 'The feeder or pumps are running. Wait until they are idle, then capture again.',
   rejected_not_steady: 'The reading was still changing. Wait until it shows Steady, then capture again.',

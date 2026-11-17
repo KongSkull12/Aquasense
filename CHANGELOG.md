@@ -13,6 +13,17 @@ The running version is shown in the dashboard sidebar (App = frontend, API = bac
 3. Commit, tag and push: `git tag vX.Y.Z && git push kongskull main --tags`.
    Vercel and Render redeploy `main` automatically.
 
+## [1.10.10] - 2026-11-17
+
+### Fixed
+- Water change **Turn on automatic control** no longer requires tank/exchange setup first; the
+  device accepts `AUTOMATION_ON` once relays are enabled, and level/quality policies stay idle
+  until Calibration → Tank (and Serial exchange volume/flows). Boards still on older firmware
+  that return “does not support that action” need a flash of the rebuilt `.bin`.
+- Feeder schedules sync clock from `serverTimeIso` when NTP is late, and also load schedules from
+  the hardware heartbeat so daily times fire even if the feeding-only sync is delayed. Feeding
+  page shows whether the device clock is ready for schedules.
+
 ## [1.10.9] - 2026-11-14
 
 ### Fixed

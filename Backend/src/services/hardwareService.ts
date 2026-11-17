@@ -73,8 +73,18 @@ export const hardwareService = {
     await HardwareDeviceState.upsert({ deviceId, state, receivedAt: new Date() });
     const [schedules, thresholdBands] = await Promise.all([feedingService.listSchedules(userId), loadThresholdBands()]);
     // thresholdBands drive device buzzer + automatic fill/drain level bands (synced on heartbeat).
-    return { command: null, schedules: schedules.filter(s => s.enabled).slice(0, 20).map(s => ({ id: s.id, date: s.date, time: s.time })),
-      timezone: 'Asia/Manila', serverTimeIso: new Date().toISOString(), thresholdBands };
+    // null date = daily. time is HH:MM so the ESP32 can match localDateTime.
+    return {
+      command: null,
+      schedules: schedules.filter(s => s.enabled).slice(0, 20).map(s => ({
+        id: s.id,
+        date: s.date ?? null,
+        time: String(s.time).slice(0, 5),
+      })),
+      timezone: 'Asia/Manila',
+      serverTimeIso: new Date().toISOString(),
+      thresholdBands,
+    };
   },
 
   async expirePendingCommands(): Promise<void> {

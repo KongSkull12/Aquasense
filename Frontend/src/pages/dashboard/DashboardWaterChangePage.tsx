@@ -357,7 +357,7 @@ const WaterChangePage: React.FC = () => {
             : <button type="button" disabled={!deviceId || pending || !fresh} title={!fresh ? offlineReason : undefined} onClick={() => void command('AUTOMATION_ON')} className="btn-primary">Turn on automatic control</button>}
         </div>
         <p className="text-[13px] leading-relaxed text-ink-3">
-          Never more than 30% exchanged in 24 hours. Level correction (fill/drain to target) runs before quality exchange, and pumps only start while the device is online. Level control needs tank depth calibration (Calibration → Tank). Partial exchange also needs tank volume and pump flows in the ESP32 Serial Monitor: <span className="num">exchange volume &lt;litres&gt;</span>, <span className="num">exchange drain &lt;L/min&gt;</span>, <span className="num">exchange fill &lt;L/min&gt;</span>. Stop pumps turns automation off.
+          Never more than 30% exchanged in 24 hours. Level correction (fill/drain to target) runs before quality exchange, and pumps only start while the device is online. You can turn automation on before tank setup; fill/drain and partial exchange stay idle until Calibration → Tank (and Serial <span className="num">exchange volume/drain/fill</span> for quality swaps). If Automation on says the firmware does not support that action, flash the latest <span className="num">AquaSense_ESP32.ino.bin</span> from Firmware update. Stop pumps turns automation off.
         </p>
       </div>
     </Panel>

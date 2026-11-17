@@ -346,6 +346,31 @@ bool localDateTime(char* date, size_t dateSize, char* hm, size_t hmSize) {
   return true;
 }
 
+// When NTP is slow or blocked, set the clock from the backend's serverTimeIso
+// (UTC, e.g. 2026-11-17T09:39:00.123Z). Skipped once NTP already has a valid time.
+bool applyServerTimeIso(const char* iso) {
+  if (!iso || strlen(iso) < 19 || timeValid()) return false;
+  int y = 0, Mo = 0, d = 0, h = 0, mi = 0, s = 0;
+  if (sscanf(iso, "%d-%d-%dT%d:%d:%d", &y, &Mo, &d, &h, &mi, &s) < 6) return false;
+  tm t{};
+  t.tm_year = y - 1900;
+  t.tm_mon = Mo - 1;
+  t.tm_mday = d;
+  t.tm_hour = h;
+  t.tm_min = mi;
+  t.tm_sec = s;
+  setenv("TZ", "UTC0", 1);
+  tzset();
+  const time_t epoch = mktime(&t);
+  if (epoch < MIN_VALID_EPOCH) return false;
+  timeval tv{};
+  tv.tv_sec = epoch;
+  tv.tv_usec = 0;
+  if (settimeofday(&tv, nullptr) != 0) return false;
+  Serial.printf("[TIME] set from server %04d-%02d-%02dT%02d:%02d:%02dZ\n", y, Mo, d, h, mi, s);
+  return true;
+}
+
 
 // =====================================================
 // HMAC-SHA256 (shared key with backend DEVICE_KEYS)
@@ -1670,8 +1695,8 @@ const char* executeCommand(const PendingCommand& c) {
   }
 
   if (a == "AUTOMATION_ON") {
-    if (relayGate()) return relayGate();
-    if (!automationPossible()) return "rejected_water_policy_not_configured";
+    // Relays already gated above. Accept even without tank/exchange setup so the
+    // dashboard can enable the flag; level and quality policies no-op until ready.
     waterAutomation = true; return "accepted";
   }
   if (a == "AUTOMATION_OFF") { waterAutomation = false; return "accepted"; }
@@ -1865,24 +1890,30 @@ bool httpPost(const char* path, const String& body, String& response) {
   return false;
 }
 
-void syncSchedules() {
-  String response;
-  if (!httpPost("/feeding/device/sync", String("{\"deviceId\":\"") + DEVICE_ID + "\"}", response)) return;
-  DynamicJsonDocument doc(4096);
-  if (deserializeJson(doc, response)) return;
-  JsonArray list = doc["data"]["schedules"].as<JsonArray>();
+void applyScheduleList(JsonArray list) {
   if (list.isNull()) return;
   scheduleCount = 0;
   for (JsonObject item : list) {
     if (scheduleCount >= 20) break;
     const char* t = item["time"] | "";
     if (strlen(t) < 5) continue;
-    strlcpy(schedules[scheduleCount].time, t, 6);              // "HH:MM"
-    strlcpy(schedules[scheduleCount].date, item["date"] | "", 11);  // "" = daily
+    strlcpy(schedules[scheduleCount].time, t, 6);   // "HH:MM"
+    // null / missing / non-string date => every day
+    if (item["date"].isNull() || !item["date"].is<const char*>()) schedules[scheduleCount].date[0] = '\0';
+    else strlcpy(schedules[scheduleCount].date, item["date"].as<const char*>(), 11);
     scheduleCount++;
   }
   saveSchedules();
-  Serial.printf("[FEED] synced %u schedule(s)\n", scheduleCount);
+  Serial.printf("[FEED] applied %u schedule(s)\n", scheduleCount);
+}
+
+void syncSchedules() {
+  String response;
+  if (!httpPost("/feeding/device/sync", String("{\"deviceId\":\"") + DEVICE_ID + "\"}", response)) return;
+  DynamicJsonDocument doc(4096);
+  if (deserializeJson(doc, response)) return;
+  applyServerTimeIso(doc["data"]["serverTimeIso"] | "");
+  applyScheduleList(doc["data"]["schedules"].as<JsonArray>());
 }
 
 void sendStateHeartbeat() {
@@ -1892,17 +1923,29 @@ void sendStateHeartbeat() {
   String body, response;
   serializeJson(doc, body);
   if (!httpPost("/hardware/device/sync", body, response)) return;
-  // The reply carries the dashboard's saved thresholds for the buzzer alarm.
-  StaticJsonDocument<64> filter;
+  // Thresholds for the buzzer, plus schedules/clock so feeds keep working if
+  // the dedicated feeding sync path is delayed.
+  StaticJsonDocument<128> filter;
   filter["data"]["thresholdBands"] = true;
-  DynamicJsonDocument reply(1024);
+  filter["data"]["schedules"] = true;
+  filter["data"]["serverTimeIso"] = true;
+  DynamicJsonDocument reply(4096);
   if (deserializeJson(reply, response, DeserializationOption::Filter(filter))) return;
   applyThresholdBands(reply["data"]["thresholdBands"]);
+  applyServerTimeIso(reply["data"]["serverTimeIso"] | "");
+  applyScheduleList(reply["data"]["schedules"].as<JsonArray>());
 }
 
 void checkSchedules() {
   char date[12], hm[6], minute[20];
-  if (!localDateTime(date, sizeof(date), hm, sizeof(hm))) return;   // no clock = no scheduled feeding
+  if (!localDateTime(date, sizeof(date), hm, sizeof(hm))) {
+    static uint32_t lastClockWarn = 0;
+    if (millis() - lastClockWarn > 60000UL) {
+      lastClockWarn = millis();
+      Serial.println("[FEED] waiting for clock (NTP or server time) before schedules run");
+    }
+    return;
+  }
   snprintf(minute, sizeof(minute), "%s %s", date, hm);
   if (!strcmp(minute, lastFedMinute) || !strcmp(minute, feedSuppressedMinute)) return;
   for (uint8_t i = 0; i < scheduleCount; i++) {
@@ -2915,10 +2958,13 @@ void handleSerialCommand(String line) {
     const String what = sp < 0 ? rest : rest.substring(0, sp);
     const String arg = sp < 0 ? "" : rest.substring(sp + 1);
     if (what == "on" || what == "off") {
-      if (what == "on" && !automationPossible()) { Serial.println("Calibrate the tank depth (empty + target), or set volume, drain and fill first."); return; }
       if (what == "on" && !relaysEnabled) { Serial.println("Relays are disabled. Check them with 'relay test', then 'relay enable'."); return; }
       waterAutomation = what == "on";
-      Serial.printf("Automatic water exchange %s.\n", waterAutomation ? "ON" : "off");
+      if (waterAutomation && !automationPossible()) {
+        Serial.println("Automatic control ON. Level/quality actions stay idle until tank depth is calibrated or exchange volume/flows are set.");
+      } else {
+        Serial.printf("Automatic water exchange %s.\n", waterAutomation ? "ON" : "off");
+      }
       return;
     }
     if (what == "volume" || what == "drain" || what == "fill") {
@@ -3260,8 +3306,12 @@ void setup() {
   printCalibration();
   loadThresholdBands();
   loadExchangeSetup();
-  waterAutomation = automationSaved = prefs.getBool("autoX", false) && automationPossible();
-  if (waterAutomation) Serial.println("[WATER] automatic water exchange is ON");
+  waterAutomation = automationSaved = prefs.getBool("autoX", false);
+  if (waterAutomation) {
+    Serial.println(automationPossible()
+      ? "[WATER] automatic water exchange is ON"
+      : "[WATER] automation ON (idle until tank/exchange is configured)");
+  }
   Serial.println("Type 'help' for sensor calibration commands.");
 
   snprintf(bootId, sizeof(bootId), "esp-%08lx", (unsigned long)esp_random());

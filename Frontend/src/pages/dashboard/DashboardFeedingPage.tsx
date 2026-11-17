@@ -8,7 +8,7 @@ import { isStaffRole } from '../../auth/session';
 interface Device { deviceId: string; name?: string; isActive: boolean }
 interface FeedingCommand { id: string; action: string; status: 'PENDING' | 'ACKED'; metadata?: Record<string, unknown> | null; executedAt?: string | null; createdAt?: string }
 interface FeedingState { scheduleCount: number; enabledCount: number; pendingCommands: number; lastCommand: FeedingCommand | null }
-interface HardwareState { deviceId: string; online: boolean; receivedAt: string | null; state: null | { feederBusy: boolean } }
+interface HardwareState { deviceId: string; online: boolean; receivedAt: string | null; state: null | { feederBusy: boolean; timeValid?: boolean } }
 
 const DashboardFeedingPage: React.FC = () => {
   const { feedingSchedules, feedingLoading, triggerManual, addSchedule, toggleSchedule, removeSchedule, updateSchedule } = useDashboardData();
@@ -118,6 +118,9 @@ const DashboardFeedingPage: React.FC = () => {
             <KeyValues rows={[
               { label: 'Device', value: <StateMark state={deviceOnline ? 'ok' : 'off'}>{deviceOnline ? 'Online' : 'Offline or stale'}</StateMark> },
               { label: 'Feeder state', value: hardwareState?.state ? (hardwareState.state.feederBusy ? 'Feeding' : 'Idle') : 'Unknown' },
+              { label: 'Device clock', value: hardwareState?.state
+                ? (hardwareState.state.timeValid ? 'Synced (schedules can run)' : 'Waiting for time — schedules stay idle until NTP or server sync')
+                : 'Unknown' },
               { label: 'Latest command', value: feedingState?.lastCommand ? `${feedingState.lastCommand.action}: ${feedingState.lastCommand.status.toLowerCase()}${feedingState.lastCommand.metadata?.deviceResult ? ` · ${describeDeviceResult(String(feedingState.lastCommand.metadata.deviceResult))}` : ''}${manualBusy ? ' · pending' : ''}` : 'None reported' },
             ]} />
             <div className="grid grid-cols-3 gap-2">
@@ -126,6 +129,9 @@ const DashboardFeedingPage: React.FC = () => {
               <button type="button" disabled={manualBusy || !deviceOnline} title={disabledReason} onClick={() => void runManual('OFF')} className="btn-secondary">Feeder off</button>
             </div>
             {!deviceOnline && <Notice tone="info">Controls stay disabled until fresh, verified ESP32 telemetry arrives and the HiveMQ command connection is available.</Notice>}
+            {deviceOnline && hardwareState?.state && hardwareState.state.timeValid === false && (
+              <Notice tone="info">Scheduled feeds need a valid device clock. Keep Wi-Fi online so NTP or the backend heartbeat can set the time; Feed now still works without it.</Notice>
+            )}
             {manualMessage && <p role="status" aria-live="polite" className="text-[13px] leading-relaxed text-sounding">{manualMessage}</p>}
             {stateError && <p role="alert" className="text-[13px] text-alarm">{stateError}</p>}
             <div className="num space-y-0.5 text-xs text-ink-3">
