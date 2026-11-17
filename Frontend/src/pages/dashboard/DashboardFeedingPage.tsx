@@ -88,7 +88,8 @@ const DashboardFeedingPage: React.FC = () => {
     setScheduleLabel('');
   };
 
-  const feederStatus = manualBusy ? 'Sending' : hardwareState?.state?.feederBusy ? 'Feeding' : deviceOnline ? 'Ready' : 'Unavailable';
+  const feederBusy = !!hardwareState?.state?.feederBusy;
+  const feederStatus = manualBusy ? 'Sending' : feederBusy ? 'Busy' : deviceOnline ? 'Ready' : 'Unavailable';
   const disabledReason = !deviceOnline ? 'Device must report online before a feeder command can be sent.' : undefined;
 
   return (
@@ -100,7 +101,7 @@ const DashboardFeedingPage: React.FC = () => {
           <>
             {!staffView && <MetaItem label="Active schedules">{enabledCount} of {feedingSchedules.length}</MetaItem>}
             <MetaItem label="Feeder">
-              <StateMark state={manualBusy || hardwareState?.state?.feederBusy ? 'warn' : deviceOnline ? 'ok' : 'off'} className="!text-sm !font-semibold">{feederStatus}</StateMark>
+              <StateMark state={manualBusy || feederBusy ? 'warn' : deviceOnline ? 'ok' : 'off'} className="!text-sm !font-semibold">{feederStatus}</StateMark>
             </MetaItem>
           </>
         }
@@ -117,7 +118,7 @@ const DashboardFeedingPage: React.FC = () => {
             />
             <KeyValues rows={[
               { label: 'Device', value: <StateMark state={deviceOnline ? 'ok' : 'off'}>{deviceOnline ? 'Online' : 'Offline or stale'}</StateMark> },
-              { label: 'Feeder state', value: hardwareState?.state ? (hardwareState.state.feederBusy ? 'Feeding' : 'Idle') : 'Unknown' },
+              { label: 'Feeder state', value: hardwareState?.state ? (feederBusy ? 'Busy (cycle or held open)' : 'Idle') : 'Unknown' },
               { label: 'Device clock', value: hardwareState?.state
                 ? (hardwareState.state.timeValid ? 'Synced (schedules can run)' : 'Waiting for time — schedules stay idle until NTP or server sync')
                 : 'Unknown' },
@@ -131,9 +132,12 @@ const DashboardFeedingPage: React.FC = () => {
             <div className="grid grid-cols-3 gap-2">
               <button type="button" disabled={manualBusy || !deviceOnline} title={disabledReason} onClick={() => void runManual('TRIGGER')} className="btn-primary">Feed now</button>
               <button type="button" disabled={manualBusy || !deviceOnline} title={disabledReason} onClick={() => void runManual('ON')} className="btn-secondary">Feeder on</button>
-              <button type="button" disabled={manualBusy || !deviceOnline} title={disabledReason} onClick={() => void runManual('OFF')} className="btn-secondary">Feeder off</button>
+              <button type="button" disabled={manualBusy || !deviceOnline} title={disabledReason || (feederBusy ? 'Stops a stuck or held-open feeder' : undefined)} onClick={() => void runManual('OFF')} className="btn-secondary">Feeder off</button>
             </div>
             {!deviceOnline && <Notice tone="info">Controls stay disabled until fresh, verified ESP32 telemetry arrives and the HiveMQ command connection is available.</Notice>}
+            {deviceOnline && feederBusy && (
+              <Notice tone="warn">Feeder reports busy. Press Feeder off, then Feed now. Schedules also need the feeder idle.</Notice>
+            )}
             {deviceOnline && hardwareState?.state && hardwareState.state.timeValid === false && (
               <Notice tone="info">Scheduled feeds need a valid device clock. Keep Wi-Fi online so NTP or the backend heartbeat can set the time; Feed now still works without it.</Notice>
             )}

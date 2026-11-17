@@ -585,6 +585,7 @@ uint32_t feederStepAt = 0;
 uint32_t feederHoldRefreshAt = 0;     // next open-pulse re-assert while FEED_HOLD_OPEN
 char feedSuppressedMinute[20] = "";   // OFF / ALL_OFF block a scheduled feed in this minute
 bool feederStateChanged = false;      // shows the LCD status page on the next loop
+extern bool waterStateDirty;          // defined with the water state machine
 
 bool feederBusy() { return feederStep != FEED_IDLE; }
 
@@ -593,19 +594,27 @@ const char* feederStateText() {
   return feederStep == FEED_HOLD_OPEN ? "OPEN" : "FEEDING";
 }
 
+void markFeederChanged() {
+  feederStateChanged = true;
+  waterStateDirty = true;   // push MQTT state so the dashboard leaves "Feeding"
+}
+
 bool feederStart(FeederStep step, int angle) {
   const FeederStep previous = feederStep;
   feederStep = step;
   feederStepAt = millis();
   if (!servoAngle(angle)) {
-    feederStep = previous;
+    // Do not stay forever in a mid-cycle step when the servo fails to move.
+    feederStep = FEED_IDLE;
+    markFeederChanged();
+    Serial.println("[FEED] servo move failed; feeder forced idle");
     return false;
   }
   if (step == FEED_HOLD_OPEN) {
     servoReleaseAt = 0;
     feederHoldRefreshAt = millis() + 3000;
   }
-  if (step != previous) { feederStateChanged = true; Serial.printf("[FEED] feeder %s\n", feederStateText()); }
+  if (step != previous) { markFeederChanged(); Serial.printf("[FEED] feeder %s\n", feederStateText()); }
   return true;
 }
 
@@ -619,15 +628,26 @@ char lastFedMinute[20] = "";
 
 bool feederTrigger() {
   if (feederStep == FEED_HOLD_OPEN) return feederStart(FEED_OPEN, SERVO_OPEN_DEG);
-  if (feederBusy()) return false;
+  // Interrupt a stuck mid-cycle so Feed now / schedules are never blocked.
+  if (feederBusy()) {
+    Serial.println("[FEED] interrupting busy feeder for a new feed cycle");
+    feederStep = FEED_IDLE;
+  }
   return feederStart(FEED_PRE, SERVO_CLOSED_DEG);
 }
 // Feeder on: open and keep pulsing until Feeder off (or FEED_ON_MAX_MS safety close).
 bool feederHoldOpen() { return feederStart(FEED_HOLD_OPEN, SERVO_OPEN_DEG); }
-// Feeder off: close now, also cancelling a feed cycle that is running.
+// Feeder off: always clear logical busy, even if the servo write fails.
 bool feederStop() {
-  if (!servoAngle(SERVO_CLOSED_DEG)) return false;
-  if (feederStep != FEED_IDLE) { feederStep = FEED_IDLE; feederStateChanged = true; Serial.println("[FEED] feeder closed"); }
+  const bool ok = servoAngle(SERVO_CLOSED_DEG);
+  if (!ok) servoRelease();
+  if (feederStep != FEED_IDLE) {
+    feederStep = FEED_IDLE;
+    markFeederChanged();
+    Serial.println(ok ? "[FEED] feeder closed" : "[FEED] feeder forced idle (servo write failed)");
+  } else {
+    markFeederChanged();
+  }
   return true;
 }
 
@@ -635,10 +655,18 @@ void updateFeeder() {
   const uint32_t now = millis();
   const uint32_t elapsed = now - feederStepAt;
   switch (feederStep) {
-    case FEED_PRE:       if (elapsed >= FEED_PRE_MS) feederStart(FEED_OPEN, SERVO_OPEN_DEG); break;
-    case FEED_OPEN:      if (elapsed >= FEED_OPEN_MS) feederStart(FEED_POST, SERVO_CLOSED_DEG); break;
+    case FEED_PRE:
+      if (elapsed >= FEED_PRE_MS) {
+        if (!feederStart(FEED_OPEN, SERVO_OPEN_DEG) && elapsed > 5000UL) feederStop();
+      }
+      break;
+    case FEED_OPEN:
+      if (elapsed >= FEED_OPEN_MS) {
+        if (!feederStart(FEED_POST, SERVO_CLOSED_DEG) && elapsed > 5000UL) feederStop();
+      }
+      break;
     case FEED_POST:
-      if (elapsed >= FEED_POST_MS) { feederStep = FEED_IDLE; feederStateChanged = true; Serial.println("[FEED] feed cycle done"); }
+      if (elapsed >= FEED_POST_MS) { feederStep = FEED_IDLE; markFeederChanged(); Serial.println("[FEED] feed cycle done"); }
       break;
     case FEED_HOLD_OPEN:
       if (elapsed >= FEED_ON_MAX_MS) {
@@ -651,6 +679,11 @@ void updateFeeder() {
       }
       break;
     default: break;
+  }
+  // Watchdog: a one-shot cycle must never leave the dashboard stuck on Feeding.
+  if ((feederStep == FEED_PRE || feederStep == FEED_OPEN || feederStep == FEED_POST) && elapsed > 8000UL) {
+    Serial.println("[FEED] cycle watchdog: forcing idle");
+    feederStop();
   }
   // Only rest the servo when idle/closed. Never kill pulses while Feeder on is holding open —
   // that left the dashboard "ON: acked / Feeding" with a limp horn and blocked Feed now.
@@ -1748,11 +1781,10 @@ const char* executeCommand(const PendingCommand& c) {
   if (feeding) {
     if (const char* stale = feedCommandStale(c)) return stale;
     if (a == "TRIGGER") {
-      if (feederBusy()) return "rejected_feeder_busy";
       return feederTrigger() ? "accepted" : "rejected_servo_pwm";
     }
     if (a == "ON")  return feederHoldOpen() ? "accepted" : "rejected_servo_pwm";
-    if (a == "OFF") { suppressFeedingThisMinute(); return feederStop() ? "accepted" : "rejected_servo_pwm"; }
+    if (a == "OFF") { suppressFeedingThisMinute(); feederStop(); return "accepted"; }
     return "rejected_unsupported_action";
   }
 

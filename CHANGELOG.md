@@ -13,6 +13,13 @@ The running version is shown in the dashboard sidebar (App = frontend, API = bac
 3. Commit, tag and push: `git tag vX.Y.Z && git push kongskull main --tags`.
    Vercel and Render redeploy `main` automatically.
 
+## [1.10.15] - 2026-11-17
+
+### Fixed
+- Feeder could stay stuck on **Busy/Feeding** when a servo write failed mid-cycle, which blocked
+  Feed now, Feeder off, and schedules. Firmware now forces idle on failure/watchdog, always
+  accepts Feeder off, and publishes MQTT state when the feeder becomes idle.
+
 ## [1.10.14] - 2026-11-17
 
 ### Fixed
