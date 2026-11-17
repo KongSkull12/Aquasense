@@ -8,7 +8,7 @@ import { isStaffRole } from '../../auth/session';
 interface Device { deviceId: string; name?: string; isActive: boolean }
 interface FeedingCommand { id: string; action: string; status: 'PENDING' | 'ACKED'; metadata?: Record<string, unknown> | null; executedAt?: string | null; createdAt?: string }
 interface FeedingState { scheduleCount: number; enabledCount: number; pendingCommands: number; lastCommand: FeedingCommand | null }
-interface HardwareState { deviceId: string; online: boolean; receivedAt: string | null; state: null | { feederBusy: boolean; timeValid?: boolean } }
+interface HardwareState { deviceId: string; online: boolean; receivedAt: string | null; state: null | { feederBusy: boolean; timeValid?: boolean; scheduleCount?: number } }
 
 const DashboardFeedingPage: React.FC = () => {
   const { feedingSchedules, feedingLoading, triggerManual, addSchedule, toggleSchedule, removeSchedule, updateSchedule } = useDashboardData();
@@ -121,6 +121,11 @@ const DashboardFeedingPage: React.FC = () => {
               { label: 'Device clock', value: hardwareState?.state
                 ? (hardwareState.state.timeValid ? 'Synced (schedules can run)' : 'Waiting for time — schedules stay idle until NTP or server sync')
                 : 'Unknown' },
+              { label: 'Schedules on device', value: hardwareState?.state && typeof hardwareState.state.scheduleCount === 'number'
+                ? (hardwareState.state.scheduleCount > 0
+                  ? `${hardwareState.state.scheduleCount} loaded`
+                  : 'None loaded yet — device must reach the cloud API over HTTPS')
+                : 'Unknown' },
               { label: 'Latest command', value: feedingState?.lastCommand ? `${feedingState.lastCommand.action}: ${feedingState.lastCommand.status.toLowerCase()}${feedingState.lastCommand.metadata?.deviceResult ? ` · ${describeDeviceResult(String(feedingState.lastCommand.metadata.deviceResult))}` : ''}${manualBusy ? ' · pending' : ''}` : 'None reported' },
             ]} />
             <div className="grid grid-cols-3 gap-2">
@@ -194,7 +199,11 @@ const DashboardFeedingPage: React.FC = () => {
                         <p className="num w-14 shrink-0 text-base font-semibold">{item.time}</p>
                         <div className="min-w-0">
                           <p className="truncate text-sm text-ink">{item.label || 'Feed'}</p>
-                          <p className="text-xs text-ink-3">{item.date ? `One-time · ${item.date}` : 'Every day'}</p>
+                          <p className="text-xs text-ink-3">{(() => {
+                            if (!item.date) return 'Every day';
+                            const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Manila' });
+                            return item.date < today ? 'Every day (past date cleared)' : `One-time · ${item.date}`;
+                          })()}</p>
                         </div>
                       </div>
                       <div className="flex items-center gap-1">

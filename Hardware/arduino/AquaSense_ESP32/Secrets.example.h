@@ -13,8 +13,9 @@ constexpr const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
 constexpr const char* DEVICE_KEY = "PASTE_THE_SAME_KEY_AS_BACKEND_DEVICE_KEYS";
 
 // Base URL of the backend as seen from the ESP32, ending in /api/v1.
-// Used for feeding-schedule sync and the state heartbeat. Use the PC's LAN IP,
+// Used for feeding-schedule sync and the state heartbeat. Prefer the hosted
+// HTTPS API (e.g. Render). For a PC on the same LAN only, use that PC's IP —
 // never "localhost". Leave empty ("") to disable both; readings and dashboard
 // commands still work over MQTT.
-constexpr const char* BACKEND_HTTP_URL = "http://192.168.137.1:5002/api/v1";
+constexpr const char* BACKEND_HTTP_URL = "https://aquasense-ho21.onrender.com/api/v1";
 }  // namespace Secrets

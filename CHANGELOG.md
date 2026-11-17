@@ -13,6 +13,14 @@ The running version is shown in the dashboard sidebar (App = frontend, API = bac
 3. Commit, tag and push: `git tag vX.Y.Z && git push kongskull main --tags`.
    Vercel and Render redeploy `main` automatically.
 
+## [1.10.12] - 2026-11-17
+
+### Fixed
+- Feeder schedules require HTTPS sync to the hosted API. Firmware now targets the Render backend
+  (not a LAN-only URL), reports how many schedules are loaded on the device, and retries a
+  scheduled feed if the servo was busy. Past one-time dates are cleared again when listing
+  schedules so “2024-…” rows become daily.
+
 ## [1.10.11] - 2026-11-17
 
 ### Fixed

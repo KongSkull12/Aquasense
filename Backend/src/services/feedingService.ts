@@ -69,7 +69,16 @@ export const feedingService = {
 
   async listSchedules(userId: string): Promise<FeedingSchedule[]> {
     await this.healPastDatedSchedules(userId);
-    return FeedingSchedule.findAll({ where: { userId }, order: [['time', 'ASC']] });
+    const rows = await FeedingSchedule.findAll({ where: { userId }, order: [['time', 'ASC']] });
+    // Belt-and-suspenders: if a past date slipped past the bulk UPDATE, clear it here too.
+    const today = feedingCalendarDate();
+    for (const row of rows) {
+      if (row.date && row.date < today) {
+        row.date = null;
+        await row.save();
+      }
+    }
+    return rows;
   },
 
   async createSchedule(input: CreateScheduleInput): Promise<FeedingSchedule> {

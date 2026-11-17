@@ -89,7 +89,9 @@ const long  LOCAL_UTC_OFFSET_S = 8L * 3600L;               // Asia/Manila, used 
 #define RELAY_DRAIN_PIN   27
 #define SERVO_PIN         18
 #define BUZZER_PIN        19
-// Active buzzer: plus to this pin, minus to GND. It sounds while the pin is
+// Buzzer hardware is disabled: pin is held low. Thresholds/alerts still run
+// for the dashboard and SMS; they no longer drive audible beeps.
+// Active buzzer wiring (unused): plus to this pin, minus to GND.
 // HIGH and is silent while the pin is LOW.
 
 #define LCD_ADDRESS 0x27
@@ -416,11 +418,11 @@ bool servoHoldForever = false;         // serial "servo hold" — never auto-rel
 bool buzzerOn = false;
 bool wifiDiagOff = false;   // serial "wifi off" diagnostic
 
-void buzzerSet(bool on) {
-  if (buzzerOn == on) return;
-  buzzerOn = on;
+void buzzerSet(bool /*on*/) {
+  // Audible alarm removed: keep GPIO19 driven low so a wired buzzer stays silent.
+  if (buzzerOn) buzzerOn = false;
   pinMode(BUZZER_PIN, OUTPUT);
-  digitalWrite(BUZZER_PIN, on ? HIGH : LOW);
+  digitalWrite(BUZZER_PIN, LOW);
 }
 
 void buzzerQuiet() { buzzerSet(false); }
@@ -609,6 +611,11 @@ bool feederStart(FeederStep step, int angle) {
 // Feed now: closed -> open -> closed, once. If Feeder on left the horn open,
 // interrupt that hold and finish with an open->closed dispense instead of
 // rejecting as busy (dashboard previously sat in "Feeding" with no motion).
+struct Schedule { char date[11]; char time[6]; };
+Schedule schedules[20];
+uint8_t scheduleCount = 0;
+char lastFedMinute[20] = "";
+
 bool feederTrigger() {
   if (feederStep == FEED_HOLD_OPEN) return feederStart(FEED_OPEN, SERVO_OPEN_DEG);
   if (feederBusy()) return false;
@@ -963,7 +970,7 @@ AlarmLevel alarmLevel = ALARM_NORMAL;      // confirmed level; this drives the b
 AlarmLevel alarmCandidate = ALARM_NORMAL;
 uint8_t alarmCandidateCount = 0;
 uint32_t alarmPatternStart = 0;
-bool alarmEnabled = true;                  // 'alarm off' silences it until 'alarm on' or a reboot
+bool alarmEnabled = false;                 // beeps removed; kept for serial/dashboard compatibility
 char alarmReason[40] = "";
 
 const char* alarmLevelName(AlarmLevel level) {
@@ -1220,24 +1227,10 @@ void evaluateWaterAutomation() {
   startExchange(drainMs, fillMs);
 }
 
-bool buzzerSounding() { return buzzerManual || !strcmp(waterPhase, "FAULT"); }
+bool buzzerSounding() { return false; }
 
 void updateBuzzer() {
-  if (buzzerSounding()) {
-    // The buzzer has its own tone. Fault: fast beeps. Manual: slow beeps.
-    const bool fault = !strcmp(waterPhase, "FAULT");
-    const uint32_t period = fault ? 400 : 1000, onFor = fault ? 200 : 150;
-    buzzerSet((millis() % period) < onFor);
-    return;
-  }
-  // Water alarm: Alert = 3 beeps, Warning = 2 beeps, then a pause, repeated
-  // until every trusted reading is back in its normal range.
-  const uint8_t beeps = !alarmEnabled ? 0 : alarmLevel == ALARM_ALERT ? 3 : alarmLevel == ALARM_WARNING ? 2 : 0;
-  if (!beeps) { buzzerQuiet(); return; }
-  const uint32_t BEEP_MS = 150, GAP_MS = 150, PAUSE_MS = 1200;
-  const uint32_t burst = beeps * (BEEP_MS + GAP_MS);
-  const uint32_t t = (millis() - alarmPatternStart) % (burst + PAUSE_MS);
-  buzzerSet(t < burst && (t % (BEEP_MS + GAP_MS)) < BEEP_MS);
+  buzzerQuiet();   // no audible alarm / fault / manual beeps
 }
 
 
@@ -1597,6 +1590,7 @@ void fillState(JsonObject s) {
   s["fault"] = waterFault;
   s["relaysReady"] = relaysEnabled;
   s["timeValid"] = timeValid();
+  s["scheduleCount"] = scheduleCount;
   s["wifiConnected"] = WiFi.status() == WL_CONNECTED;
   s["mqttConnected"] = mqtt.connected();
   s["uptimeMs"] = millis();
@@ -1736,8 +1730,8 @@ const char* executeCommand(const PendingCommand& c) {
     if (strcmp(waterPhase, "FAULT")) return "rejected_no_fault";
     waterFault[0] = '\0'; enterPhase("IDLE", 0); return "accepted";
   }
-  if (a == "BUZZER_ON")  { buzzerManual = true; return "accepted"; }
-  if (a == "BUZZER_OFF") { buzzerManual = false; return "accepted"; }
+  if (a == "BUZZER_ON")  { buzzerManual = false; buzzerQuiet(); return "accepted"; }   // beeps removed
+  if (a == "BUZZER_OFF") { buzzerManual = false; buzzerQuiet(); return "accepted"; }
 
   // Dashboard sensor calibration: no relays involved, so it is not behind the relay gate.
   if (a.startsWith("CAL_")) {
@@ -1882,11 +1876,7 @@ void processCommands() {
 // =====================================================
 // HTTP: feeding schedules + state heartbeat
 // =====================================================
-
-struct Schedule { char date[11]; char time[6]; };
-Schedule schedules[20];
-uint8_t scheduleCount = 0;
-char lastFedMinute[20] = "";
+// schedules[] / scheduleCount / lastFedMinute are declared with the feeder state.
 
 bool httpEnabled() { return Secrets::BACKEND_HTTP_URL[0] != '\0'; }
 
@@ -2009,16 +1999,27 @@ void checkSchedules() {
   }
   snprintf(minute, sizeof(minute), "%s %s", date, hm);
   if (!strcmp(minute, lastFedMinute) || !strcmp(minute, feedSuppressedMinute)) return;
+  if (scheduleCount == 0) {
+    static uint32_t lastEmptyWarn = 0;
+    if (millis() - lastEmptyWarn > 120000UL) {
+      lastEmptyWarn = millis();
+      Serial.println("[FEED] no schedules in memory — waiting for HTTP sync from BACKEND_HTTP_URL");
+    }
+    return;
+  }
   for (uint8_t i = 0; i < scheduleCount; i++) {
     // Empty date = every day. A past one-shot date (YYYY-MM-DD < today) is also
     // treated as daily so a mistyped/old calendar date does not silence the feeder.
     const bool pastOneShot = schedules[i].date[0] && strcmp(schedules[i].date, date) < 0;
     const bool dateMatches = schedules[i].date[0] == '\0' || !strcmp(schedules[i].date, date) || pastOneShot;
     if (dateMatches && !strncmp(schedules[i].time, hm, 5)) {
+      Serial.printf("[FEED] scheduled feed %s%s\n", minute, pastOneShot ? " (past date→daily)" : "");
+      if (!feederTrigger()) {
+        Serial.println("[FEED] scheduled feed did not start (busy or servo); will retry this minute");
+        return;
+      }
       strlcpy(lastFedMinute, minute, sizeof(lastFedMinute));
       prefs.putString("lastFed", lastFedMinute);   // survives reboot: no double feed
-      Serial.printf("[FEED] scheduled feed %s%s\n", minute, pastOneShot ? " (past date→daily)" : "");
-      feederTrigger();
       return;
     }
   }
@@ -2264,9 +2265,9 @@ void printHelp() {
   Serial.println("exchange drain <L/min> measured drain pump flow (saved)");
   Serial.println("exchange fill <L/min>  measured fill pump flow (saved)");
   Serial.println("exchange on|off        automatic exchange: Warning 5%, Critical 10% + aerator");
-  Serial.println("==== Water alarm (buzzer) ====");
+  Serial.println("==== Water alarm ====");
   Serial.println("alarm                  show Normal/Warning/Alert state and the limits in use");
-  Serial.println("alarm off|on           silence / restore the beeps (off lasts until a restart)");
+  Serial.println("alarm off|on           no-op: audible beeps are removed in this firmware");
 }
 
 // Bench pump test: auto-off so a pump can never be left running from the console.
@@ -3060,15 +3061,13 @@ void handleSerialCommand(String line) {
   }
   if (cmd == "alarm") {
     if (rest == "on" || rest == "off") {
-      alarmEnabled = rest == "on";
-      alarmPatternStart = millis();
-      Serial.printf("Water alarm beeps %s%s.\n", alarmEnabled ? "ON" : "OFF",
-                    alarmEnabled ? "" : " until 'alarm on' or a restart");
+      alarmEnabled = false;   // audible beeps removed from this firmware
+      buzzerQuiet();
+      Serial.println("Water alarm beeps are disabled in this firmware (dashboard/SMS alerts still work).");
       return;
     }
-    Serial.printf("Water alarm: %s%s%s, beeps %s\n", alarmLevelName(alarmLevel),
-                  alarmReason[0] ? " (" : "", alarmReason[0] ? (String(alarmReason) + ")").c_str() : "",
-                  alarmEnabled ? "on" : "OFF");
+    Serial.printf("Water alarm: %s%s%s (buzzer disabled)\n", alarmLevelName(alarmLevel),
+                  alarmReason[0] ? " (" : "", alarmReason[0] ? (String(alarmReason) + ")").c_str() : "");
     printThresholdBands();
     return;
   }
@@ -3292,12 +3291,6 @@ bool sweepFeederServo() {
   return true;
 }
 
-void testBeep(uint32_t ms) {
-  buzzerSet(true);
-  delay(ms);
-  buzzerQuiet();
-}
-
 bool selfTestAfterThisReset() {
   const esp_reset_reason_t r = esp_reset_reason();
   return r == ESP_RST_POWERON || r == ESP_RST_EXT || r == ESP_RST_SW;
@@ -3307,18 +3300,16 @@ void runSelfTest() {
   const int pins[] = {RELAY_AERATOR_PIN, RELAY_FILL_PIN, RELAY_DRAIN_PIN};
   const char* names[] = {"Aerator", "Fill pump", "Drain pump"};
   char b[24];
-  Serial.println("[TEST] self-test: feeder servo, then buzzer and relays");
+  Serial.println("[TEST] self-test: feeder servo, then relays (buzzer disabled)");
   if (lcdPresent) { lcd.clear(); lcdLine(0, "Self-test"); }
   buzzerQuiet();
   const bool servoOk = sweepFeederServo();
-
-  testBeep(150); delay(100); testBeep(150); delay(300);
+  delay(300);
 
   for (int i = 0; i < 3; i++) {
     snprintf(b, sizeof(b), "Relay: %s", names[i]);
     if (lcdPresent) lcdLine(1, b);
     Serial.printf("[TEST] %s relay (GPIO%d) ON\n", names[i], pins[i]);
-    testBeep(80);
     writeRelay(pins[i], true);
     delay(SELF_TEST_RELAY_MS);
     writeRelay(pins[i], false);
@@ -3327,7 +3318,6 @@ void runSelfTest() {
 
   restoreRelayOutputs();
   if (lcdPresent) lcdLine(1, servoOk ? "Done" : "Servo failed");
-  testBeep(100); delay(80); testBeep(100);
   buzzerQuiet();
   if (!servoOk) {
     Serial.println("[TEST] servo did not move. Use a separate 5-6 V supply for the SG90 and join its GND to the ESP32 GND.");
