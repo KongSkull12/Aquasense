@@ -13,6 +13,16 @@ The running version is shown in the dashboard sidebar (App = frontend, API = bac
 3. Commit, tag and push: `git tag vX.Y.Z && git push kongskull main --tags`.
    Vercel and Render redeploy `main` automatically.
 
+## [1.10.16] - 2026-11-17
+
+### Fixed
+- Feeder rewrite: servo cycle is OPEN→CLOSE (3 s open), stronger PWM writes, no mid-cycle
+  detach, and Feed now / schedules always restart a clean cycle. Empty MQTT schedule sync
+  trailing-`|` mismatch cleared stale flash schedules; device republishes idle on MQTT connect.
+- Feed now TTL no longer false-rejects when the device clock lags the server (uint64 underflow).
+  Manual commands sign with wall-clock expiry; the Feeding page waits for device ack and confirms
+  schedule sync to the ESP32.
+
 ## [1.10.15] - 2026-11-17
 
 ### Fixed

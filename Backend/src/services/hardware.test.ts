@@ -237,6 +237,10 @@ test('signed actuator command and state ACK canonical strings verify HMAC-SHA256
     schedulesCanonical('esp32-feeder-1', '2026-11-17T10:00:00.000Z', [{ time: '18:32', date: null }, { time: '19:53', date: '2026-11-17' }]),
     'v1|schedules|esp32-feeder-1|2026-11-17T10:00:00.000Z|2|18:32||19:53|2026-11-17',
   );
+  assert.equal(
+    schedulesCanonical('esp32-feeder-1', '2026-11-17T10:00:00.000Z', []),
+    'v1|schedules|esp32-feeder-1|2026-11-17T10:00:00.000Z|0|',
+  );
   const ackSignature = signCanonical(ackCanonical(ack), key);
   assert.equal(verifyCanonical(ackCanonical(ack), ackSignature, key), true);
   assert.equal(verifyCanonical(ackCanonical({ ...ack, state: { ...state, drainPump: true } }), ackSignature, key), false);

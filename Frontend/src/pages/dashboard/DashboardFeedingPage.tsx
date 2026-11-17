@@ -10,6 +10,8 @@ interface FeedingCommand { id: string; action: string; status: 'PENDING' | 'ACKE
 interface FeedingState { scheduleCount: number; enabledCount: number; pendingCommands: number; lastCommand: FeedingCommand | null }
 interface HardwareState { deviceId: string; online: boolean; receivedAt: string | null; state: null | { feederBusy: boolean; timeValid?: boolean; scheduleCount?: number } }
 
+const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
+
 const DashboardFeedingPage: React.FC = () => {
   const { feedingSchedules, feedingLoading, triggerManual, addSchedule, toggleSchedule, removeSchedule, updateSchedule } = useDashboardData();
   const [devices, setDevices] = useState<Device[]>([]);
@@ -20,6 +22,8 @@ const DashboardFeedingPage: React.FC = () => {
   const [stateError, setStateError] = useState<string | null>(null);
   const [manualMessage, setManualMessage] = useState<string | null>(null);
   const [manualBusy, setManualBusy] = useState(false);
+  const [scheduleMessage, setScheduleMessage] = useState<string | null>(null);
+  const [scheduleBusy, setScheduleBusy] = useState(false);
   const [scheduleDate, setScheduleDate] = useState('');
   const [scheduleTime, setScheduleTime] = useState('');
   const [scheduleLabel, setScheduleLabel] = useState('');
@@ -32,7 +36,7 @@ const DashboardFeedingPage: React.FC = () => {
   const staffView = isStaffRole();
 
   const refreshState = useCallback(async (selectedId = deviceId) => {
-    if (!selectedId) return;
+    if (!selectedId) return null as FeedingState | null;
     try {
       const [feedingResponse, hardwareResponse] = await Promise.all([
         apiClient.get<FeedingState>(`/feeding/state?deviceId=${encodeURIComponent(selectedId)}`),
@@ -42,8 +46,10 @@ const DashboardFeedingPage: React.FC = () => {
       setHardwareState(hardwareResponse.data);
       setLoadedAt(Date.now());
       setStateError(null);
+      return feedingResponse.data;
     } catch (cause) {
       setStateError(getApiErrorMessage(cause, 'Unable to read feeder state.'));
+      return null;
     }
   }, [deviceId]);
 
@@ -61,42 +67,93 @@ const DashboardFeedingPage: React.FC = () => {
   useEffect(() => {
     if (!deviceId) return;
     void refreshState(deviceId);
-    const timer = window.setInterval(() => void refreshState(deviceId), 5000);
+    const timer = window.setInterval(() => void refreshState(deviceId), 3000);
     return () => window.clearInterval(timer);
   }, [deviceId, refreshState]);
+
+  const waitForCommandAck = async (commandId: string | undefined) => {
+    if (!commandId) return null as FeedingCommand | null;
+    for (let attempt = 0; attempt < 10; attempt++) {
+      await sleep(1000);
+      const next = await refreshState();
+      const last = next?.lastCommand;
+      if (last?.id === commandId && last.status === 'ACKED') return last;
+    }
+    const latest = await refreshState();
+    return latest?.lastCommand?.id === commandId ? latest.lastCommand : null;
+  };
 
   const runManual = async (action: 'ON' | 'OFF' | 'TRIGGER') => {
     try {
       setManualBusy(true);
       setManualMessage(null);
-      const published = await triggerManual(action, deviceId);
-      setManualMessage(published
-        ? `${action === 'TRIGGER' ? 'Feed trigger' : `Feeder ${action}`} published to HiveMQ. Servo movement is unconfirmed until the ESP32 acknowledges.`
-        : 'Command was not sent. The broker did not accept it, and no retry was queued.');
-      await refreshState();
+      const result = await triggerManual(action, deviceId);
+      if (!result.published) {
+        setManualMessage('Command was not sent. The broker did not accept it, and no retry was queued.');
+        return;
+      }
+      const label = action === 'TRIGGER' ? 'Feed now' : action === 'ON' ? 'Feeder on' : 'Feeder off';
+      setManualMessage(`${label} sent. Waiting for the ESP32 to acknowledge…`);
+      const acked = await waitForCommandAck(result.commandId);
+      const deviceResult = acked?.metadata?.deviceResult ? String(acked.metadata.deviceResult) : null;
+      if (acked?.status === 'ACKED' && deviceResult === 'accepted') {
+        setManualMessage(action === 'TRIGGER'
+          ? 'Feeder cycle accepted. The horn should open then close (~4 s).'
+          : action === 'ON'
+            ? 'Feeder held open. Press Feeder off when done.'
+            : 'Feeder closed and idle.');
+      } else if (acked?.status === 'ACKED' && deviceResult) {
+        setManualMessage(describeDeviceResult(deviceResult));
+      } else {
+        setManualMessage(`${label} was published, but the device has not acknowledged yet. Keep the ESP32 online and try again.`);
+      }
     } catch (cause) {
       setManualMessage(getApiErrorMessage(cause, 'Unable to send the feeder command.'));
     } finally {
       setManualBusy(false);
+      await refreshState();
     }
   };
 
   const saveSchedule = async () => {
-    await addSchedule(scheduleDate, scheduleTime, scheduleLabel);
-    setScheduleDate('');
-    setScheduleTime('');
-    setScheduleLabel('');
+    try {
+      setScheduleBusy(true);
+      setScheduleMessage(null);
+      const expectedMin = Math.max(1, enabledCount);
+      await addSchedule(scheduleDate, scheduleTime, scheduleLabel);
+      setScheduleDate('');
+      setScheduleTime('');
+      setScheduleLabel('');
+      setScheduleMessage('Schedule saved. Syncing to the feeder over MQTT…');
+      for (let attempt = 0; attempt < 8; attempt++) {
+        await sleep(1000);
+        const hardwareResponse = await apiClient.get<HardwareState>(`/hardware/state?deviceId=${encodeURIComponent(deviceId)}`);
+        setHardwareState(hardwareResponse.data);
+        setLoadedAt(Date.now());
+        const count = hardwareResponse.data?.state?.scheduleCount;
+        if (typeof count === 'number' && count >= expectedMin) {
+          setScheduleMessage(`Schedule on device: ${count} loaded. It will run at that time (Asia/Manila).`);
+          return;
+        }
+      }
+      setScheduleMessage('Schedule saved in the cloud. If “Schedules on device” stays at 0, keep the feeder online — MQTT will retry.');
+    } catch (cause) {
+      setScheduleMessage(getApiErrorMessage(cause, 'Unable to save the schedule.'));
+    } finally {
+      setScheduleBusy(false);
+    }
   };
 
   const feederBusy = !!hardwareState?.state?.feederBusy;
-  const feederStatus = manualBusy ? 'Sending' : feederBusy ? 'Busy' : deviceOnline ? 'Ready' : 'Unavailable';
+  const scheduleOnDevice = hardwareState?.state?.scheduleCount;
+  const feederStatus = manualBusy ? 'Sending' : feederBusy ? 'Feeding' : deviceOnline ? 'Ready' : 'Unavailable';
   const disabledReason = !deviceOnline ? 'Device must report online before a feeder command can be sent.' : undefined;
 
   return (
     <div className="space-y-5">
       <PageHead
         title="Feeding"
-        description={staffView ? 'Send feeder commands for the farm’s registered device.' : 'Send feeder commands and manage feeding schedules for the ESP32 feeder.'}
+        description={staffView ? 'Send feeder commands for the farm’s registered device.' : 'Feed now, hold the gate open, or schedule daily feeds. Times use Asia/Manila.'}
         meta={
           <>
             {!staffView && <MetaItem label="Active schedules">{enabledCount} of {feedingSchedules.length}</MetaItem>}
@@ -108,7 +165,7 @@ const DashboardFeedingPage: React.FC = () => {
       />
 
       <div className={`grid gap-4 ${staffView ? '' : 'lg:grid-cols-2'}`}>
-        <Panel title="Manual control" description="Device-reported logical state. It does not confirm food was physically dispensed.">
+        <Panel title="Manual control" description="Feed now opens the gate ~3 s then closes. Feeder on holds open until Feeder off.">
           <div className="space-y-4">
             <DeviceSelect
               id="feeding-device"
@@ -118,28 +175,30 @@ const DashboardFeedingPage: React.FC = () => {
             />
             <KeyValues rows={[
               { label: 'Device', value: <StateMark state={deviceOnline ? 'ok' : 'off'}>{deviceOnline ? 'Online' : 'Offline or stale'}</StateMark> },
-              { label: 'Feeder state', value: hardwareState?.state ? (feederBusy ? 'Busy (cycle or held open)' : 'Idle') : 'Unknown' },
+              { label: 'Feeder state', value: hardwareState?.state ? (feederBusy ? 'Feeding / open' : 'Idle') : 'Unknown' },
               { label: 'Device clock', value: hardwareState?.state
                 ? (hardwareState.state.timeValid ? 'Synced (schedules can run)' : 'Waiting for time — schedules stay idle until NTP or server sync')
                 : 'Unknown' },
-              { label: 'Schedules on device', value: hardwareState?.state && typeof hardwareState.state.scheduleCount === 'number'
-                ? (hardwareState.state.scheduleCount > 0
-                  ? `${hardwareState.state.scheduleCount} loaded`
-                  : 'None loaded yet — waiting for MQTT schedule sync (keep device online)')
+              { label: 'Schedules on device', value: hardwareState?.state && typeof scheduleOnDevice === 'number'
+                ? (scheduleOnDevice > 0
+                  ? `${scheduleOnDevice} loaded`
+                  : enabledCount > 0
+                    ? 'None on device yet — keep online; MQTT sync retries automatically'
+                    : 'None (add a schedule)')
                 : 'Unknown' },
               { label: 'Latest command', value: feedingState?.lastCommand ? `${feedingState.lastCommand.action}: ${feedingState.lastCommand.status.toLowerCase()}${feedingState.lastCommand.metadata?.deviceResult ? ` · ${describeDeviceResult(String(feedingState.lastCommand.metadata.deviceResult))}` : ''}${manualBusy ? ' · pending' : ''}` : 'None reported' },
             ]} />
             <div className="grid grid-cols-3 gap-2">
               <button type="button" disabled={manualBusy || !deviceOnline} title={disabledReason} onClick={() => void runManual('TRIGGER')} className="btn-primary">Feed now</button>
               <button type="button" disabled={manualBusy || !deviceOnline} title={disabledReason} onClick={() => void runManual('ON')} className="btn-secondary">Feeder on</button>
-              <button type="button" disabled={manualBusy || !deviceOnline} title={disabledReason || (feederBusy ? 'Stops a stuck or held-open feeder' : undefined)} onClick={() => void runManual('OFF')} className="btn-secondary">Feeder off</button>
+              <button type="button" disabled={manualBusy || !deviceOnline} title={disabledReason || 'Close the gate and clear busy'} onClick={() => void runManual('OFF')} className="btn-secondary">Feeder off</button>
             </div>
-            {!deviceOnline && <Notice tone="info">Controls stay disabled until fresh, verified ESP32 telemetry arrives and the HiveMQ command connection is available.</Notice>}
+            {!deviceOnline && <Notice tone="info">Controls stay disabled until the ESP32 is online (fresh telemetry or state).</Notice>}
             {deviceOnline && feederBusy && (
-              <Notice tone="warn">Feeder reports busy. Press Feeder off, then Feed now. Schedules also need the feeder idle.</Notice>
+              <Notice tone="info">Feeder is moving. Feed now will restart a full cycle; Feeder off closes immediately.</Notice>
             )}
             {deviceOnline && hardwareState?.state && hardwareState.state.timeValid === false && (
-              <Notice tone="info">Scheduled feeds need a valid device clock. Keep Wi-Fi online so NTP or the backend heartbeat can set the time; Feed now still works without it.</Notice>
+              <Notice tone="info">Scheduled feeds need a valid device clock. Feed now still works without it.</Notice>
             )}
             {manualMessage && <p role="status" aria-live="polite" className="text-[13px] leading-relaxed text-sounding">{manualMessage}</p>}
             {stateError && <p role="alert" className="text-[13px] text-alarm">{stateError}</p>}
@@ -167,7 +226,10 @@ const DashboardFeedingPage: React.FC = () => {
                 <label className="field-label" htmlFor="schedule-label">Label <span className="font-normal text-ink-3">(optional)</span></label>
                 <input id="schedule-label" type="text" value={scheduleLabel} onChange={(e) => setScheduleLabel(e.target.value)} placeholder="e.g. Morning feed" className="field" />
               </div>
-              <button type="submit" disabled={feedingLoading || !scheduleTime} className="btn-primary">Save schedule</button>
+              <button type="submit" disabled={feedingLoading || scheduleBusy || !scheduleTime} className="btn-primary">
+                {scheduleBusy ? 'Saving…' : 'Save schedule'}
+              </button>
+              {scheduleMessage && <p role="status" aria-live="polite" className="text-[13px] leading-relaxed text-sounding">{scheduleMessage}</p>}
             </form>
           </Panel>
         )}
@@ -203,11 +265,7 @@ const DashboardFeedingPage: React.FC = () => {
                         <p className="num w-14 shrink-0 text-base font-semibold">{item.time}</p>
                         <div className="min-w-0">
                           <p className="truncate text-sm text-ink">{item.label || 'Feed'}</p>
-                          <p className="text-xs text-ink-3">{(() => {
-                            if (!item.date) return 'Every day';
-                            const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Manila' });
-                            return item.date < today ? 'Every day (past date cleared)' : `One-time · ${item.date}`;
-                          })()}</p>
+                          <p className="text-xs text-ink-3">{item.date ? `One-time · ${item.date}` : 'Every day'}</p>
                         </div>
                       </div>
                       <div className="flex items-center gap-1">

@@ -218,9 +218,16 @@ export const useDashboardData = () => {
   }, [ws.alerts]);
 
   const triggerManual = async (action: 'ON' | 'OFF' | 'TRIGGER', deviceId?: string) => {
-    const response = await apiClient.post<{ published?: boolean }>('/feeding/manual', { action, ...(deviceId ? { deviceId } : {}) });
+    const response = await apiClient.post<{ published?: boolean; commandId?: string; status?: string }>(
+      '/feeding/manual',
+      { action, ...(deviceId ? { deviceId } : {}) },
+    );
     await loadFeedingSchedules();
-    return response.data?.published === true;
+    return {
+      published: response.data?.published === true,
+      commandId: response.data?.commandId,
+      status: response.data?.status,
+    };
   };
 
   const addSchedule = async (date: string, time: string, label: string) => {

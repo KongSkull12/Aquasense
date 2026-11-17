@@ -152,12 +152,14 @@ struct ExchangeSetup { float tankVolumeL, drainLpm, fillLpm; };
 const ExchangeSetup DEFAULT_EXCHANGE_SETUP = { NAN, NAN, NAN };
 const char* const EXCHANGE_NVS_KEY = "xchg1";
 
-// Feeder servo angles and timing (original feeder cycle).
+// Feeder servo angles and timing.
+// Cycle is OPEN → CLOSE (no closed “pre” step): that wasted motion and weakened torque.
 const int      SERVO_CLOSED_DEG = 25;
 const int      SERVO_OPEN_DEG   = 140;
-const uint32_t FEED_PRE_MS      = 800;
-const uint32_t FEED_OPEN_MS     = 1000;
-const uint32_t FEED_POST_MS     = 800;
+const uint32_t FEED_PRE_MS      = 0;      // unused; kept for enum compatibility
+const uint32_t FEED_OPEN_MS     = 3000;  // gate open long enough for pellets to fall
+const uint32_t FEED_POST_MS     = 1200;  // settle closed before resting the PWM
+const uint32_t FEED_CYCLE_MAX_MS = 12000; // watchdog: never leave dashboard on Busy
 // "Feeder on" holds the gate open until "Feeder off". This is only a safety
 // close in case the OFF command never arrives, so the hopper cannot empty.
 const uint32_t FEED_ON_MAX_MS   = 60000;
@@ -499,14 +501,16 @@ void dumpServoPin() {
 
 bool servoAngle(int degrees) {
   lowerWifiForServo();
-  // Always re-attach so a prior release()/detach cannot leave duty 0 stuck.
-  if (!attachServo(true)) { restoreWifiAfterServo(); return false; }
+  // Attach once per motion; do not detach between OPEN and CLOSE in a feed cycle.
+  if (!attachServo(false)) { restoreWifiAfterServo(); return false; }
   const int angle = constrain(degrees, 0, 180);
   const int us = map(angle, 0, 180, 544, 2400);
-  delay(10);
-  feederServo.writeMicroseconds(us);
-  delay(10);
-  feederServo.write(angle);   // second write forces LEDC refresh on some cores
+  // Triple-write: some ESP32 LEDC cores drop the first pulse after attach/Wi-Fi.
+  for (int i = 0; i < 3; i++) {
+    feederServo.writeMicroseconds(us);
+    delay(12);
+  }
+  feederServo.write(angle);
   servoPulseActive = true;
   Serial.printf("[SERVO] -> %d degrees (%d us pulse) on GPIO%d\n", angle, feederServo.readMicroseconds(), servoPin);
   dumpServoPin();
@@ -604,7 +608,6 @@ bool feederStart(FeederStep step, int angle) {
   feederStep = step;
   feederStepAt = millis();
   if (!servoAngle(angle)) {
-    // Do not stay forever in a mid-cycle step when the servo fails to move.
     feederStep = FEED_IDLE;
     markFeederChanged();
     Serial.println("[FEED] servo move failed; feeder forced idle");
@@ -612,42 +615,33 @@ bool feederStart(FeederStep step, int angle) {
   }
   if (step == FEED_HOLD_OPEN) {
     servoReleaseAt = 0;
-    feederHoldRefreshAt = millis() + 3000;
+    feederHoldRefreshAt = millis() + 2500;
   }
   if (step != previous) { markFeederChanged(); Serial.printf("[FEED] feeder %s\n", feederStateText()); }
   return true;
 }
 
-// Feed now: closed -> open -> closed, once. If Feeder on left the horn open,
-// interrupt that hold and finish with an open->closed dispense instead of
-// rejecting as busy (dashboard previously sat in "Feeding" with no motion).
+// Feed now / schedules: OPEN → CLOSE once. Feeder on holds open until Feeder off.
 struct Schedule { char date[11]; char time[6]; };
 Schedule schedules[20];
 uint8_t scheduleCount = 0;
 char lastFedMinute[20] = "";
 
 bool feederTrigger() {
-  if (feederStep == FEED_HOLD_OPEN) return feederStart(FEED_OPEN, SERVO_OPEN_DEG);
-  // Interrupt a stuck mid-cycle so Feed now / schedules are never blocked.
+  // Always start a fresh dispense. Interrupt hold-open or a stuck mid-cycle.
   if (feederBusy()) {
-    Serial.println("[FEED] interrupting busy feeder for a new feed cycle");
+    Serial.println("[FEED] restarting feed cycle (was busy)");
     feederStep = FEED_IDLE;
   }
-  return feederStart(FEED_PRE, SERVO_CLOSED_DEG);
+  return feederStart(FEED_OPEN, SERVO_OPEN_DEG);
 }
-// Feeder on: open and keep pulsing until Feeder off (or FEED_ON_MAX_MS safety close).
 bool feederHoldOpen() { return feederStart(FEED_HOLD_OPEN, SERVO_OPEN_DEG); }
-// Feeder off: always clear logical busy, even if the servo write fails.
 bool feederStop() {
   const bool ok = servoAngle(SERVO_CLOSED_DEG);
   if (!ok) servoRelease();
-  if (feederStep != FEED_IDLE) {
-    feederStep = FEED_IDLE;
-    markFeederChanged();
-    Serial.println(ok ? "[FEED] feeder closed" : "[FEED] feeder forced idle (servo write failed)");
-  } else {
-    markFeederChanged();
-  }
+  feederStep = FEED_IDLE;
+  markFeederChanged();
+  Serial.println(ok ? "[FEED] feeder closed" : "[FEED] feeder forced idle (servo write failed)");
   return true;
 }
 
@@ -656,37 +650,36 @@ void updateFeeder() {
   const uint32_t elapsed = now - feederStepAt;
   switch (feederStep) {
     case FEED_PRE:
-      if (elapsed >= FEED_PRE_MS) {
-        if (!feederStart(FEED_OPEN, SERVO_OPEN_DEG) && elapsed > 5000UL) feederStop();
-      }
+      // Legacy step: jump straight to open.
+      if (!feederStart(FEED_OPEN, SERVO_OPEN_DEG)) feederStop();
       break;
     case FEED_OPEN:
       if (elapsed >= FEED_OPEN_MS) {
-        if (!feederStart(FEED_POST, SERVO_CLOSED_DEG) && elapsed > 5000UL) feederStop();
+        if (!feederStart(FEED_POST, SERVO_CLOSED_DEG) && elapsed > FEED_OPEN_MS + 4000UL) feederStop();
       }
       break;
     case FEED_POST:
-      if (elapsed >= FEED_POST_MS) { feederStep = FEED_IDLE; markFeederChanged(); Serial.println("[FEED] feed cycle done"); }
+      if (elapsed >= FEED_POST_MS) {
+        feederStep = FEED_IDLE;
+        markFeederChanged();
+        Serial.println("[FEED] feed cycle done");
+      }
       break;
     case FEED_HOLD_OPEN:
       if (elapsed >= FEED_ON_MAX_MS) {
         Serial.println("[FEED] safety close: no Feeder off within 60 s");
         feederStop();
       } else if ((int32_t)(now - feederHoldRefreshAt) >= 0) {
-        // Re-assert open pulse so a dropped LEDC duty cannot leave the horn limp.
         servoKeepOpen(SERVO_OPEN_DEG);
-        feederHoldRefreshAt = now + 3000;
+        feederHoldRefreshAt = now + 2500;
       }
       break;
     default: break;
   }
-  // Watchdog: a one-shot cycle must never leave the dashboard stuck on Feeding.
-  if ((feederStep == FEED_PRE || feederStep == FEED_OPEN || feederStep == FEED_POST) && elapsed > 8000UL) {
+  if ((feederStep == FEED_PRE || feederStep == FEED_OPEN || feederStep == FEED_POST) && elapsed > FEED_CYCLE_MAX_MS) {
     Serial.println("[FEED] cycle watchdog: forcing idle");
     feederStop();
   }
-  // Only rest the servo when idle/closed. Never kill pulses while Feeder on is holding open —
-  // that left the dashboard "ON: acked / Feeding" with a limp horn and blocked Feed now.
   if (servoReleaseAt && (int32_t)(now - servoReleaseAt) >= 0 && feederStep == FEED_IDLE) servoRelease();
 }
 
@@ -1683,18 +1676,24 @@ void applyMqttSchedules(const char* input) {
   const char* serverTimeIso = doc["serverTimeIso"] | "";
   JsonArray list = doc["schedules"].as<JsonArray>();
   if (list.isNull()) return;
-  // Must match Backend schedulesCanonical(): v1|schedules|device|iso|count|time|date|...
+  // Must match Backend schedulesCanonical():
+  //   v1|schedules|device|iso|count|time|date|...   (items)
+  //   v1|schedules|device|iso|0|                    (empty — trailing pipe after count)
   String canonical = String("v1|schedules|") + DEVICE_ID + "|" + serverTimeIso + "|" + String((unsigned)list.size());
-  for (JsonObject item : list) {
-    const char* t = item["time"] | "";
-    char time5[6];
-    strlcpy(time5, t, sizeof(time5));
-    const char* d = "";
-    if (!item["date"].isNull() && item["date"].is<const char*>()) d = item["date"].as<const char*>();
+  if (list.size() == 0) {
     canonical += "|";
-    canonical += time5;
-    canonical += "|";
-    canonical += d;
+  } else {
+    for (JsonObject item : list) {
+      const char* t = item["time"] | "";
+      char time5[6];
+      strlcpy(time5, t, sizeof(time5));
+      const char* d = "";
+      if (!item["date"].isNull() && item["date"].is<const char*>()) d = item["date"].as<const char*>();
+      canonical += "|";
+      canonical += time5;
+      canonical += "|";
+      canonical += d;
+    }
   }
   if (!signatureMatches(canonical.c_str(), doc["signature"] | "")) {
     Serial.println("[FEED] MQTT schedules rejected: bad signature");
@@ -1769,8 +1768,10 @@ const char* feedCommandStale(const PendingCommand& c) {
   const uint64_t now = epochMillis();
   if (!now || c.expiresAt <= now) return "rejected_expired";
   const uint64_t issuedAt = c.expiresAt > FEED_COMMAND_TTL_MS ? c.expiresAt - FEED_COMMAND_TTL_MS : 0;
-  if (now - issuedAt > FEED_COMMAND_TTL_MS) return "rejected_expired";
-  const uint64_t bootedAt = now - millis();
+  // uint64 underflow when the device clock lags the server by even 1 ms used to
+  // mark fresh Feed now commands as rejected_expired.
+  if (now >= issuedAt && (now - issuedAt) > FEED_COMMAND_TTL_MS) return "rejected_expired";
+  const uint64_t bootedAt = now - (uint64_t)millis();
   if (issuedAt + FEED_BOOT_TOLERANCE_MS < bootedAt) return "rejected_device_restarted";
   return nullptr;
 }
@@ -1862,7 +1863,7 @@ bool publishSignedState(const char* id, const char* source, const char* action, 
   const uint64_t reportedAt = epochMillis();
   if (!reportedAt || !mqtt.connected()) return false;
 
-  StaticJsonDocument<768> doc;
+  StaticJsonDocument<1024> doc;
   doc["v"] = 1;
   doc["deviceId"] = DEVICE_ID;
   doc["id"] = id;
@@ -1885,7 +1886,7 @@ bool publishSignedState(const char* id, const char* source, const char* action, 
   if (!hmacHex(canonical, strlen(canonical), signature)) return false;
   doc["signature"] = signature;
 
-  char out[1024];
+  char out[1280];
   const size_t len = serializeJson(doc, out, sizeof(out));
   return len > 0 && len < sizeof(out) && mqtt.publish(stateTopic, (const uint8_t*)out, len, false);
 }
@@ -2036,8 +2037,19 @@ void applyScheduleList(JsonArray list) {
   for (JsonObject item : list) {
     if (scheduleCount >= 20) break;
     const char* t = item["time"] | "";
-    if (strlen(t) < 5) continue;
-    strlcpy(schedules[scheduleCount].time, t, 6);   // "HH:MM"
+    if (strlen(t) < 4) continue;   // allow "9:30" or "09:30"
+    // Normalize to HH:MM in the 5-char slot the matcher uses.
+    char time5[6] = "";
+    if (strlen(t) >= 5 && t[2] == ':') {
+      strlcpy(time5, t, 6);
+    } else {
+      // "H:MM" → "0H:MM"
+      int h = 0, m = 0;
+      if (sscanf(t, "%d:%d", &h, &m) == 2 && h >= 0 && h <= 23 && m >= 0 && m <= 59) {
+        snprintf(time5, sizeof(time5), "%02d:%02d", h, m);
+      } else continue;
+    }
+    strlcpy(schedules[scheduleCount].time, time5, 6);
     // null / missing / non-string date => every day
     if (item["date"].isNull() || !item["date"].is<const char*>()) schedules[scheduleCount].date[0] = '\0';
     else strlcpy(schedules[scheduleCount].date, item["date"].as<const char*>(), 11);
@@ -2045,8 +2057,9 @@ void applyScheduleList(JsonArray list) {
   }
   saveSchedules();
   Serial.printf("[FEED] applied %u schedule(s)\n", scheduleCount);
-  // Push MQTT state so the dashboard "Schedules on device" updates without a pump cycle.
-  if (scheduleCount != previous) waterStateDirty = true;
+  // Always republish state so the dashboard “Schedules on device” matches flash.
+  waterStateDirty = true;
+  (void)previous;
 }
 
 void syncSchedules() {
@@ -2088,31 +2101,26 @@ void checkSchedules() {
     }
     return;
   }
+  // hm is "HH:MM" local (Asia/Manila). Match only the current minute once.
   snprintf(minute, sizeof(minute), "%s %s", date, hm);
   if (!strcmp(minute, lastFedMinute) || !strcmp(minute, feedSuppressedMinute)) return;
-  if (scheduleCount == 0) {
-    static uint32_t lastEmptyWarn = 0;
-    if (millis() - lastEmptyWarn > 120000UL) {
-      lastEmptyWarn = millis();
-      Serial.println("[FEED] no schedules in memory — waiting for HTTP sync from BACKEND_HTTP_URL");
-    }
-    return;
-  }
+  if (scheduleCount == 0) return;
+  if (feederBusy()) return;   // finish the current cycle; retry next loop this minute
+
   for (uint8_t i = 0; i < scheduleCount; i++) {
-    // Empty date = every day. A past one-shot date (YYYY-MM-DD < today) is also
-    // treated as daily so a mistyped/old calendar date does not silence the feeder.
-    const bool pastOneShot = schedules[i].date[0] && strcmp(schedules[i].date, date) < 0;
-    const bool dateMatches = schedules[i].date[0] == '\0' || !strcmp(schedules[i].date, date) || pastOneShot;
-    if (dateMatches && !strncmp(schedules[i].time, hm, 5)) {
-      Serial.printf("[FEED] scheduled feed %s%s\n", minute, pastOneShot ? " (past date→daily)" : "");
-      if (!feederTrigger()) {
-        Serial.println("[FEED] scheduled feed did not start (busy or servo); will retry this minute");
-        return;
-      }
-      strlcpy(lastFedMinute, minute, sizeof(lastFedMinute));
-      prefs.putString("lastFed", lastFedMinute);   // survives reboot: no double feed
+    // Empty date = every day. Dated entries run only on that calendar day.
+    const bool dateMatches = schedules[i].date[0] == '\0' || !strcmp(schedules[i].date, date);
+    if (!dateMatches || strncmp(schedules[i].time, hm, 5) != 0) continue;
+
+    Serial.printf("[FEED] scheduled feed %s (%s)\n", minute,
+                  schedules[i].date[0] ? schedules[i].date : "daily");
+    if (!feederTrigger()) {
+      Serial.println("[FEED] scheduled feed did not start (servo); will retry this minute");
       return;
     }
+    strlcpy(lastFedMinute, minute, sizeof(lastFedMinute));
+    prefs.putString("lastFed", lastFedMinute);
+    return;
   }
 }
 
@@ -3224,6 +3232,10 @@ void serviceMqtt() {
   if (mqtt.connect(clientId)) {   // clean session: no stale queued commands
     mqtt.subscribe(commandTopic, 1);
     mqtt.subscribe(schedulesTopic, 1);
+    // Boot/reconnect: clear any logical busy and push idle state so the dashboard
+    // cannot keep a stale "Busy" from the last mid-cycle TRIGGER ack.
+    feederStep = FEED_IDLE;
+    waterStateDirty = true;
     Serial.printf("[MQTT] connected; listening on %s and %s\n", commandTopic, schedulesTopic);
   } else {
     Serial.printf("[MQTT] failed, state=%d\n", mqtt.state());

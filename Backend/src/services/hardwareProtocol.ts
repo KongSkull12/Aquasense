@@ -98,6 +98,9 @@ export const schedulesCanonical = (
   serverTimeIso: string,
   schedules: FeedingScheduleSyncItem[],
 ): string => {
+  // Empty lists still end with "|" after the count so firmware and backend share one form:
+  //   v1|schedules|<device>|<iso>|0|
+  //   v1|schedules|<device>|<iso>|2|18:32||19:53|2026-11-17
   const parts = schedules.slice(0, 20).map((item) => `${String(item.time).slice(0, 5)}|${item.date ?? ''}`);
   return `v1|schedules|${deviceId}|${serverTimeIso}|${parts.length}|${parts.join('|')}`;
 };

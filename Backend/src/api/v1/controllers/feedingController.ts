@@ -130,8 +130,9 @@ export const triggerManualCommand = async (req: AuthenticatedRequest, res: Respo
       requestedAt: new Date().toISOString(),
       ...(req.userRole === 'staff' ? { staffUserId: req.userId } : {}),
     });
+    // Sign with wall-clock now so a slow DB insert cannot shrink the device TTL window.
     const published = await mqttService.dispatchHardwareCommand({ id: command.id, deviceId, source: 'feeding', action,
-      expiresAt: new Date(command.createdAt.getTime() + FEEDING_COMMAND_TTL_MS) });
+      expiresAt: new Date(Date.now() + FEEDING_COMMAND_TTL_MS) });
     if (!published) {
       await feedingService.discardUnpublishedManualCommand(ownerUserId, deviceId, command.id);
       sendError(res, 503, 'Feeder command was not sent; the MQTT publish was not accepted. No retry was queued');
