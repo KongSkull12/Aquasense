@@ -10,7 +10,7 @@ Feeding, Water change and Aerator pages, feeding schedules, and the LCD.
 | pH analog | 35 |
 | Turbidity analog | 34 |
 | ORP analog | 32 |
-| DS18B20 data | 4 |
+| DS18B20 data (bare TO-92/probe: also need **4.7 kΩ DATA→3.3 V**) | 4 |
 | Ultrasonic TRIG / ECHO (echo through a 5 V → 3.3 V divider) | 14 / 13 |
 | LCD 20x4 I2C SDA / SCL (address 0x27) | 21 / 22 |
 | Aerator relay | 25 |
@@ -18,6 +18,18 @@ Feeding, Water change and Aerator pages, feeding schedules, and the LCD.
 | Drain pump relay | 27 |
 | Feeder servo signal | 18 |
 | Active buzzer (+ to the pin, − to GND) | 19 |
+
+### Bare DS18B20 (no breakout module)
+
+A module already has the pull-up. A bare TO-92 or waterproof probe does **not**:
+
+1. **VDD** → ESP32 **3.3 V** (not 5 V into the data pin path)
+2. **GND** → ESP32 **GND**
+3. **DATA** → ESP32 **GPIO 4**
+4. **4.7 kΩ** resistor from **DATA to 3.3 V** (place it at the ESP32 end)
+
+Waterproof cable colours are usually **red = VDD**, **black = GND**, **yellow/white = DATA**.  
+Flat face of a TO-92 toward you, leads down: left = GND, centre = DATA, right = VDD (confirm with your part’s datasheet).
 
 ## 1. Backend
 

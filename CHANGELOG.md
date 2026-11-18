@@ -13,11 +13,19 @@ The running version is shown in the dashboard sidebar (App = frontend, API = bac
 3. Commit, tag and push: `git tag vX.Y.Z && git push kongskull main --tags`.
    Vercel and Render redeploy `main` automatically.
 
+## [1.10.18] - 2026-11-18
+
+### Fixed
+- Bare DS18B20 (no module) often never appeared because the bus search was weak and conversion
+  timing assumed a module pull-up. Firmware enables GPIO pull-up assist, searches by ROM family,
+  uses 10-bit conversion, and prints clear wiring help / `temp scan` for the required **4.7 kΩ
+  DATA→3.3 V** resistor.
+
 ## [1.10.17] - 2026-11-18
 
 ### Fixed
 - Temperature (DS18B20) flickered “No reading” on brief OneWire CRC/brownout glitches. Firmware
-  now waits for a full 12-bit conversion, addresses the probe by ROM id, holds the last good °C
+  now waits for a full conversion, addresses the probe by ROM id, holds the last good °C
   for 45 s through short failures, and rescans the bus when the probe truly drops.
 
 ## [1.10.16] - 2026-11-17

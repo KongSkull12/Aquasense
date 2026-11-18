@@ -321,12 +321,14 @@ bool tempDeviceFound = false;
 uint32_t tempRequestedAt = 0;
 uint32_t tempLastGoodAt = 0;
 uint32_t tempLastScanAt = 0;
-// 12-bit DS18B20 needs ~750 ms. Brief Wi-Fi/servo current spikes often drop one
-// CRC; hold the last good °C so the dashboard does not flicker "No reading".
-const uint32_t TEMP_CONVERSION_MS = 850;
-const uint32_t TEMP_HOLD_MS       = 45000;
-const uint32_t TEMP_RESCAN_MS     = 8000;
-const int      TEMP_FAIL_CONFIRM  = 8;
+// Bare DS18B20 (no module) needs an external 4.7k from DATA→3.3V. Use 10-bit so
+// conversion is shorter/more tolerant on long probe wires; hold last good °C
+// through brief CRC/brownout glitches from Wi-Fi/servo current spikes.
+const uint8_t  TEMP_RESOLUTION_BITS = 10;   // 9–12; 10-bit ≈ 187.5 ms
+const uint32_t TEMP_CONVERSION_MS   = 250;
+const uint32_t TEMP_HOLD_MS         = 45000;
+const uint32_t TEMP_RESCAN_MS       = 5000;
+const int      TEMP_FAIL_CONFIRM    = 8;
 
 
 // =====================================================
@@ -1460,23 +1462,78 @@ void readAnalogSensors() {
                                 isfinite(orpS.value) && orpS.value >= -2000.0f && orpS.value <= 2000.0f);
 }
 
+void prepareTempBus() {
+  // OneWire is open-drain. Modules include 4.7k; a bare TO-92/probe does not.
+  // Internal pull-up (~45k) is a weak backup only — still fit 4.7k DATA→3.3V.
+  pinMode(ONE_WIRE_BUS, INPUT_PULLUP);
+  delay(2);
+}
+
 bool findTemperatureSensor() {
   tempDeviceFound = false;
+  prepareTempBus();
   tempSensor.begin();
-  const int n = tempSensor.getDeviceCount();
-  if (n < 1) {
-    Serial.printf("[TEMP] no DS18B20 on GPIO%d — check DATA/GND/VCC and 4.7k pull-up to 3.3V\n", ONE_WIRE_BUS);
-    return false;
-  }
-  if (!tempSensor.getAddress(tempDeviceAddr, 0)) {
-    Serial.println("[TEMP] device count > 0 but address read failed");
-    return false;
-  }
-  tempSensor.setResolution(tempDeviceAddr, 12);
   tempSensor.setWaitForConversion(false);
+
+  // Manual bus search (more reliable than getDeviceCount alone on a flaky line).
+  DeviceAddress addr;
+  oneWire.reset_search();
+  int n = 0;
+  while (oneWire.search(addr)) {
+    if (OneWire::crc8(addr, 7) != addr[7]) continue;
+    // DS18B20 family code 0x28 (also accept DS18S20 0x10 / DS1822 0x22).
+    if (addr[0] != 0x28 && addr[0] != 0x10 && addr[0] != 0x22) continue;
+    memcpy(tempDeviceAddr, addr, sizeof(DeviceAddress));
+    n++;
+    break;
+  }
+  oneWire.reset_search();
+
+  if (n < 1) {
+    static uint32_t lastWarn = 0;
+    if (millis() - lastWarn > 15000UL) {
+      lastWarn = millis();
+      Serial.printf(
+        "[TEMP] no DS18B20 on GPIO%d. Bare sensor (no module) MUST have:\n"
+        "       VDD→3.3V  GND→GND  DATA→GPIO%d  and 4.7kΩ from DATA→3.3V (at the ESP32).\n"
+        "       Waterproof probe: usually red=VDD, black=GND, yellow/white=DATA.\n"
+        "       Type 'temp scan' in Serial Monitor after fixing the wiring.\n",
+        ONE_WIRE_BUS, ONE_WIRE_BUS);
+    }
+    return false;
+  }
+
+  tempSensor.setResolution(tempDeviceAddr, TEMP_RESOLUTION_BITS);
   tempDeviceFound = true;
-  Serial.printf("[TEMP] DS18B20 on GPIO%d (%d device)\n", ONE_WIRE_BUS, n);
+  Serial.printf("[TEMP] DS18B20 on GPIO%d  ROM %02X:%02X:%02X:%02X:%02X:%02X:%02X:%02X  %u-bit\n",
+                ONE_WIRE_BUS,
+                tempDeviceAddr[0], tempDeviceAddr[1], tempDeviceAddr[2], tempDeviceAddr[3],
+                tempDeviceAddr[4], tempDeviceAddr[5], tempDeviceAddr[6], tempDeviceAddr[7],
+                TEMP_RESOLUTION_BITS);
   return true;
+}
+
+void scanTemperatureBus() {
+  prepareTempBus();
+  Serial.printf("[TEMP] scanning OneWire on GPIO%d...\n", ONE_WIRE_BUS);
+  oneWire.reset_search();
+  DeviceAddress addr;
+  int found = 0;
+  while (oneWire.search(addr)) {
+    found++;
+    const bool crcOk = OneWire::crc8(addr, 7) == addr[7];
+    Serial.printf("  #%d ROM %02X:%02X:%02X:%02X:%02X:%02X:%02X:%02X  crc=%s  family=0x%02X\n",
+                  found,
+                  addr[0], addr[1], addr[2], addr[3], addr[4], addr[5], addr[6], addr[7],
+                  crcOk ? "ok" : "BAD", addr[0]);
+  }
+  if (found == 0) {
+    Serial.println("  (none) — add 4.7k DATA→3.3V and check pinout; modules already have the resistor.");
+  }
+  oneWire.reset_search();
+  tempDeviceFound = false;
+  tempConversionPending = false;
+  findTemperatureSensor();
 }
 
 // Non-blocking DS18B20: only read after conversion time; hold last good °C on glitches.
@@ -2409,6 +2466,7 @@ void printHelp() {
   Serial.println("orp zero              SEN0165 zero OFFSET from current circuit reading (probe disconnected)");
   Serial.println("turb <NTU>            SEN0189: turb 0 in clean water; a second standard also fits the gain");
   Serial.println("temp <C>              optional DS18B20 match to a trusted thermometer");
+  Serial.println("temp scan             search OneWire on GPIO4 (bare DS18B20 needs 4.7k DATA→3.3V)");
   Serial.println("clear ph|orp|turb|temp           forget captured points (keeps saved calibration)");
   Serial.println("reset ph|orp|turb|temp|tank|all  restore factory defaults and save");
   Serial.println("cal reset confirm     same as reset all (requires the word confirm)");
@@ -3066,6 +3124,7 @@ void handleSerialCommand(String line) {
     printCalibration();
     return;
   }
+  if (cmd == "temp" && rest == "scan") { scanTemperatureBus(); return; }
   if (cmd == "ph" || cmd == "orp" || cmd == "turb" || cmd == "temp") {
     if (!rest.length()) {
       Serial.printf("Give the reference value, e.g. %s\n", cmd == "ph" ? "ph 6.86" : cmd == "orp" ? "orp 225" : cmd == "turb" ? "turb 100" : "temp 28.4");

@@ -1,6 +1,6 @@
 {
   "name": "capstone-backend",
-  "version": "1.10.17",
+  "version": "1.10.18",
   "description": "Capstone project backend API",
   "main": "dist/server.js",
   "scripts": {
