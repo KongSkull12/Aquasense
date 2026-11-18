@@ -316,6 +316,17 @@ char stateTopic[96];
 Sensor phS, turbS, orpS, tempS, ultraS;
 float tankLevelPercent = NAN;
 bool tempConversionPending = false;
+DeviceAddress tempDeviceAddr;
+bool tempDeviceFound = false;
+uint32_t tempRequestedAt = 0;
+uint32_t tempLastGoodAt = 0;
+uint32_t tempLastScanAt = 0;
+// 12-bit DS18B20 needs ~750 ms. Brief Wi-Fi/servo current spikes often drop one
+// CRC; hold the last good °C so the dashboard does not flicker "No reading".
+const uint32_t TEMP_CONVERSION_MS = 850;
+const uint32_t TEMP_HOLD_MS       = 45000;
+const uint32_t TEMP_RESCAN_MS     = 8000;
+const int      TEMP_FAIL_CONFIRM  = 8;
 
 
 // =====================================================
@@ -1449,18 +1460,84 @@ void readAnalogSensors() {
                                 isfinite(orpS.value) && orpS.value >= -2000.0f && orpS.value <= 2000.0f);
 }
 
-// Non-blocking DS18B20: request now, read on the next cycle (conversion ~750 ms).
-void readTemperature() {
-  tempS.sampledAtMs = millis();
-  if (tempConversionPending) {
-    const float t = tempSensor.getTempCByIndex(0);
-    trackConnection(tempS, t != DEVICE_DISCONNECTED_C && t > -55.0f && t < 125.0f, "TEMP");
-    if (tempS.connected && t != DEVICE_DISCONNECTED_C) { tempRawC = t; tempS.value = tempCal.slope * t + tempCal.offset; }
-  } else {
-    trackConnection(tempS, false, "TEMP");
+bool findTemperatureSensor() {
+  tempDeviceFound = false;
+  tempSensor.begin();
+  const int n = tempSensor.getDeviceCount();
+  if (n < 1) {
+    Serial.printf("[TEMP] no DS18B20 on GPIO%d — check DATA/GND/VCC and 4.7k pull-up to 3.3V\n", ONE_WIRE_BUS);
+    return false;
   }
-  tempSensor.requestTemperatures();
-  tempConversionPending = true;
+  if (!tempSensor.getAddress(tempDeviceAddr, 0)) {
+    Serial.println("[TEMP] device count > 0 but address read failed");
+    return false;
+  }
+  tempSensor.setResolution(tempDeviceAddr, 12);
+  tempSensor.setWaitForConversion(false);
+  tempDeviceFound = true;
+  Serial.printf("[TEMP] DS18B20 on GPIO%d (%d device)\n", ONE_WIRE_BUS, n);
+  return true;
+}
+
+// Non-blocking DS18B20: only read after conversion time; hold last good °C on glitches.
+void readTemperature() {
+  const uint32_t now = millis();
+  tempS.sampledAtMs = now;
+
+  if (!tempDeviceFound && (tempLastScanAt == 0 || now - tempLastScanAt >= TEMP_RESCAN_MS)) {
+    tempLastScanAt = now;
+    findTemperatureSensor();
+  }
+
+  if (tempConversionPending && tempDeviceFound && (now - tempRequestedAt) >= TEMP_CONVERSION_MS) {
+    const float t = tempSensor.getTempC(tempDeviceAddr);
+    const bool ok = (t != DEVICE_DISCONNECTED_C) && isfinite(t) && t > -55.0f && t < 125.0f;
+    if (ok) {
+      if (!tempS.connected) Serial.println("[TEMP] CONNECTED");
+      tempS.connected = true;
+      tempS.disconnectCount = 0;
+      tempS.connectCount++;
+      tempRawC = t;
+      tempS.value = tempCal.slope * t + tempCal.offset;
+      tempLastGoodAt = now;
+      tempS.quality = SQ_STABLE;
+    } else {
+      tempS.disconnectCount++;
+      tempS.connectCount = 0;
+      const bool hold = tempLastGoodAt != 0 && (now - tempLastGoodAt) <= TEMP_HOLD_MS && isfinite(tempS.value);
+      if (tempS.disconnectCount >= TEMP_FAIL_CONFIRM && !hold) {
+        if (tempS.connected) Serial.println("[TEMP] DISCONNECTED");
+        tempS.connected = false;
+        tempS.value = NAN;
+        tempS.quality = SQ_DISCONNECTED;
+        tempDeviceFound = false;   // force a bus rescan
+      } else if (hold) {
+        // Keep showing the last good reading through a short CRC/brownout streak.
+        tempS.connected = true;
+        tempS.quality = SQ_STABILIZING;
+      } else {
+        tempS.quality = SQ_DISCONNECTED;
+      }
+    }
+    tempConversionPending = false;
+  }
+
+  if (!tempConversionPending && tempDeviceFound) {
+    tempSensor.setWaitForConversion(false);
+    tempSensor.requestTemperatures();
+    tempRequestedAt = now;
+    tempConversionPending = true;
+  } else if (!tempDeviceFound) {
+    const bool hold = tempLastGoodAt != 0 && (now - tempLastGoodAt) <= TEMP_HOLD_MS && isfinite(tempS.value);
+    if (hold) {
+      tempS.connected = true;
+      tempS.quality = SQ_STABILIZING;
+    } else {
+      tempS.connected = false;
+      tempS.value = NAN;
+      tempS.quality = SQ_DISCONNECTED;
+    }
+  }
 }
 
 void readUltrasonic() {
@@ -2536,8 +2613,13 @@ bool captureTemperature(float maxSpread, float& mean) {
   }
   // Back to the non-blocking reads that readTemperature() expects.
   tempSensor.setWaitForConversion(false);
-  tempSensor.requestTemperatures();
-  tempConversionPending = true;
+  if (tempDeviceFound) {
+    tempSensor.requestTemperatures();
+    tempRequestedAt = millis();
+    tempConversionPending = true;
+  } else {
+    tempConversionPending = false;
+  }
   if (!ok) { Serial.println(" no reading. Check the DS18B20 wiring and its 4.7 kOhm pull-up."); return false; }
   mean = sum / n;
   Serial.printf(" mean %.3f C spread %.3f C\n", mean, hi - lo);
@@ -3511,10 +3593,12 @@ void setup() {
   analogSetPinAttenuation(TURB_PIN, ADC_11db);
   analogSetPinAttenuation(ORP_PIN, ADC_11db);
 
-  tempSensor.begin();
-  tempSensor.setWaitForConversion(false);
-  tempSensor.requestTemperatures();
-  tempConversionPending = true;
+  findTemperatureSensor();
+  if (tempDeviceFound) {
+    tempSensor.requestTemperatures();
+    tempRequestedAt = millis();
+    tempConversionPending = true;
+  }
 
   pinMode(ULTRASONIC_TRIG, OUTPUT);
   digitalWrite(ULTRASONIC_TRIG, LOW);
